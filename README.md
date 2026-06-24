@@ -1,36 +1,62 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Control Center
 
-## Getting Started
+A local dashboard to manage your Claude Code agents (plugins), see which projects each is
+connected to, and dispatch tasks — watching the agent work live and approving its proposal
+and commit from the browser.
 
-First, run the development server:
+Runs entirely on your machine: a Next.js dashboard plus a small runner daemon that drives
+the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) in each project's folder.
+
+## Run it
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm install
+pnpm db:push        # create the SQLite schema (first run only)
+pnpm dev            # starts the dashboard (:3000) + runner daemon (:4319)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Auth: the runner reuses your existing Claude Code login (`~/.claude`) — nothing to
+configure. (Set `ANTHROPIC_API_KEY` only if you'd rather bill an API key.)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Use it
 
-## Learn More
+1. **Agents** are auto-discovered from your installed Claude Code plugins.
+2. **Projects** → add a local folder by absolute path.
+3. Open a project → **New task** → pick an agent + command (e.g. `/swe:onboard`, then
+   `/swe:task <request>`) → **Run task**.
+4. On the live task page you watch the transcript stream. At each gate the agent presents a
+   **proposal** and a **change report** — approve, approve-with-changes (add feedback), or
+   reject. After you approve the report it commits on a branch.
 
-To learn more about Next.js, take a look at the following resources:
+## Architecture
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```
+Browser ──HTTP──▶ Next.js app (:3000)  ──shared SQLite──▶  Runner daemon (:4319)
+   └─────────── SSE stream + approvals ──────────────────────────┘
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Next.js app** — UI, CRUD API routes, plugin/project auto-discovery, SQLite (Drizzle).
+- **Runner daemon** (`runner/`) — holds live Agent SDK sessions in memory (streaming-input
+  mode), streams output over SSE, and feeds your approvals back into the live session. The
+  agent's gates are surfaced through a blocking `request_approval` MCP tool.
+- The plugin is loaded with `plugins: [{ type: "local", path }]`, `settingSources` and
+  `permissionMode: "bypassPermissions"` so the agent runs autonomously in the project.
 
-## Deploy on Vercel
+| Path | Purpose |
+|------|---------|
+| `app/` | Dashboard pages + `app/api/*` CRUD routes |
+| `components/` | UI + the live `TaskLiveView` (SSE + gate cards) |
+| `lib/db/` | Drizzle schema + SQLite client |
+| `lib/discovery/` | Agents (from installed plugins) + project scanning |
+| `runner/` | Daemon: `server.ts`, `session-manager.ts`, `approval-tool.ts`, `gate-prompt.ts` |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Known limitations (MVP)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Daemon restart ends live tasks.** In-memory sessions don't survive a daemon restart;
+  orphaned tasks are marked `failed` on startup. The SDK `session_id` is persisted, so
+  resume-by-session-id is a future enhancement.
+- **Single user, local only.** No auth; binds to localhost.
+- **Gate reliability** depends on the agent calling `request_approval` (a marker-based
+  fallback covers prose gates).
