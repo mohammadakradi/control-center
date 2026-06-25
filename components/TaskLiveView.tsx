@@ -47,8 +47,10 @@ const isActivity = (b: Bubble) =>
 
 // Markers the agent prints (see GATE_PROMPT). `[[DONE]]` ends the final summary;
 // proposals/reports normally arrive as `gate` events via the approval tool.
-const DONE_MARK = "[[DONE]]";
-const ALL_MARKERS = [DONE_MARK, "[[GATE:PROPOSAL]]", "[[GATE:REPORT]]"];
+// Only a TRAILING marker is a real signal — matching it anywhere misfires when
+// the agent quotes the marker in prose (e.g. "tasks without `[[DONE]]`…").
+const DONE_AT_END = /\[\[DONE\]\]\s*$/;
+const ALL_MARKERS = ["[[DONE]]", "[[GATE:PROPOSAL]]", "[[GATE:REPORT]]"];
 const stripMarkers = (text: string) =>
   ALL_MARKERS.reduce((t, m) => t.split(m).join(""), text).trim();
 
@@ -155,7 +157,7 @@ function eventToBubble(e: StreamEvent): Bubble | null {
         const text = textOf(m.message?.content);
         const tools = toolsOf(m.message?.content);
         // The final summary (ends with [[DONE]]) is the report the user should see.
-        if (text.includes(DONE_MARK)) {
+        if (DONE_AT_END.test(text)) {
           const clean = stripMarkers(text);
           return clean ? { kind: "report", text: clean } : null;
         }

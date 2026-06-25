@@ -9,6 +9,20 @@ import remarkBreaks from "remark-breaks";
 // then keeps every other single newline as a visible line break). Em/en dashes
 // are left alone — the agent uses "—" as an inline separator ("H1 — Redact …").
 const BULLET_LINE = /^(\s*)[•●◦▪▸‣∙·]\s+/;
+
+// Agents also enumerate inline — "Plan: (1) … (2) … (3) …" — as one run-on
+// paragraph with no list syntax. When a line carries a real sequence (starts at
+// (1) and runs 1,2,3,… with 3+ items) break each marker onto its own numbered
+// line. Gated tightly so incidental references ("(1) and (2)") are left alone.
+function splitInlineEnumeration(line: string): string {
+  const nums = [...line.matchAll(/\((\d+)\)/g)].map((m) => Number(m[1]));
+  const isSequence =
+    nums.length >= 3 && nums.every((n, i) => n === i + 1);
+  return isSequence
+    ? line.replace(/\s*\((\d+)\)\s*/g, (_, n) => `\n${n}. `)
+    : line;
+}
+
 function normalizeMarkdown(md: string): string {
   let inFence = false;
   return md
@@ -18,7 +32,8 @@ function normalizeMarkdown(md: string): string {
         inFence = !inFence;
         return line;
       }
-      return inFence ? line : line.replace(BULLET_LINE, "$1- ");
+      if (inFence) return line;
+      return splitInlineEnumeration(line.replace(BULLET_LINE, "$1- "));
     })
     .join("\n");
 }
