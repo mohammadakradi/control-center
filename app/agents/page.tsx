@@ -42,11 +42,11 @@ export default function AgentsPage() {
               href={`/agents/${encodeURIComponent(a.id)}`}
               className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-5 transition-colors hover:border-neutral-700 hover:bg-neutral-900"
             >
-              <div className="flex items-center justify-between">
-                <span className="font-mono text-sm text-sky-400">
+              <div className="flex items-center justify-between gap-2">
+                <span className="min-w-0 truncate font-mono text-sm text-sky-400">
                   /{a.namespace}
                 </span>
-                <span className="text-xs text-neutral-500">
+                <span className="shrink-0 text-xs text-neutral-500">
                   {counts.get(a.id) ?? 0} project
                   {(counts.get(a.id) ?? 0) === 1 ? "" : "s"}
                 </span>

@@ -165,7 +165,7 @@ export default function Dashboard() {
               >
                 <Link
                   href={`/tasks/${t.id}`}
-                  className="flex items-center gap-4 rounded-lg px-2 py-3 hover:bg-white/2.5"
+                  className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg px-2 py-3 hover:bg-white/2.5"
                 >
                   <span className="min-w-28 shrink-0 font-mono text-sm text-sky-300">
                     /{agentName(t.agentId)}:{t.command}
@@ -175,9 +175,9 @@ export default function Dashboard() {
                       <span className="text-neutral-600">no description</span>
                     )}
                   </span>
-                  <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-neutral-500">
-                    <FolderGit2 className="size-3.5" />
-                    {projectName(t.projectId)}
+                  <span className="inline-flex min-w-0 shrink items-center gap-1.5 text-xs text-neutral-500">
+                    <FolderGit2 className="size-3.5 shrink-0" />
+                    <span className="truncate">{projectName(t.projectId)}</span>
                   </span>
                   <span className="hidden shrink-0 items-center gap-1 text-xs text-neutral-500 md:inline-flex">
                     <Clock className="size-3.5" />

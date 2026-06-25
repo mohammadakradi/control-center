@@ -60,7 +60,9 @@ export function WorkspaceSourceControl({
           {m.branch?.current && (
             <Chip icon={<GitBranch className="size-3" />}>{m.branch.current}</Chip>
           )}
-          <span className="font-mono text-xs text-neutral-600">{m.path}</span>
+          <span className="min-w-0 break-all font-mono text-xs text-neutral-600">
+            {m.path}
+          </span>
         </div>
         {m.role && (
           <p className="mb-3 text-xs leading-relaxed text-neutral-400">{m.role}</p>

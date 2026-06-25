@@ -201,7 +201,7 @@ export default async function AgentDetail({
                 >
                   <Link
                     href={`/tasks/${task.id}`}
-                    className="flex items-center gap-4 rounded-lg px-2 py-3 hover:bg-white/[0.025]"
+                    className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg px-2 py-3 hover:bg-white/[0.025]"
                   >
                     <span className="min-w-28 shrink-0 font-mono text-sm text-sky-300">
                       /{agent.namespace}:{task.command}
@@ -211,9 +211,9 @@ export default async function AgentDetail({
                         <span className="text-neutral-600">no description</span>
                       )}
                     </span>
-                    <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-neutral-500">
-                      <FolderGit2 className="size-3.5" />
-                      {project.name}
+                    <span className="inline-flex min-w-0 shrink items-center gap-1.5 text-xs text-neutral-500">
+                      <FolderGit2 className="size-3.5 shrink-0" />
+                      <span className="truncate">{project.name}</span>
                     </span>
                     <span className="hidden shrink-0 text-xs text-neutral-500 md:block">
                       {timeAgo(task.createdAt)}

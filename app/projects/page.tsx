@@ -49,7 +49,7 @@ export default function ProjectsPage() {
               className="flex items-center justify-between rounded-xl border border-neutral-800 bg-neutral-900/40 p-4 hover:border-neutral-700"
             >
               <div className="min-w-0">
-                <div className="font-medium">{p.name}</div>
+                <div className="truncate font-medium">{p.name}</div>
                 <div className="truncate font-mono text-xs text-neutral-500">
                   {p.path}
                 </div>

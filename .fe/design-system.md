@@ -67,6 +67,8 @@ _Maintained by the fe-agent · source of truth for tokens & reusable components 
 - Section gaps: `gap-4` to `gap-8`
 - Breakpoints: Tailwind v4 defaults (`sm: 640px`, `md: 768px`, `lg: 1024px`, `xl: 1280px`, `2xl: 1536px`)
 - Grid: `grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3` pattern for tiles
+- Page padding: `<main>` uses `px-4 pt-6 pb-24 sm:px-6 sm:py-8` — tighter gutters + bottom-nav clearance on mobile, full padding from `sm`
+- Mobile patterns: long paths/commands use `break-all` (identifiers) or `break-words` (headings); dense metadata/list rows use `flex-wrap` + `min-w-0`/`truncate` so they stack rather than overflow at ~375px; primary nav is a fixed bottom tab bar below `sm` (see `Nav`)
 
 ## Radii, shadows, borders, motion
 - Radius: `rounded-2xl` (cards), `rounded-xl` (tiles), `rounded-full` (chips/badges/avatars), `rounded-md` (fact tags), `rounded-lg` (misc)

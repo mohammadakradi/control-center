@@ -359,7 +359,7 @@ export function TaskLiveView({
 
   return (
     <div>
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2.5">
           <StatusBadge status={status} />
           <span className="inline-flex items-center gap-1.5 text-xs text-neutral-500">
@@ -553,18 +553,18 @@ function BubbleView({
   if (bubble.kind === "decision")
     return (
       <div
-        className={`ml-8 inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm ${
+        className={`ml-8 inline-flex max-w-[calc(100%-2rem)] items-start gap-1.5 rounded-lg border px-3 py-2 text-sm ${
           bubble.allow
             ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
             : "border-red-500/30 bg-red-500/10 text-red-200"
         }`}
       >
         {bubble.allow ? (
-          <Check className="size-3.5 shrink-0" />
+          <Check className="mt-0.5 size-3.5 shrink-0" />
         ) : (
-          <X className="size-3.5 shrink-0" />
+          <X className="mt-0.5 size-3.5 shrink-0" />
         )}
-        {bubble.text}
+        <span className="min-w-0 break-words">{bubble.text}</span>
       </div>
     );
   if (bubble.kind === "gate")

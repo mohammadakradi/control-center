@@ -49,7 +49,7 @@ export default async function TaskPage({
       <div className="mt-3 mb-6 flex items-start gap-4">
         {agent && <Avatar namespace={agent.namespace} size={56} />}
         <div className="min-w-0">
-          <h1 className="font-mono text-2xl font-semibold tracking-tight text-sky-300">
+          <h1 className="font-mono text-xl font-semibold tracking-tight break-words text-sky-300 sm:text-2xl">
             /{agent?.namespace ?? "?"}:{task.command}
           </h1>
           {task.requestText && <ExpandableRequest text={task.requestText} />}
@@ -75,7 +75,7 @@ export default async function TaskPage({
             />
           </div>
           {project && (
-            <p className="mt-1.5 font-mono text-xs text-neutral-600">
+            <p className="mt-1.5 font-mono text-xs break-all text-neutral-600">
               {project.path}
             </p>
           )}

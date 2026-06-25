@@ -131,10 +131,11 @@ export function GitControls({
         )}
       </div>
 
-      {/* Remote sync row — never wraps; Pull/Push stay anchored right and the
-          tracking text truncates so the buttons keep a constant position. */}
-      <div className="flex items-center justify-between gap-3 rounded-xl border border-neutral-800 bg-neutral-950/40 px-3.5 py-2.5">
-        <div className="flex min-w-0 items-center gap-2 text-xs text-neutral-400">
+      {/* Remote sync row — on wide viewports Pull/Push stay anchored right and the
+          tracking text truncates so the buttons keep a constant position; on cramped
+          (mobile) widths the button group wraps to its own line instead of overflowing. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-xl border border-neutral-800 bg-neutral-950/40 px-3.5 py-2.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2 text-xs text-neutral-400">
           {info.tracking ? (
             <>
               <span className="min-w-0 truncate">

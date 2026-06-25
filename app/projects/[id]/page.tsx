@@ -99,11 +99,14 @@ export default async function ProjectDetail({
 
       {/* Project header */}
       <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">{project.name}</h1>
+        <div className="min-w-0 max-w-full">
+          <h1 className="text-2xl font-bold tracking-tight break-words sm:text-3xl">
+            {project.name}
+          </h1>
           <div className="mt-2.5 flex flex-wrap items-center gap-2.5 text-xs">
-            <span className="inline-flex items-center gap-1.5 font-mono text-neutral-500">
-              <FolderGit2 className="size-3.5" /> {project.path}
+            <span className="inline-flex min-w-0 items-center gap-1.5 font-mono text-neutral-500">
+              <FolderGit2 className="size-3.5 shrink-0" />
+              <span className="truncate">{project.path}</span>
             </span>
             {project.isGit && !isWs && (
               <Chip icon={<GitBranch className="size-3" />}>
@@ -129,7 +132,7 @@ export default async function ProjectDetail({
       <div className="mt-6 grid gap-5 lg:grid-cols-2">
         {/* New task */}
         <section className={`${card} lg:col-span-2`}>
-          <div className="mb-4 flex items-center justify-between">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
             <h2 className="text-base font-semibold">New task</h2>
             <span className="text-xs text-neutral-500">
               Issue a command to an agent
@@ -263,7 +266,7 @@ export default async function ProjectDetail({
                 >
                   <Link
                     href={`/tasks/${t.id}`}
-                    className="flex items-center gap-4 rounded-lg px-2 py-3 hover:bg-white/2.5"
+                    className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg px-2 py-3 hover:bg-white/2.5"
                   >
                     <span className="min-w-28 shrink-0 font-mono text-sm text-sky-300">
                       /{agents.find((a) => a.id === t.agentId)?.namespace ?? "?"}:
