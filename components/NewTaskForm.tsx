@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, Loader2, Play } from "lucide-react";
+import { ChevronDown, Loader2, Play, Sparkles } from "lucide-react";
 
 type Cmd = {
   name: string;
@@ -11,6 +11,35 @@ type Cmd = {
   argumentHint?: string;
 };
 type AgentLite = { id: string; namespace: string; commands: Cmd[] };
+
+// Preferred command order for the SWE agent.
+const SWE_ORDER = ["task", "fix", "review", "ship", "onboard", "workspace"];
+
+/** Order an agent's commands: SWE follows a curated order, others keep theirs.
+ *  Until the agent is onboarded on this project, its `onboard` command floats
+ *  to the top so it's the obvious first step. */
+function orderCommands(
+  namespace: string | undefined,
+  commands: Cmd[],
+  onboarded: boolean,
+): Cmd[] {
+  let ordered = commands;
+  if (namespace === "swe") {
+    const rank = (n: string) => {
+      const i = SWE_ORDER.indexOf(n);
+      return i === -1 ? SWE_ORDER.length : i;
+    };
+    ordered = [...commands].sort(
+      (a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name),
+    );
+  }
+  if (!onboarded) {
+    const onboard = ordered.find((c) => c.name === "onboard");
+    if (onboard)
+      ordered = [onboard, ...ordered.filter((c) => c.name !== "onboard")];
+  }
+  return ordered;
+}
 
 function Select({
   value,
@@ -40,9 +69,12 @@ function Select({
 export function NewTaskForm({
   projectId,
   agents,
+  onboardedByAgent = {},
 }: {
   projectId: string;
   agents: AgentLite[];
+  /** Per-agent onboarding state for this project, keyed by agent id. */
+  onboardedByAgent?: Record<string, boolean>;
 }) {
   const router = useRouter();
   const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
@@ -50,12 +82,22 @@ export function NewTaskForm({
     () => agents.find((a) => a.id === agentId),
     [agents, agentId],
   );
-  const [command, setCommand] = useState(agent?.commands[0]?.name ?? "");
+  // Unknown agents (no marker defined) aren't gated.
+  const onboarded = onboardedByAgent[agentId] ?? true;
+  const commands = useMemo(
+    () => orderCommands(agent?.namespace, agent?.commands ?? [], onboarded),
+    [agent, onboarded],
+  );
+  const [command, setCommand] = useState(commands[0]?.name ?? "");
   const [requestText, setRequestText] = useState("");
+  const [model, setModel] = useState("auto");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const cmd = agent?.commands.find((c) => c.name === command);
+  const cmd = commands.find((c) => c.name === command);
+  const hasOnboard = (agent?.commands ?? []).some((c) => c.name === "onboard");
+  // Nudge the user to onboard the selected agent before running other commands.
+  const needsOnboard = !onboarded && hasOnboard && command !== "onboard";
 
   if (agents.length === 0) {
     return (
@@ -72,7 +114,7 @@ export function NewTaskForm({
     const res = await fetch("/api/tasks", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId, agentId, command, requestText }),
+      body: JSON.stringify({ projectId, agentId, command, requestText, model }),
     });
     const body = await res.json().catch(() => ({}));
     setBusy(false);
@@ -91,7 +133,10 @@ export function NewTaskForm({
           onChange={(v) => {
             const a = agents.find((x) => x.id === v);
             setAgentId(v);
-            setCommand(a?.commands[0]?.name ?? "");
+            const ob = onboardedByAgent[v] ?? true;
+            setCommand(
+              orderCommands(a?.namespace, a?.commands ?? [], ob)[0]?.name ?? "",
+            );
           }}
         >
           {agents.map((a) => (
@@ -102,13 +147,43 @@ export function NewTaskForm({
         </Select>
         <span className="font-mono text-base font-semibold text-sky-400">❯</span>
         <Select value={command} onChange={setCommand} className="min-w-48">
-          {agent?.commands.map((c) => (
+          {commands.map((c) => (
             <option key={c.name} value={c.name}>
               {c.full}
             </option>
           ))}
         </Select>
+        <span className="text-xs text-neutral-600">on</span>
+        <Select value={model} onChange={setModel}>
+          <option value="auto">Auto (smart)</option>
+          <option value="sonnet">Sonnet 4.6</option>
+          <option value="opus">Opus 4.8</option>
+        </Select>
       </div>
+      {model === "auto" && (
+        <p className="mt-2 text-xs text-neutral-500">
+          Auto picks Sonnet 4.6 for simple work and Opus 4.8 for complex tasks.
+        </p>
+      )}
+
+      {needsOnboard && (
+        <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          <span className="min-w-0 flex-1">
+            <span className="font-mono">/{agent?.namespace}</span> hasn&apos;t
+            been onboarded on this project yet. Run{" "}
+            <span className="font-mono">/{agent?.namespace}:onboard</span> first
+            so it learns the codebase.
+          </span>
+          <button
+            type="button"
+            onClick={() => setCommand("onboard")}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-500/25"
+          >
+            <Sparkles className="size-3.5" />
+            Onboard /{agent?.namespace}
+          </button>
+        </div>
+      )}
 
       {cmd?.description && (
         <p className="mt-3 max-w-2xl text-sm leading-relaxed text-neutral-400">

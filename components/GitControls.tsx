@@ -16,9 +16,11 @@ import type { BranchInfo } from "@/lib/git";
 export function GitControls({
   projectId,
   info,
+  member,
 }: {
   projectId: string;
   info: BranchInfo;
+  member?: string;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
@@ -33,7 +35,7 @@ export function GitControls({
       const res = await fetch(`/api/projects/${projectId}/git`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action, branch }),
+        body: JSON.stringify({ action, branch, member }),
       });
       const data = (await res.json()) as { output?: string; error?: string };
       setMsg({
@@ -129,12 +131,13 @@ export function GitControls({
         )}
       </div>
 
-      {/* Remote sync row */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-neutral-800 bg-neutral-950/40 px-3.5 py-2.5">
+      {/* Remote sync row — never wraps; Pull/Push stay anchored right and the
+          tracking text truncates so the buttons keep a constant position. */}
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-neutral-800 bg-neutral-950/40 px-3.5 py-2.5">
         <div className="flex min-w-0 items-center gap-2 text-xs text-neutral-400">
           {info.tracking ? (
             <>
-              <span className="truncate">
+              <span className="min-w-0 truncate">
                 tracking{" "}
                 <span className="font-mono text-neutral-300">{info.tracking}</span>
               </span>

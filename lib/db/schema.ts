@@ -85,6 +85,10 @@ export const tasks = sqliteTable("tasks", {
   command: text("command").notNull(), // onboard | task | fix | review | ship | workspace
   requestText: text("request_text").notNull().default(""),
   status: text("status").notNull().$type<TaskStatus>().default("queued"),
+  // Model routing: the user's choice ("auto" | "sonnet" | "opus"), overwritten by the
+  // runner with the resolved label once selected.
+  model: text("model").notNull().default("auto"),
+  modelReason: text("model_reason"),
   sessionId: text("session_id"), // SDK session_id, for resume fallback
   branch: text("branch"),
   error: text("error"),

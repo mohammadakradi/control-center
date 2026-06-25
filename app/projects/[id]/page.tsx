@@ -4,19 +4,23 @@ import { desc, eq } from "drizzle-orm";
 import {
   Activity,
   ArrowLeft,
-  CircleCheck,
-  CircleDashed,
+  Boxes,
   FileDiff,
   FolderGit2,
   GitBranch,
   GitCommitHorizontal,
+  Users,
 } from "lucide-react";
 import { db } from "@/lib/db";
 import { tasks } from "@/lib/db/schema";
 import { syncAgents } from "@/lib/discovery/agents";
-import { refreshProject } from "@/lib/discovery/projects";
+import { isAgentOnboarded, refreshProject } from "@/lib/discovery/projects";
 import { gitBranchInfo, gitChanges } from "@/lib/git";
+import { resolveMembers } from "@/lib/workspace";
+import { AgentContributors } from "@/components/AgentContributors";
+import { ChangesList } from "@/components/ChangesList";
 import { GitControls } from "@/components/GitControls";
+import { WorkspaceSourceControl } from "@/components/WorkspaceSourceControl";
 import { NewTaskForm } from "@/components/NewTaskForm";
 import { ProjectActions } from "@/components/ProjectActions";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -49,13 +53,34 @@ export default async function ProjectDetail({
     .orderBy(desc(tasks.createdAt))
     .all();
 
-  const changes = project.isGit ? gitChanges(project.path) : null;
+  // Agents that have contributed (run ≥1 task here), most-recent first.
+  const contributors = [
+    ...new Set(
+      history
+        .map((t) => agents.find((a) => a.id === t.agentId)?.namespace)
+        .filter((n): n is string => !!n),
+    ),
+  ];
+  // Per-agent onboarding state (presence of each agent's marker file on disk).
+  const onboardedByAgent: Record<string, boolean> = {};
+  for (const a of agents)
+    onboardedByAgent[a.id] = isAgentOnboarded(project.path, a.namespace);
+
+  const isWs = project.isWorkspace;
+  const members = isWs ? resolveMembers(project) : [];
+  // Single-repo source control is shown only for non-workspace projects; a
+  // workspace shows per-member controls instead (the root is member ".").
   const branchInfo = project.isGit ? gitBranchInfo(project.path) : null;
+  const changes = project.isGit && !isWs ? gitChanges(project.path) : null;
 
   const total = history.length;
   const done = history.filter((t) => t.status === "done").length;
   const inProgress = history.filter((t) => ACTIVE_STATUSES.has(t.status)).length;
   const successRate = total ? Math.round((done / total) * 100) : 0;
+
+  const changedFiles = isWs
+    ? members.reduce((s, m) => s + (m.changes?.files.length ?? 0), 0)
+    : (changes?.files.length ?? 0);
 
   const aheadBehind = branchInfo
     ? branchInfo.ahead || branchInfo.behind
@@ -80,38 +105,26 @@ export default async function ProjectDetail({
             <span className="inline-flex items-center gap-1.5 font-mono text-neutral-500">
               <FolderGit2 className="size-3.5" /> {project.path}
             </span>
-            {project.isGit && (
+            {project.isGit && !isWs && (
               <Chip icon={<GitBranch className="size-3" />}>
                 {branchInfo?.current ?? project.defaultBranch ?? "?"}
               </Chip>
             )}
-            {project.onboarded ? (
-              <Chip
-                icon={<CircleCheck className="size-3" />}
-                tone="ok"
-              >
-                onboarded
+            {isWs && (
+              <Chip icon={<Boxes className="size-3" />} tone="violet">
+                workspace · {members.length} repos
               </Chip>
-            ) : (
-              <Chip icon={<CircleDashed className="size-3" />}>not onboarded</Chip>
             )}
-            {project.isWorkspace && (
-              <Chip tone="violet">
-                workspace · {project.members.length} members
-              </Chip>
+            {contributors.length > 0 && (
+              <span className="inline-flex items-center gap-2">
+                <Users className="size-3.5 text-neutral-500" />
+                <AgentContributors namespaces={contributors} size={24} />
+              </span>
             )}
           </div>
         </div>
         <ProjectActions projectId={project.id} />
       </div>
-
-      {!project.onboarded && (
-        <p className="mt-5 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-          This project isn&apos;t onboarded yet. Run{" "}
-          <span className="font-mono">/swe:onboard</span> first so the agent
-          learns the codebase.
-        </p>
-      )}
 
       <div className="mt-6 grid gap-5 lg:grid-cols-2">
         {/* New task */}
@@ -122,7 +135,11 @@ export default async function ProjectDetail({
               Issue a command to an agent
             </span>
           </div>
-          <NewTaskForm projectId={project.id} agents={agents} />
+          <NewTaskForm
+            projectId={project.id}
+            agents={agents}
+            onboardedByAgent={onboardedByAgent}
+          />
         </section>
 
         {/* At a glance */}
@@ -140,30 +157,39 @@ export default async function ProjectDetail({
             />
           </div>
           <ul className="mt-4 flex flex-col">
-            {branchInfo && (
-              <Fact
-                icon={<GitBranch className="size-3.5" />}
-                tag={aheadBehind ?? undefined}
-                tagTone={aheadBehind === "up to date" ? "ok" : "warn"}
-              >
-                {branchInfo.tracking ? (
-                  <>
-                    Tracking <b className="text-neutral-200">{branchInfo.tracking}</b>
-                  </>
-                ) : (
-                  "No upstream branch set"
-                )}
+            {isWs ? (
+              <Fact icon={<Boxes className="size-3.5" />} tag={`${members.length}`}>
+                Workspace of{" "}
+                <b className="text-neutral-200">{members.length}</b> member repos
               </Fact>
+            ) : (
+              branchInfo && (
+                <Fact
+                  icon={<GitBranch className="size-3.5" />}
+                  tag={aheadBehind ?? undefined}
+                  tagTone={aheadBehind === "up to date" ? "ok" : "warn"}
+                >
+                  {branchInfo.tracking ? (
+                    <>
+                      Tracking{" "}
+                      <b className="text-neutral-200">{branchInfo.tracking}</b>
+                    </>
+                  ) : (
+                    "No upstream branch set"
+                  )}
+                </Fact>
+              )
             )}
             <Fact
               icon={<FileDiff className="size-3.5" />}
-              tag={changes && changes.files.length ? "uncommitted" : "clean"}
-              tagTone={changes && changes.files.length ? "warn" : "ok"}
+              tag={changedFiles ? "uncommitted" : "clean"}
+              tagTone={changedFiles ? "warn" : "ok"}
             >
-              {changes && changes.files.length ? (
+              {changedFiles ? (
                 <>
-                  <b className="text-neutral-200">{changes.files.length}</b> file
-                  {changes.files.length === 1 ? "" : "s"} changed
+                  <b className="text-neutral-200">{changedFiles}</b> file
+                  {changedFiles === 1 ? "" : "s"} changed
+                  {isWs ? " across repos" : ""}
                 </>
               ) : (
                 "Working tree clean"
@@ -180,52 +206,41 @@ export default async function ProjectDetail({
           </ul>
         </section>
 
-        {/* Source control */}
-        {branchInfo && (
+        {/* Source control — single repo, or per-member tabs for a workspace */}
+        {(isWs || branchInfo) && (
           <section className={card}>
             <h2 className="mb-4 text-base font-semibold">Source control</h2>
-            <GitControls projectId={project.id} info={branchInfo} />
-          </section>
-        )}
-
-        {/* Uncommitted changes */}
-        {changes && changes.files.length > 0 && (
-          <section className={`${card} lg:col-span-2`}>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="inline-flex items-center gap-2 text-base font-semibold">
-                <FileDiff className="size-4 text-neutral-500" />
-                Uncommitted changes
-              </h2>
-              <span className="font-mono text-xs text-neutral-400">
-                {changes.files.length} file{changes.files.length === 1 ? "" : "s"} ·{" "}
-                <span className="text-emerald-400">+{changes.totalAdded}</span>{" "}
-                <span className="text-red-400">−{changes.totalDeleted}</span>
-              </span>
-            </div>
-            <div className="mt-3 space-y-1">
-              {changes.files.map((f) => (
-                <div
-                  key={f.path}
-                  className="flex items-center gap-3 font-mono text-xs"
-                >
-                  <span className="w-16 shrink-0 text-neutral-500">{f.status}</span>
-                  <span className="min-w-0 flex-1 truncate text-neutral-300">
-                    {f.path}
-                  </span>
-                  <span className="shrink-0 text-emerald-400">+{f.added}</span>
-                  <span className="shrink-0 text-red-400">−{f.deleted}</span>
-                </div>
-              ))}
-              {changes.truncated > 0 && (
-                <p className="text-xs text-neutral-500">
-                  …and {changes.truncated} more
-                </p>
-              )}
-            </div>
-            <p className="mt-3 text-xs text-neutral-500">
-              Run <span className="font-mono text-sky-300">/swe:ship</span> to commit
-              these changes and open a PR.
-            </p>
+            {isWs ? (
+              <WorkspaceSourceControl projectId={project.id} members={members} />
+            ) : (
+              branchInfo && (
+                <>
+                  <GitControls projectId={project.id} info={branchInfo} />
+                  <div className="mt-4 border-t border-neutral-800 pt-4">
+                    <div className="mb-2 inline-flex items-center gap-2 text-sm font-medium text-neutral-300">
+                      <FileDiff className="size-4 text-neutral-500" />
+                      Changes
+                    </div>
+                    {changes && changes.files.length > 0 ? (
+                      <>
+                        <div className="scroll-thin max-h-72 overflow-auto">
+                          <ChangesList projectId={project.id} changes={changes} />
+                        </div>
+                        <p className="mt-3 text-xs text-neutral-500">
+                          Run{" "}
+                          <span className="font-mono text-sky-300">/swe:ship</span>{" "}
+                          to commit these changes and open a PR.
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-sm text-neutral-500">
+                        Working tree clean.
+                      </p>
+                    )}
+                  </div>
+                </>
+              )
+            )}
           </section>
         )}
 
@@ -242,10 +257,13 @@ export default async function ProjectDetail({
           ) : (
             <ul>
               {history.map((t) => (
-                <li key={t.id} className="border-t border-neutral-800/80 first:border-t-0">
+                <li
+                  key={t.id}
+                  className="border-t border-neutral-800/80 first:border-t-0"
+                >
                   <Link
                     href={`/tasks/${t.id}`}
-                    className="flex items-center gap-4 rounded-lg px-2 py-3 hover:bg-white/[0.025]"
+                    className="flex items-center gap-4 rounded-lg px-2 py-3 hover:bg-white/2.5"
                   >
                     <span className="min-w-28 shrink-0 font-mono text-sm text-sky-300">
                       /{agents.find((a) => a.id === t.agentId)?.namespace ?? "?"}:

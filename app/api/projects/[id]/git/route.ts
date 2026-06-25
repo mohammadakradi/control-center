@@ -9,6 +9,7 @@ import {
   gitPush,
   type GitResult,
 } from "@/lib/git";
+import { memberPath } from "@/lib/workspace";
 
 export const dynamic = "force-dynamic";
 
@@ -18,19 +19,33 @@ const SAFE_BRANCH = /^(?!-)[A-Za-z0-9._/-]+$/;
 
 type Ctx = { params: Promise<{ id: string }> };
 
-// POST /api/projects/:id/git { action, branch? } — basic source control.
+// POST /api/projects/:id/git { action, branch?, member? } — basic source control.
+// `member` scopes the operation to a workspace member repo (defaults to the project root).
 export async function POST(req: Request, { params }: Ctx) {
   const { id } = await params;
   const project = db.select().from(projects).where(eq(projects.id, id)).get();
   if (!project)
     return NextResponse.json({ error: "not found" }, { status: 404 });
-  if (!project.isGit)
+  if (!project.isGit && !project.isWorkspace)
     return NextResponse.json({ error: "not a git repo" }, { status: 400 });
 
-  const { action, branch } = (await req.json()) as {
+  const { action, branch, member } = (await req.json()) as {
     action?: string;
     branch?: string;
+    member?: string;
   };
+
+  // Resolve the working directory: a validated workspace member, or the root.
+  let cwd = project.path;
+  if (member) {
+    const mp = memberPath(project, member);
+    if (!mp)
+      return NextResponse.json(
+        { error: "unknown workspace member" },
+        { status: 400 },
+      );
+    cwd = mp;
+  }
 
   if ((action === "checkout" || action === "create") && !SAFE_BRANCH.test(branch ?? ""))
     return NextResponse.json({ error: "invalid branch name" }, { status: 400 });
@@ -38,16 +53,16 @@ export async function POST(req: Request, { params }: Ctx) {
   let result: GitResult;
   switch (action) {
     case "checkout":
-      result = gitCheckout(project.path, branch!);
+      result = gitCheckout(cwd, branch!);
       break;
     case "create":
-      result = gitCreateBranch(project.path, branch!);
+      result = gitCreateBranch(cwd, branch!);
       break;
     case "pull":
-      result = gitPull(project.path);
+      result = gitPull(cwd);
       break;
     case "push":
-      result = gitPush(project.path);
+      result = gitPush(cwd);
       break;
     default:
       return NextResponse.json({ error: "unknown action" }, { status: 400 });

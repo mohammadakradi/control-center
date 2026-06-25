@@ -15,6 +15,7 @@ import {
   type GateDecision,
   type GateKind,
 } from "./approval-tool";
+import { resolveModel, type ModelChoice } from "./model-router";
 
 export type StreamEvent = {
   id?: number;
@@ -124,8 +125,23 @@ function finalize(handle: SessionHandle, status: TaskStatus, error?: string): vo
   handle.closeInput();
 }
 
+const CONTINUE_PROMPT =
+  "Continue the previous task — do NOT restart from scratch. First take stock of where you " +
+  "left off: review your earlier work, the current git diff / working tree, `.swe/notes.md`, " +
+  "and any relevant `.swe/epics/` entry. Then resume from the next incomplete step and carry " +
+  "the workflow through to completion (build → review → report gate → commit).";
+
 /** Start executing a task. Loads task/project/agent from the shared DB. */
 export function startTask(taskId: string): SessionHandle {
+  return runTask(taskId, false);
+}
+
+/** Resume a failed/cancelled task from where it left off (SDK session resume + a continuation prompt). */
+export function continueTask(taskId: string): SessionHandle {
+  return runTask(taskId, true);
+}
+
+function runTask(taskId: string, resume: boolean): SessionHandle {
   const existing = sessions.get(taskId);
   if (existing) return existing;
 
@@ -167,31 +183,58 @@ export function startTask(taskId: string): SessionHandle {
     });
   };
 
-  const prompt = task.requestText
-    ? `/${agent.namespace}:${task.command} ${task.requestText}`
-    : `/${agent.namespace}:${task.command}`;
+  const canResume = resume && Boolean(task.sessionId);
+  const prompt = resume
+    ? CONTINUE_PROMPT
+    : task.requestText
+      ? `/${agent.namespace}:${task.command} ${task.requestText}`
+      : `/${agent.namespace}:${task.command}`;
 
-  const q = query({
-    prompt: channel.gen(),
-    options: {
-      cwd: project.path,
-      plugins: [{ type: "local", path: agent.sourcePath }],
-      settingSources: ["user", "project", "local"],
-      permissionMode: "bypassPermissions",
-      systemPrompt: { type: "preset", preset: "claude_code", append: GATE_PROMPT },
-      includePartialMessages: true,
-      mcpServers: { "swe-platform": makeApprovalServer(onGate) },
-    },
-  });
-  handle.query = q;
-
-  channel.push(userMessage(prompt));
+  if (resume) {
+    db.update(tasks)
+      .set({ error: null, endedAt: null })
+      .where(eq(tasks.id, taskId))
+      .run();
+  }
   setStatus(handle, "running");
-  record(handle, "log", { message: `Dispatched: ${prompt}` });
+  record(handle, "log", {
+    message: resume
+      ? `Continuing task${canResume ? ` (resuming session ${task.sessionId!.slice(0, 8)})` : " (fresh session — inspecting working tree)"}`
+      : `Dispatched: ${prompt}`,
+  });
 
-  // Consume the agent's output stream.
+  // Resolve the model (triage for "auto"), start the session, consume the output stream.
   (async () => {
     try {
+      // On resume, task.model is already a concrete label → resolveModel returns it as-is.
+      const choice = (task.model as ModelChoice) || "auto";
+      const chosen = await resolveModel(task.command, task.requestText, choice);
+      db.update(tasks)
+        .set({ model: chosen.label, modelReason: chosen.reason })
+        .where(eq(tasks.id, taskId))
+        .run();
+      record(handle, "model", { model: chosen.label, reason: chosen.reason });
+      record(handle, "log", {
+        message: `🧠 Model: ${chosen.label} — ${chosen.reason}`,
+      });
+
+      const q = query({
+        prompt: channel.gen(),
+        options: {
+          model: chosen.id,
+          cwd: project.path,
+          plugins: [{ type: "local", path: agent.sourcePath }],
+          settingSources: ["user", "project", "local"],
+          permissionMode: "bypassPermissions",
+          systemPrompt: { type: "preset", preset: "claude_code", append: GATE_PROMPT },
+          includePartialMessages: true,
+          mcpServers: { "swe-platform": makeApprovalServer(onGate) },
+          ...(canResume ? { resume: task.sessionId! } : {}),
+        },
+      });
+      handle.query = q;
+      channel.push(userMessage(prompt));
+
       for await (const m of q as AsyncIterable<SDKMessage>) {
         const sid = (m as { session_id?: string }).session_id;
         if (sid && !task.sessionId) {

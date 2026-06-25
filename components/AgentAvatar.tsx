@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 
-/** Per-agent profile photo (currently only the SWE agent has one). */
+/** Per-agent profile photo, keyed by namespace. */
 const PHOTOS: Record<string, string> = {
   swe: "/swe-agent.png",
+  fe: "/fe-agent.png",
 };
 
 export function Avatar({

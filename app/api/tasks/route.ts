@@ -28,6 +28,7 @@ export async function POST(request: Request) {
     agentId?: string;
     command?: string;
     requestText?: string;
+    model?: string;
   };
   if (!body.projectId || !body.agentId || !body.command) {
     return NextResponse.json(
@@ -35,6 +36,10 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+
+  const model = ["auto", "sonnet", "opus"].includes(body.model ?? "")
+    ? (body.model as string)
+    : "auto";
 
   const id = newId("task");
   db.insert(tasks)
@@ -45,6 +50,7 @@ export async function POST(request: Request) {
       command: body.command,
       requestText: body.requestText ?? "",
       status: "queued",
+      model,
     })
     .run();
 

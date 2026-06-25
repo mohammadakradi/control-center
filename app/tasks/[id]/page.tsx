@@ -1,10 +1,23 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { eq } from "drizzle-orm";
+import {
+  ArrowLeft,
+  Clock,
+  Cpu,
+  FolderGit2,
+  GitBranch,
+  TriangleAlert,
+} from "lucide-react";
 import { db } from "@/lib/db";
 import { agents, projects, tasks } from "@/lib/db/schema";
 import { PUBLIC_RUNNER_URL } from "@/lib/config";
+import { Avatar } from "@/components/AgentAvatar";
+import { ExpandableRequest } from "@/components/ExpandableRequest";
 import { TaskLiveView } from "@/components/TaskLiveView";
+import { RunDuration } from "@/components/RunDuration";
+import { Chip } from "@/components/ui-cards";
+import { ACTIVE_STATUSES, timeAgo } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -25,37 +38,63 @@ export default async function TaskPage({
 
   return (
     <div>
-      {project && (
-        <Link
-          href={`/projects/${project.id}`}
-          className="text-sm text-neutral-400 hover:text-white"
-        >
-          ← {project.name}
-        </Link>
-      )}
-      <div className="mt-2 mb-5">
-        <h1 className="font-mono text-xl text-sky-300">
-          /{agent?.namespace ?? "?"}:{task.command}
-        </h1>
-        {task.requestText && (
-          <p className="mt-1 text-neutral-300">{task.requestText}</p>
-        )}
-        <p className="mt-1 font-mono text-xs text-neutral-500">
-          {project?.path}
-          {task.branch ? ` · branch ${task.branch}` : ""}
-        </p>
+      <Link
+        href={project ? `/projects/${project.id}` : "/"}
+        className="inline-flex items-center gap-1.5 text-sm text-neutral-400 hover:text-white"
+      >
+        <ArrowLeft className="size-4" /> {project?.name ?? "Back"}
+      </Link>
+
+      {/* Task header */}
+      <div className="mt-3 mb-6 flex items-start gap-4">
+        {agent && <Avatar namespace={agent.namespace} size={56} />}
+        <div className="min-w-0">
+          <h1 className="font-mono text-2xl font-semibold tracking-tight text-sky-300">
+            /{agent?.namespace ?? "?"}:{task.command}
+          </h1>
+          {task.requestText && <ExpandableRequest text={task.requestText} />}
+          <div className="mt-2.5 flex flex-wrap items-center gap-2.5 text-xs">
+            {project && (
+              <Chip icon={<FolderGit2 className="size-3" />}>{project.name}</Chip>
+            )}
+            {task.branch && (
+              <Chip icon={<GitBranch className="size-3" />}>{task.branch}</Chip>
+            )}
+            {task.model && task.model !== "auto" && (
+              <Chip icon={<Cpu className="size-3" />} tone="sky">
+                {task.model === "opus" ? "Opus 4.8" : "Sonnet 4.6"}
+              </Chip>
+            )}
+            <Chip icon={<Clock className="size-3" />}>
+              {timeAgo(task.createdAt)}
+            </Chip>
+            <RunDuration
+              createdAt={task.createdAt.getTime()}
+              endedAt={task.endedAt ? task.endedAt.getTime() : null}
+              active={ACTIVE_STATUSES.has(task.status)}
+            />
+          </div>
+          {project && (
+            <p className="mt-1.5 font-mono text-xs text-neutral-600">
+              {project.path}
+            </p>
+          )}
+        </div>
       </div>
 
       <TaskLiveView
         taskId={task.id}
         runnerUrl={PUBLIC_RUNNER_URL}
         initialStatus={task.status}
+        projectId={task.projectId}
+        agentId={task.agentId}
       />
 
       {task.error && (
-        <p className="mt-4 rounded-lg border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300">
-          {task.error}
-        </p>
+        <div className="mt-4 flex items-start gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+          <span>{task.error}</span>
+        </div>
       )}
     </div>
   );

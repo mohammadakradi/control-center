@@ -58,6 +58,25 @@ export function pathExists(rawPath: string): boolean {
 }
 
 /**
+ * The on-disk artifact each agent's `onboard` workflow writes. Presence of the
+ * marker means that agent has been onboarded on the project. Keyed by namespace.
+ *   - swe writes CLAUDE.md
+ *   - fe writes .fe/design-system.md (its design-system inventory; CLAUDE.md is shared)
+ */
+const ONBOARD_MARKERS: Record<string, string> = {
+  swe: "CLAUDE.md",
+  fe: ".fe/design-system.md",
+};
+
+/** Whether a given agent (by namespace) has been onboarded on a project.
+ *  Agents with no known marker are treated as not gated (always "ready"). */
+export function isAgentOnboarded(projectPath: string, namespace: string): boolean {
+  const marker = ONBOARD_MARKERS[namespace];
+  if (!marker) return true;
+  return existsSync(resolve(projectPath, marker));
+}
+
+/**
  * Re-scan a registered project from disk and persist its derived fields
  * (onboarded, git, workspace). Returns the fresh row, or null if unknown.
  * Keeps the stored state in sync after a task (e.g. onboard) changes the
