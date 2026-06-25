@@ -7,6 +7,7 @@ import { db } from "../lib/db";
 import { taskEvents, tasks, type TaskStatus } from "../lib/db/schema";
 import { RUNNER_PORT } from "../lib/config";
 import {
+  continueTask,
   getHandle,
   respond,
   sendReply,
@@ -144,6 +145,16 @@ app.post("/tasks/:id/reply", async (c) => {
 app.post("/tasks/:id/stop", async (c) => {
   const ok = await stopTask(c.req.param("id"));
   return c.json({ ok }, ok ? 200 : 404);
+});
+
+// Continue a failed/cancelled task from where it left off.
+app.post("/tasks/:id/continue", (c) => {
+  try {
+    continueTask(c.req.param("id"));
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 500);
+  }
 });
 
 // On startup, any task still in a non-terminal state has lost its in-memory session — fail it cleanly.

@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { db } from "../lib/db";
 import {
   agents,
@@ -15,6 +15,7 @@ import {
   type GateDecision,
   type GateKind,
 } from "./approval-tool";
+import { resolveModel, type ModelChoice } from "./model-router";
 
 export type StreamEvent = {
   id?: number;
@@ -25,17 +26,48 @@ export type StreamEvent = {
 
 type SessionHandle = {
   taskId: string;
+  projectId: string; // for per-project serialization
   out: EventEmitter; // SSE subscribers listen here
   pushInput: (m: SDKUserMessage) => void;
   closeInput: () => void;
   query: ReturnType<typeof query> | null;
   pendingApproval?: (decision: GateDecision) => void;
+  started: boolean; // false while queued behind another job on the same project
+  start?: () => void; // launches the SDK session (set only while queued)
   done: boolean;
 };
 
 const sessions = new Map<string, SessionHandle>();
 
 export const getHandle = (taskId: string) => sessions.get(taskId);
+
+/** Is another job actually running (started, not finished) in this project right now? */
+function projectBusy(projectId: string, exceptTaskId?: string): boolean {
+  for (const h of sessions.values()) {
+    if (h.projectId === projectId && h.started && !h.done && h.taskId !== exceptTaskId)
+      return true;
+  }
+  return false;
+}
+
+/**
+ * When a project frees up, launch the oldest job still queued behind it.
+ * No-ops if the project is still busy — so cancelling one queued job can't
+ * accidentally start another while a job is mid-flight.
+ */
+function promoteNext(projectId: string): void {
+  if (projectBusy(projectId)) return;
+  const next = db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.projectId, projectId), eq(tasks.status, "queued")))
+    .orderBy(asc(tasks.createdAt))
+    .get();
+  if (!next) return;
+  const h = sessions.get(next.id);
+  if (h?.start && !h.started) h.start();
+  else if (!h) startTask(next.id); // no live handle (e.g. after restart) — dispatch fresh
+}
 
 function makeInputChannel() {
   const queue: SDKUserMessage[] = [];
@@ -70,6 +102,19 @@ function userMessage(text: string): SDKUserMessage {
     message: { role: "user", content: text },
     parent_tool_use_id: null,
   };
+}
+
+/** Workflow markers are only meaningful as a trailing end-of-message signal —
+ *  matching them anywhere would misfire when the agent quotes the marker in prose
+ *  (e.g. "tasks that finish without `[[DONE]]`…"). */
+const DONE_AT_END = /\[\[DONE\]\]\s*$/;
+const GATE_AT_END = /\[\[GATE:(PROPOSAL|REPORT)\]\]\s*$/;
+
+/** True for messages from the main agent thread (subagent messages carry a
+ *  parent_tool_use_id / subagent_type and must not drive task completion). */
+function isMainThread(m: SDKMessage): boolean {
+  const a = m as { parent_tool_use_id?: string | null; subagent_type?: string };
+  return !a.parent_tool_use_id && !a.subagent_type;
 }
 
 function extractText(m: SDKMessage): string {
@@ -122,12 +167,34 @@ function finalize(handle: SessionHandle, status: TaskStatus, error?: string): vo
   record(handle, "status", { status, error });
   record(handle, "end", { status });
   handle.closeInput();
+  // This project just freed up — start the next job waiting on it (if any).
+  promoteNext(handle.projectId);
+}
+
+function continuePrompt(namespace: string): string {
+  return (
+    "Continue the previous task — do NOT restart from scratch. First take stock of where you " +
+    "left off: review your earlier work, the current git diff / working tree, " +
+    `\`.${namespace}/notes.md\`, and any relevant \`.${namespace}/epics/\` entry. Then resume ` +
+    "from the next incomplete step and carry the workflow through to completion " +
+    "(build → review → report gate → commit)."
+  );
 }
 
 /** Start executing a task. Loads task/project/agent from the shared DB. */
 export function startTask(taskId: string): SessionHandle {
+  return runTask(taskId, false);
+}
+
+/** Resume a failed/cancelled task from where it left off (SDK session resume + a continuation prompt). */
+export function continueTask(taskId: string): SessionHandle {
+  return runTask(taskId, true);
+}
+
+function runTask(taskId: string, resume: boolean): SessionHandle {
   const existing = sessions.get(taskId);
-  if (existing) return existing;
+  if (existing && !existing.done) return existing; // already live (running or queued)
+  if (existing) sessions.delete(taskId); // a finished handle still lingering — replace it
 
   const task = db.select().from(tasks).where(eq(tasks.id, taskId)).get();
   if (!task) throw new Error(`task not found: ${taskId}`);
@@ -145,15 +212,29 @@ export function startTask(taskId: string): SessionHandle {
   out.setMaxListeners(50);
   const handle: SessionHandle = {
     taskId,
+    projectId: project.id,
     out,
     pushInput: channel.push,
     closeInput: channel.close,
     query: null,
+    started: false,
     done: false,
   };
   sessions.set(taskId, handle);
 
+  // The actual run: resolve the model, open the SDK session, consume the stream.
+  // Wrapped in `launch` so the job can sit queued until its project frees up.
+  const launch = () => {
+    if (handle.started || handle.done) return;
+    handle.started = true;
+    handle.start = undefined;
+
+  // Whether the run has surfaced a report the user can see (report gate or a
+  // [[DONE]] summary). If not, we synthesize one from the final message at the end.
+  let producedReport = false;
+
   const onGate = (gate: GateKind, summary: string): Promise<GateDecision> => {
+    if (gate === "report") producedReport = true;
     record(handle, "gate", { gate, summary });
     setStatus(handle, gate === "proposal" ? "awaiting_proposal" : "awaiting_report");
     return new Promise<GateDecision>((resolve) => {
@@ -167,31 +248,59 @@ export function startTask(taskId: string): SessionHandle {
     });
   };
 
-  const prompt = task.requestText
-    ? `/${agent.namespace}:${task.command} ${task.requestText}`
-    : `/${agent.namespace}:${task.command}`;
+  const canResume = resume && Boolean(task.sessionId);
+  const prompt = resume
+    ? continuePrompt(agent.namespace)
+    : task.requestText
+      ? `/${agent.namespace}:${task.command} ${task.requestText}`
+      : `/${agent.namespace}:${task.command}`;
 
-  const q = query({
-    prompt: channel.gen(),
-    options: {
-      cwd: project.path,
-      plugins: [{ type: "local", path: agent.sourcePath }],
-      settingSources: ["user", "project", "local"],
-      permissionMode: "bypassPermissions",
-      systemPrompt: { type: "preset", preset: "claude_code", append: GATE_PROMPT },
-      includePartialMessages: true,
-      mcpServers: { "swe-platform": makeApprovalServer(onGate) },
-    },
-  });
-  handle.query = q;
-
-  channel.push(userMessage(prompt));
+  if (resume) {
+    db.update(tasks)
+      .set({ error: null, endedAt: null })
+      .where(eq(tasks.id, taskId))
+      .run();
+  }
   setStatus(handle, "running");
-  record(handle, "log", { message: `Dispatched: ${prompt}` });
+  record(handle, "log", {
+    message: resume
+      ? `Continuing task${canResume ? ` (resuming session ${task.sessionId!.slice(0, 8)})` : " (fresh session — inspecting working tree)"}`
+      : `Dispatched: ${prompt}`,
+  });
 
-  // Consume the agent's output stream.
+  // Resolve the model (triage for "auto"), start the session, consume the output stream.
   (async () => {
     try {
+      // On resume, task.model is already a concrete label → resolveModel returns it as-is.
+      const choice = (task.model as ModelChoice) || "auto";
+      const chosen = await resolveModel(task.command, task.requestText, choice);
+      db.update(tasks)
+        .set({ model: chosen.label, modelReason: chosen.reason })
+        .where(eq(tasks.id, taskId))
+        .run();
+      record(handle, "model", { model: chosen.label, reason: chosen.reason });
+      record(handle, "log", {
+        message: `🧠 Model: ${chosen.label} — ${chosen.reason}`,
+      });
+
+      const q = query({
+        prompt: channel.gen(),
+        options: {
+          model: chosen.id,
+          cwd: project.path,
+          plugins: [{ type: "local", path: agent.sourcePath }],
+          settingSources: ["user", "project", "local"],
+          permissionMode: "bypassPermissions",
+          systemPrompt: { type: "preset", preset: "claude_code", append: GATE_PROMPT },
+          includePartialMessages: true,
+          mcpServers: { "swe-platform": makeApprovalServer(onGate) },
+          ...(canResume ? { resume: task.sessionId! } : {}),
+        },
+      });
+      handle.query = q;
+      channel.push(userMessage(prompt));
+
+      let lastAssistantText = "";
       for await (const m of q as AsyncIterable<SDKMessage>) {
         const sid = (m as { session_id?: string }).session_id;
         if (sid && !task.sessionId) {
@@ -205,15 +314,58 @@ export function startTask(taskId: string): SessionHandle {
         }
         record(handle, "message", m);
 
-        if (m.type === "assistant") {
+        if (m.type === "assistant" && isMainThread(m)) {
           const text = extractText(m);
-          if (text.includes("[[DONE]]")) finalize(handle, "done");
+          if (text.trim()) lastAssistantText = text;
+          if (DONE_AT_END.test(text)) {
+            producedReport = true;
+            finalize(handle, "done");
+          }
         }
+        // A `result` message marks the end of a turn. In streaming-input mode the
+        // SDK then waits for more input, so the message loop never ends on its own —
+        // we must decide here whether the task is complete. (Without this, commands
+        // that finish without printing [[DONE]] — e.g. onboard — hang in "running".)
         if (m.type === "result") {
           const sub = (m as { subtype?: string }).subtype ?? "";
-          if (sub && sub !== "success" && !sub.startsWith("success")) {
-            // a result subtype other than success usually means the run ended on an error
-            record(handle, "log", { message: `result: ${sub}` });
+          if (sub !== "success") {
+            // error_during_execution / error_max_turns / error_max_budget_usd / …
+            finalize(handle, "failed", `run ended: ${sub || "unknown error"}`);
+          } else if (!handle.done) {
+            const gate = lastAssistantText.match(GATE_AT_END);
+            if (handle.pendingApproval) {
+              // A tool-based gate is awaiting the user — keep the session alive.
+            } else if (gate) {
+              // Prose-gate fallback: the agent signalled a gate via the marker
+              // instead of the approval tool. Surface it so it stays actionable
+              // (respond() pushes the decision back as a reply) rather than stuck.
+              const kind = gate[1] === "PROPOSAL" ? "proposal" : "report";
+              const summary = lastAssistantText
+                .replace(/\[\[(DONE|GATE:[A-Z]+)\]\]/g, "")
+                .trim();
+              record(handle, "gate", { gate: kind, summary });
+              setStatus(
+                handle,
+                kind === "proposal" ? "awaiting_proposal" : "awaiting_report",
+              );
+            } else {
+              // Turn ended with nothing pending → the task is complete. If the run
+              // produced no report (e.g. onboard, which prints a plain summary with
+              // no [[DONE]] and no report gate), surface that summary as the report
+              // so the user sees a result rather than an empty/activity-only view.
+              if (!producedReport && lastAssistantText.trim()) {
+                record(handle, "message", {
+                  type: "assistant",
+                  message: {
+                    content: [
+                      { type: "text", text: `${lastAssistantText.trim()}\n\n[[DONE]]` },
+                    ],
+                  },
+                });
+                producedReport = true;
+              }
+              finalize(handle, "done");
+            }
           }
         }
       }
@@ -222,11 +374,27 @@ export function startTask(taskId: string): SessionHandle {
       record(handle, "log", { message: `error: ${(err as Error).message}` });
       finalize(handle, "failed", (err as Error).message);
     } finally {
-      // keep the handle briefly for late SSE flushes, then drop it
-      setTimeout(() => sessions.delete(taskId), 60_000);
+      // keep the handle briefly for late SSE flushes, then drop it — but only if it
+      // hasn't been replaced by a re-dispatch of the same task in the meantime.
+      setTimeout(() => {
+        if (sessions.get(taskId) === handle) sessions.delete(taskId);
+      }, 60_000);
     }
-  })();
+    })();
+  };
 
+  // Serialize per project: at most one live job per project. If another job is
+  // running here, queue this one — finalize() promotes it when the project frees.
+  if (projectBusy(project.id, taskId)) {
+    handle.start = launch;
+    setStatus(handle, "queued");
+    record(handle, "log", {
+      message: "Queued — waiting for another job on this project to finish.",
+    });
+    return handle;
+  }
+
+  launch();
   return handle;
 }
 

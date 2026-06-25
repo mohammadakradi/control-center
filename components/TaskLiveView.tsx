@@ -2,8 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ACTIVE_STATUSES, STATUS_LABEL } from "@/lib/ui";
+import { Check, FileText, ListTree, Square, Wrench, X } from "lucide-react";
+import { ACTIVE_STATUSES, STATUS_LABEL, reportHasFindings } from "@/lib/ui";
 import { StatusBadge } from "@/components/StatusBadge";
+import { Markdown } from "@/components/Markdown";
+import { FileModal } from "@/components/FileModal";
 
 type StreamEvent = { id?: number; type: string; payload: unknown; ts: number };
 type Gate = { gate: "proposal" | "report"; summary: string };
@@ -29,14 +32,27 @@ type ToolCall = {
 };
 type ToolResult = { id: string; text: string; isError: boolean };
 
-/** The agent's intermediate work (vs. milestones the user must act on). */
-const isActivity = (b: Bubble) => b.kind === "assistant" || b.kind === "log";
-
 type Bubble =
   | { kind: "assistant"; text: string; tools: ToolCall[] }
+  | { kind: "report"; text: string }
+  | { kind: "decision"; text: string; allow: boolean }
   | { kind: "user"; text: string }
   | { kind: "log"; text: string }
   | { kind: "gate"; gate: Gate };
+
+/** The agent's intermediate work (vs. milestones the user must act on:
+ *  reports, gates/proposals, and the user's own decisions). */
+const isActivity = (b: Bubble) =>
+  b.kind === "assistant" || b.kind === "log" || b.kind === "user";
+
+// Markers the agent prints (see GATE_PROMPT). `[[DONE]]` ends the final summary;
+// proposals/reports normally arrive as `gate` events via the approval tool.
+// Only a TRAILING marker is a real signal — matching it anywhere misfires when
+// the agent quotes the marker in prose (e.g. "tasks without `[[DONE]]`…").
+const DONE_AT_END = /\[\[DONE\]\]\s*$/;
+const ALL_MARKERS = ["[[DONE]]", "[[GATE:PROPOSAL]]", "[[GATE:REPORT]]"];
+const stripMarkers = (text: string) =>
+  ALL_MARKERS.reduce((t, m) => t.split(m).join(""), text).trim();
 
 function blocks(content: unknown): Block[] {
   return Array.isArray(content) ? (content as Block[]) : [];
@@ -140,6 +156,11 @@ function eventToBubble(e: StreamEvent): Bubble | null {
       if (m?.type === "assistant") {
         const text = textOf(m.message?.content);
         const tools = toolsOf(m.message?.content);
+        // The final summary (ends with [[DONE]]) is the report the user should see.
+        if (DONE_AT_END.test(text)) {
+          const clean = stripMarkers(text);
+          return clean ? { kind: "report", text: clean } : null;
+        }
         if (!text && tools.length === 0) return null;
         return { kind: "assistant", text, tools };
       }
@@ -170,10 +191,14 @@ export function TaskLiveView({
   taskId,
   runnerUrl,
   initialStatus,
+  projectId,
+  agentId,
 }: {
   taskId: string;
   runnerUrl: string;
   initialStatus: string;
+  projectId: string;
+  agentId: string;
 }) {
   const router = useRouter();
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
@@ -183,6 +208,7 @@ export function TaskLiveView({
   const [feedback, setFeedback] = useState("");
   const [connected, setConnected] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
+  const [reconnectKey, setReconnectKey] = useState(0);
   const lastId = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
 
@@ -192,6 +218,14 @@ export function TaskLiveView({
   // intermediate work (prose, tool calls, logs) is hidden behind a toggle.
   const visible = showActivity ? bubbles : bubbles.filter((b) => !isActivity(b));
   const hiddenCount = bubbles.length - visible.length;
+
+  // The currently-pending gate (matches the latest gate bubble) renders inline
+  // as an interactive card; once resolved it falls back to a static record.
+  const isPendingGate = (b: Bubble) =>
+    b.kind === "gate" &&
+    !!gate &&
+    b.gate.gate === gate.gate &&
+    b.gate.summary === gate.summary;
 
   const handle = useCallback((e: StreamEvent) => {
     if (e.id !== undefined) lastId.current = e.id;
@@ -261,7 +295,7 @@ export function TaskLiveView({
       stopped = true;
       es?.close();
     };
-  }, [taskId, runnerUrl, handle]);
+  }, [taskId, runnerUrl, handle, reconnectKey]);
 
   // Autoscroll.
   useEffect(() => {
@@ -274,10 +308,10 @@ export function TaskLiveView({
     setFeedback("");
     const note = allow
       ? fb
-        ? `✓ Approved with changes: ${fb}`
-        : "✓ Approved"
-      : `✗ Rejected${fb ? `: ${fb}` : " — revise and present again"}`;
-    setBubbles((prev) => [...prev, { kind: "user", text: note }]);
+        ? `Approved with changes: ${fb}`
+        : "Approved"
+      : `Rejected${fb ? `: ${fb}` : " — revise and present again"}`;
+    setBubbles((prev) => [...prev, { kind: "decision", text: note, allow }]);
     await fetch(`${runnerUrl}/tasks/${taskId}/respond`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -290,29 +324,75 @@ export function TaskLiveView({
     router.refresh();
   }
 
+  // A test-scenario file referenced in a report, opened in a modal.
+  const [scenarioPath, setScenarioPath] = useState<string | null>(null);
+
+  const [continuing, setContinuing] = useState(false);
+  // Resume a failed/cancelled task from where it left off, then re-open the live stream.
+  async function continueRun() {
+    setContinuing(true);
+    const res = await fetch(`/api/tasks/${taskId}/continue`, { method: "POST" });
+    setContinuing(false);
+    if (!res.ok) return;
+    setStatus("running");
+    setReconnectKey((k) => k + 1); // reopen SSE from the last event id
+  }
+
+  const [converting, setConverting] = useState(false);
+  // Spin up a new `/swe:task` that works through the findings in a report.
+  async function createFixTask(reportText: string) {
+    setConverting(true);
+    const requestText =
+      "Address the findings from the following report and implement the fixes, " +
+      "working through them by priority (highest severity first):\n\n" +
+      reportText;
+    const res = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId, agentId, command: "task", requestText }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok && body.id) {
+      router.push(`/tasks/${body.id}`);
+    } else {
+      setConverting(false);
+    }
+  }
+
   return (
     <div>
-      <div className="mb-3 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5">
           <StatusBadge status={status} />
-          <span className="text-xs text-neutral-500">
-            {connected ? "● live" : active ? "○ reconnecting…" : "○ ended"}
+          <span className="inline-flex items-center gap-1.5 text-xs text-neutral-500">
+            <span
+              className={`size-1.5 rounded-full ${
+                connected
+                  ? "bg-emerald-400"
+                  : active
+                    ? "animate-pulse bg-amber-400"
+                    : "bg-neutral-600"
+              }`}
+            />
+            {connected ? "live" : active ? "reconnecting…" : "ended"}
           </span>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setShowActivity((v) => !v)}
-            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800"
           >
+            <ListTree className="size-3.5" />
             {showActivity
-              ? "Hide agent activity"
-              : `Show agent activity${hiddenCount ? ` (${hiddenCount})` : ""}`}
+              ? "Hide activity"
+              : `Show activity${hiddenCount ? ` (${hiddenCount})` : ""}`}
           </button>
           {active && (
             <button
               onClick={stop}
-              className="rounded-lg border border-red-900 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/50"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm text-red-300 hover:bg-red-500/20"
             >
+              <Square className="size-3.5 fill-current" />
               Stop
             </button>
           )}
@@ -331,9 +411,25 @@ export function TaskLiveView({
           </p>
         )}
         <div className="space-y-3">
-          {visible.map((b, i) => (
-            <BubbleView key={i} bubble={b} />
-          ))}
+          {visible.map((b, i) =>
+            b.kind === "gate" && isPendingGate(b) ? (
+              <GateCard
+                key={i}
+                gate={b.gate}
+                feedback={feedback}
+                setFeedback={setFeedback}
+                onRespond={respond}
+              />
+            ) : (
+              <BubbleView
+                key={i}
+                bubble={b}
+                onConvert={createFixTask}
+                converting={converting}
+                onFileClick={setScenarioPath}
+              />
+            ),
+          )}
           {showActivity && live && (
             <div className="whitespace-pre-wrap text-sm text-neutral-300">
               {live}
@@ -343,56 +439,135 @@ export function TaskLiveView({
         </div>
       </div>
 
-      {gate && (
-        <div className="mt-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
-          <div className="mb-1 flex items-center gap-2">
-            <span className="text-lg">🚦</span>
-            <h3 className="font-medium text-amber-200">
-              {gate.gate === "proposal"
-                ? "Proposal — approve to start building"
-                : "Change report — approve to commit"}
-            </h3>
-          </div>
-          <pre className="mb-3 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg bg-neutral-950/60 p-3 text-sm text-neutral-200">
-            {gate.summary}
-          </pre>
-          <textarea
-            value={feedback}
-            onChange={(e) => setFeedback(e.target.value)}
-            placeholder="Optional feedback (sent with Approve-with-changes or Reject)"
-            rows={2}
-            className="mb-2 w-full rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-amber-500"
-          />
-          <div className="flex flex-wrap gap-2">
+      {!active && (
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <p className="text-sm text-neutral-400">
+            Task {STATUS_LABEL[status as keyof typeof STATUS_LABEL] ?? status}.
+          </p>
+          {(status === "failed" || status === "cancelled") && (
             <button
-              onClick={() => respond(true)}
-              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+              onClick={continueRun}
+              disabled={continuing}
+              className="inline-flex items-center gap-2 rounded-lg border border-sky-700 bg-sky-600/15 px-3.5 py-1.5 text-sm font-medium text-sky-200 hover:bg-sky-600/25 disabled:opacity-50"
             >
-              {feedback.trim() ? "Approve with changes" : "Approve"}
+              {continuing ? "Resuming…" : "Continue from where it left off"}
             </button>
-            <button
-              onClick={() => respond(false)}
-              className="rounded-lg border border-red-800 px-4 py-2 text-sm text-red-300 hover:bg-red-950/50"
-            >
-              Reject &amp; revise
-            </button>
-          </div>
+          )}
         </div>
       )}
 
-      {!active && (
-        <p className="mt-4 text-sm text-neutral-400">
-          Task {STATUS_LABEL[status as keyof typeof STATUS_LABEL] ?? status}.
-        </p>
+      {scenarioPath && (
+        <FileModal
+          projectId={projectId}
+          path={scenarioPath}
+          onClose={() => setScenarioPath(null)}
+        />
       )}
     </div>
   );
 }
 
-function BubbleView({ bubble }: { bubble: Bubble }) {
+/** Interactive proposal/report gate, rendered inline in the transcript. */
+function GateCard({
+  gate,
+  feedback,
+  setFeedback,
+  onRespond,
+}: {
+  gate: Gate;
+  feedback: string;
+  setFeedback: (v: string) => void;
+  onRespond: (allow: boolean) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4">
+      <div className="mb-2 flex items-center gap-2 text-sm font-medium text-amber-200">
+        <span className="text-base">🚦</span>
+        {gate.gate === "proposal"
+          ? "Proposal — approve to start building"
+          : "Change report — approve to commit"}
+      </div>
+      <div className="mb-3 max-h-72 overflow-auto rounded-lg bg-neutral-950/50 p-3">
+        <Markdown>{gate.summary}</Markdown>
+      </div>
+      <textarea
+        value={feedback}
+        onChange={(e) => setFeedback(e.target.value)}
+        placeholder="Optional feedback (sent with Approve-with-changes or Reject)"
+        rows={2}
+        className="mb-2 w-full rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-amber-500"
+      />
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => onRespond(true)}
+          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+        >
+          {feedback.trim() ? "Approve with changes" : "Approve"}
+        </button>
+        <button
+          onClick={() => onRespond(false)}
+          className="rounded-lg border border-red-800 px-4 py-2 text-sm text-red-300 hover:bg-red-950/50"
+        >
+          Reject &amp; revise
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BubbleView({
+  bubble,
+  onConvert,
+  converting,
+  onFileClick,
+}: {
+  bubble: Bubble;
+  onConvert?: (text: string) => void;
+  converting?: boolean;
+  onFileClick?: (path: string) => void;
+}) {
   if (bubble.kind === "log")
     return (
       <p className="font-mono text-xs text-neutral-500">— {bubble.text}</p>
+    );
+  if (bubble.kind === "report")
+    return (
+      <div className="rounded-lg border border-neutral-700 bg-neutral-900/60 p-4">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-neutral-400">
+            <FileText className="size-3.5" /> Report
+          </span>
+          {onConvert && reportHasFindings(bubble.text) && (
+            <button
+              onClick={() => onConvert(bubble.text)}
+              disabled={converting}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-300 hover:bg-sky-500/20 disabled:opacity-50"
+              title="Create a new task that fixes the issues in this report"
+            >
+              <Wrench className="size-3.5" />
+              {converting ? "Creating…" : "Create fix task"}
+            </button>
+          )}
+        </div>
+        <Markdown onFileClick={onFileClick}>{bubble.text}</Markdown>
+      </div>
+    );
+  if (bubble.kind === "decision")
+    return (
+      <div
+        className={`ml-8 inline-flex max-w-[calc(100%-2rem)] items-start gap-1.5 rounded-lg border px-3 py-2 text-sm ${
+          bubble.allow
+            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+            : "border-red-500/30 bg-red-500/10 text-red-200"
+        }`}
+      >
+        {bubble.allow ? (
+          <Check className="mt-0.5 size-3.5 shrink-0" />
+        ) : (
+          <X className="mt-0.5 size-3.5 shrink-0" />
+        )}
+        <span className="min-w-0 break-words">{bubble.text}</span>
+      </div>
     );
   if (bubble.kind === "gate")
     return (
@@ -401,9 +576,9 @@ function BubbleView({ bubble }: { bubble: Bubble }) {
           <span>🚦</span>
           {bubble.gate.gate === "proposal" ? "Proposal" : "Change report"}
         </div>
-        <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-sm text-neutral-200">
-          {bubble.gate.summary}
-        </pre>
+        <div className="max-h-72 overflow-auto">
+          <Markdown>{bubble.gate.summary}</Markdown>
+        </div>
       </div>
     );
   if (bubble.kind === "user")

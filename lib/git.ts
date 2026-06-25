@@ -20,11 +20,13 @@ const FILE_CAP = 200;
 
 function git(cwd: string, args: string[]): string {
   try {
+    // Trim only trailing whitespace — leading spaces are significant in
+    // `git status --porcelain` (the XY status column starts at column 0).
     return execFileSync("git", args, {
       cwd,
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
-    }).trim();
+    }).replace(/\s+$/, "");
   } catch {
     return "";
   }
@@ -120,6 +122,20 @@ export function gitChanges(cwd: string): GitChanges {
   const truncated = Math.max(0, files.length - FILE_CAP);
 
   return { files: files.slice(0, FILE_CAP), totalAdded, totalDeleted, truncated };
+}
+
+const DIFF_CAP = 200_000;
+
+/** Unified diff for a single path: working tree vs HEAD, or the whole file if untracked. */
+export function gitFileDiff(cwd: string, path: string): string {
+  let diff = git(cwd, ["diff", "HEAD", "--", path]);
+  if (!diff) {
+    // Untracked file — diff against an empty tree so every line shows as added.
+    diff = runGit(cwd, ["diff", "--no-index", "/dev/null", path]).output;
+  }
+  return diff.length > DIFF_CAP
+    ? `${diff.slice(0, DIFF_CAP)}\n… (diff truncated)`
+    : diff;
 }
 
 export type BranchInfo = {

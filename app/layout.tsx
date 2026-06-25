@@ -24,7 +24,9 @@ export default function RootLayout({
     >
       <body className="min-h-full">
         <Nav />
-        <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
+        <main className="mx-auto max-w-6xl px-4 pt-6 pb-24 sm:px-6 sm:py-8">
+          {children}
+        </main>
       </body>
     </html>
   );

@@ -93,8 +93,9 @@ export function discoverAgents(): DiscoveredAgent[] {
       scope: entry.scope ?? null,
     });
   }
-  // This platform only surfaces the SWE agent.
-  return result.filter((a) => a.namespace === "swe");
+  // This platform surfaces the locally-built agents (swe, fe).
+  const SURFACED = new Set(["swe", "fe"]);
+  return result.filter((a) => SURFACED.has(a.namespace));
 }
 
 /** Discover installed plugins and upsert them into the DB. Returns the current agent set. */
