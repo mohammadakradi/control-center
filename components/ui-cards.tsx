@@ -4,6 +4,33 @@ import type { ReactNode } from "react";
 export const card =
   "rounded-2xl border border-neutral-800 bg-gradient-to-b from-white/[0.015] to-transparent bg-neutral-900/40 p-6";
 
+/** A `card` with a standard header row (title + optional right-aligned slot).
+ *  `min-w-0` lets it shrink inside grid/flex parents so long content truncates
+ *  instead of forcing horizontal page scroll. */
+export function CardSection({
+  title,
+  right,
+  className = "",
+  children,
+}: {
+  title: string;
+  /** Optional right-aligned header content (icon, count, caption). */
+  right?: ReactNode;
+  /** Extra classes — e.g. `lg:col-span-2` for full-width sections. */
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className={`${card} min-w-0 ${className}`}>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <h2 className="text-base font-semibold">{title}</h2>
+        {right}
+      </div>
+      {children}
+    </section>
+  );
+}
+
 export function Chip({
   children,
   icon,
