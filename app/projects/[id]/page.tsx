@@ -13,6 +13,7 @@ import { AtAGlance } from "@/components/AtAGlance";
 import { SourceControl } from "@/components/SourceControl";
 import { TaskHistory } from "@/components/TaskHistory";
 import { NewTaskForm } from "@/components/NewTaskForm";
+import { ProjectName } from "@/components/ProjectName";
 import { ProjectActions } from "@/components/ProjectActions";
 import { CardSection, Chip } from "@/components/ui-cards";
 import { ACTIVE_STATUSES } from "@/lib/ui";
@@ -33,6 +34,8 @@ export default async function ProjectDetail({
   const agents = syncAgents().map((a) => ({
     id: a.id,
     namespace: a.namespace,
+    name: a.name,
+    description: a.description,
     commands: a.commands,
   }));
 
@@ -93,9 +96,7 @@ export default async function ProjectDetail({
       {/* Project header */}
       <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 max-w-full">
-          <h1 className="text-2xl font-bold tracking-tight break-words sm:text-3xl">
-            {project.name}
-          </h1>
+          <ProjectName projectId={project.id} name={project.name} />
           <div className="mt-2.5 flex flex-wrap items-center gap-2.5 text-xs">
             <span className="inline-flex min-w-0 items-center gap-1.5 font-mono text-neutral-500">
               <FolderGit2 className="size-3.5 shrink-0" />

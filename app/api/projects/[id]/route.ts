@@ -32,6 +32,29 @@ export async function GET(_req: Request, { params }: Ctx) {
   return NextResponse.json({ project, agents: linkedAgents, tasks: taskList });
 }
 
+// PATCH /api/projects/:id — update editable project metadata (currently the
+// display name). The name is cosmetic; the on-disk path is the stable identity,
+// and a rename survives rescans (refreshProject never overwrites `name`).
+export async function PATCH(req: Request, { params }: Ctx) {
+  const { id } = await params;
+  const project = db.select().from(projects).where(eq(projects.id, id)).get();
+  if (!project)
+    return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  const body = (await req.json().catch(() => ({}))) as { name?: unknown };
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name)
+    return NextResponse.json({ error: "name is required" }, { status: 400 });
+  if (name.length > 100)
+    return NextResponse.json(
+      { error: "name must be 100 characters or fewer" },
+      { status: 400 },
+    );
+
+  db.update(projects).set({ name }).where(eq(projects.id, id)).run();
+  return NextResponse.json({ ok: true, name });
+}
+
 // DELETE /api/projects/:id — unregister a project (cascades links + tasks).
 export async function DELETE(_req: Request, { params }: Ctx) {
   const { id } = await params;
