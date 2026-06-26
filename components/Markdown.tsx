@@ -38,10 +38,14 @@ function normalizeMarkdown(md: string): string {
     .join("\n");
 }
 
-// Test-scenario files the agent writes (e.g. `.swe/test-scenarios/foo.md`).
-// These render as inline code in reports; we make them clickable to open in a modal.
+// File paths the agent writes that we make clickable inline (rendered as code in reports),
+// opening in a modal: swe/fe test scenarios, and pm task specs (.pm/tasks/<ts>/<task>.md).
 const isTestScenarioPath = (text: string) =>
   !/\s/.test(text) && /(^|\/)test-scenarios\/[^/]+\.(md|markdown)$/.test(text);
+const isPmTaskPath = (text: string) =>
+  !/\s/.test(text) && /(^|\/)\.pm\/tasks\/[^/]+\/[^/]+\.(md|markdown)$/.test(text);
+const isClickablePath = (text: string) =>
+  isTestScenarioPath(text) || isPmTaskPath(text);
 
 // Styling is applied via descendant variants so we don't need per-element
 // component overrides (which would each receive an unused `node` prop).
@@ -81,7 +85,7 @@ export function Markdown({
         code(props: ComponentProps<"code">) {
           const { children: kids, ...rest } = props;
           const text = String(kids);
-          if (isTestScenarioPath(text)) {
+          if (isClickablePath(text)) {
             return (
               <code
                 {...rest}
@@ -92,7 +96,7 @@ export function Markdown({
                   if (e.key === "Enter" || e.key === " ") onFileClick(text);
                 }}
                 className="cursor-pointer underline decoration-dotted underline-offset-2 hover:!text-sky-300"
-                title="View test scenario"
+                title={isPmTaskPath(text) ? "Open task" : "View test scenario"}
               >
                 {kids}
               </code>
