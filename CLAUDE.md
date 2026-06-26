@@ -46,6 +46,11 @@ there; never hardcode values a token already expresses.
   `better-sqlite3` isn't shadowed by the host's macOS build — **never** bind-mount host
   `node_modules` into the container. After a dependency change, `pnpm dev:clean` drops those
   volumes so they re-seed from the rebuilt image.
+- **Auth:** the bind-mounted `~/.claude` does *not* carry a usable login on macOS — the
+  host login lives in the Keychain, not in `~/.claude/.credentials.json`, so the runner's
+  spawned Claude reports "Not logged in" inside the container. Provide credentials via a
+  repo-root `.env` (see `.env.example`): preferred is `CLAUDE_CODE_OAUTH_TOKEN` from
+  `claude setup-token` (subscription, long-lived); or `ANTHROPIC_API_KEY` for API billing.
 - The container runs as the non-root `node` user (UID 1000, `HOME=/home/node`); published
   ports bind to `127.0.0.1` only.
 - Files: `Dockerfile` (multi-stage dev image), `infra/docker/docker-compose.yml`,
@@ -65,6 +70,15 @@ there; never hardcode values a token already expresses.
 - `public/` — Agent avatar images (`<namespace>-agent.png`)
 - Theme/global styles: `app/globals.css`
 - Tests: none
+
+## Code graph (graphify)
+A queryable code knowledge graph lives at `graphify-out/graph.json`. To understand the
+component tree or relationships (imports, where a token/style is used, how pages compose),
+query it instead of brute-force reading/grepping (far fewer tokens):
+- `graphify query "<question>"` · `graphify explain "<node>"` · `graphify path "<A>" "<B>"` ·
+  `graphify affected "<component>"` (blast radius). Overview: `graphify-out/GRAPH_REPORT.md`.
+- Refresh after structural changes: `graphify update .` (no LLM). Rebuild if missing:
+  `graphify extract . --no-cluster`.
 
 ## Conventions
 - Component style: function components + hooks; `"use client"` only when needed; server components by default
@@ -90,6 +104,8 @@ genuinely blocked. 9. Be honest about scope/uncertainty. 10. Read/update `.fe/no
 11. Plan & decompose every request. 12. Verify — build, lint, and look. 13. Two review
 lenses (`design-reviewer` + `frontend-auditor`). 14. Nutshell + `.fe/test-scenarios/` doc.
 15. Project-wide consistency via `/fe:audit`. 16. Long-horizon work runs on a `.fe/epics/`
-plan.
+plan. 17. Use the `graphify` code graph (`graphify-out/`) to understand structure/
+relationships instead of brute-force search; refresh with `graphify update .` after structural
+changes.
 
 <!-- fe:end -->
