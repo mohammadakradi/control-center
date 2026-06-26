@@ -51,6 +51,13 @@ there; never hardcode values a token already expresses.
   spawned Claude reports "Not logged in" inside the container. Provide credentials via a
   repo-root `.env` (see `.env.example`): preferred is `CLAUDE_CODE_OAUTH_TOKEN` from
   `claude setup-token` (subscription, long-lived); or `ANTHROPIC_API_KEY` for API billing.
+- **Git/GitHub:** the image installs `gh` so agents can open PRs (`/swe:ship`, `/fe:ship`)
+  and the UI's push/pull work. macOS keychain/SSH creds don't cross into Linux, so set
+  `GH_TOKEN` in `.env` (see `.env.example`): `gh` uses it for PRs, and `git` push/pull over
+  HTTPS to github.com authenticate through gh's credential helper, wired via `GIT_CONFIG_*`
+  env in compose (so nothing writes to the read-only bind-mounted `~/.gitconfig`, and the
+  host's macOS `osxkeychain` helper is cleared). SSH remotes need the optional `~/.ssh` mount
+  (commented in compose) — or switch the remote to HTTPS and use `GH_TOKEN`.
 - The container runs as the non-root `node` user (UID 1000, `HOME=/home/node`); published
   ports bind to `127.0.0.1` only.
 - Files: `Dockerfile` (multi-stage dev image), `infra/docker/docker-compose.yml`,
