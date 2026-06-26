@@ -9,16 +9,36 @@ the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) in each projec
 
 ## Run it
 
+`pnpm dev` runs the whole app inside a Docker container (dashboard :3000 + runner
+daemon :4319):
+
 ```bash
-pnpm install
+pnpm install        # installs host tooling; the container builds its own deps
 pnpm db:push        # create the SQLite schema (first run only)
-pnpm dev            # starts the dashboard (:3000) + runner daemon (:4319)
+pnpm dev            # builds the image and starts the container
+pnpm stop           # stop the container
+pnpm dev:clean      # stop + drop the node_modules/.next volumes (run after changing deps)
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000. The container runs as a non-root user and the ports bind to
+`127.0.0.1` only. **After changing dependencies** (`pnpm add/remove`), run `pnpm dev:clean`
+once before `pnpm dev` so the container's `node_modules` volume is rebuilt — otherwise the
+container keeps the previous dependency set.
 
-Auth: the runner reuses your existing Claude Code login (`~/.claude`) — nothing to
-configure. (Set `ANTHROPIC_API_KEY` only if you'd rather bill an API key.)
+Because the agent operates on your real projects and login, the container bind-mounts
+your host:
+
+- `~/.claude` — the runner reuses your existing Claude Code login + plugins (nothing to
+  configure). Set `ANTHROPIC_API_KEY` in your shell to bill an API key instead.
+- `~/Dev` — mounted at the **same absolute path** so project paths stored in the DB
+  resolve inside the container. **Managed projects must live under `~/Dev`.**
+- `~/.gitconfig` — so commits the agent makes carry your identity.
+
+This gives a reproducible runtime, not isolation. To run natively (no Docker) instead:
+
+```bash
+pnpm dev:local      # next dev + runner daemon directly on the host
+```
 
 ## Use it
 

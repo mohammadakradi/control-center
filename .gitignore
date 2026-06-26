@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+/.pnpm-store
 /.pnp
 .pnp.*
 .yarn/*
@@ -32,6 +33,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -42,3 +44,6 @@ next-env.d.ts
 
 # platform data
 /data
+
+# user-specific Claude Code settings (project settings.json is committed; local overrides are not)
+.claude/settings.local.json

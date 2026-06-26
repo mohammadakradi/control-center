@@ -1,6 +1,6 @@
 # Design System — Agent Platform
 
-_Maintained by the fe-agent · source of truth for tokens & reusable components · updated 2026-06-25 (re-verified)_
+_Maintained by the fe-agent · source of truth for tokens & reusable components · updated 2026-06-26 (re-onboarded)_
 
 ## Styling system
 - Approach: **Tailwind CSS v4** — CSS-first config, no `tailwind.config.*` file
@@ -53,6 +53,14 @@ _Maintained by the fe-agent · source of truth for tokens & reusable components 
 |------|-------|
 | Added lines | `text-emerald-400` / `bg-emerald-500/10` |
 | Removed lines | `text-red-400` / `bg-red-500/10` |
+| Hunk header (`@@`) | `text-sky-400` |
+
+### Gate / approval card
+| Role | Class |
+|------|-------|
+| Border | `border-amber-500/40` |
+| Background | `bg-amber-500/10` |
+| Header text | `text-amber-200` |
 
 ## Typography
 - Font families: `--font-sans: var(--font-geist-sans)` · `--font-mono: var(--font-geist-mono)` (both loaded via `next/font/google` in `app/layout.tsx`)
@@ -62,7 +70,7 @@ _Maintained by the fe-agent · source of truth for tokens & reusable components 
 
 ## Spacing & layout
 - Spacing scale: Tailwind v4 defaults (0–96 + fractional)
-- Page container: `mx-auto max-w-6xl px-6 py-8` (in `app/layout.tsx`)
+- Page container: `mx-auto max-w-6xl px-4 pt-6 pb-24 sm:px-6 sm:py-8` (in `app/layout.tsx` — `pb-24` clears the mobile bottom tab bar)
 - Card padding: `p-6` (via `card` const)
 - Section gaps: `gap-4` to `gap-8`
 - Breakpoints: Tailwind v4 defaults (`sm: 640px`, `md: 768px`, `lg: 1024px`, `xl: 1280px`, `2xl: 1536px`)
@@ -72,7 +80,7 @@ _Maintained by the fe-agent · source of truth for tokens & reusable components 
 
 ## Radii, shadows, borders, motion
 - Radius: `rounded-2xl` (cards), `rounded-xl` (tiles), `rounded-full` (chips/badges/avatars), `rounded-md` (fact tags), `rounded-lg` (misc)
-- Shadows: `shadow-lg` on modal overlays; no custom shadow tokens
+- Shadows: `shadow-2xl` on full-screen modals (`DiffModal`, `FileModal`); `shadow-lg shadow-blue-600/25` on primary CTA ("Run task" button); no custom shadow tokens
 - Borders: `border border-neutral-800` (cards/tiles); `border border-neutral-700` (chips)
 - Card gradient: `bg-gradient-to-b from-white/[0.015] to-transparent` layered on top of card bg
 - Motion: `animate-spin` (Loader2 spinner for active states); no custom easing; no `prefers-reduced-motion` override currently applied
@@ -89,6 +97,7 @@ _Maintained by the fe-agent · source of truth for tokens & reusable components 
 | Component | Location | Variants / key props | Notes |
 |-----------|----------|----------------------|-------|
 | `card` (string const) | `components/ui-cards.tsx` | — | Apply with `className={card}` for standard card surface |
+| `Select` | `components/ui/select.tsx` | `value`, `onChange`, `options: {value,label,description?,icon?}[]`, `searchable?`, `mono?`, `placeholder?`, `disabled?`, `className?`, `ariaLabel?` | **Searchable** bespoke combobox (popover + filter + keyboard nav). Use instead of native `<select>` or per-file wrappers. Search auto-enables past 7 options (force with `searchable`). `className` is for width/layout (e.g. `w-full`, `min-w-48`). Full combobox/listbox ARIA + keyboard. |
 | `CardSection` | `components/ui-cards.tsx` | `title`, `right?`, `className?` | `card` + header row (title + optional right slot); has built-in `min-w-0` so it shrinks inside grid/flex parents. Use instead of hand-rolling `<section className={card}><h2>…</h2>` |
 | `AtAGlance` | `components/AtAGlance.tsx` | `total`, `successRate`, `inProgress`, `changedFiles`, `isWorkspace`, `memberCount`, `branchInfo`, `aheadBehind` | Project summary card (stats + git/workspace facts) |
 | `SourceControl` | `components/SourceControl.tsx` | `projectId`, `isWorkspace`, `members`, `branchInfo`, `changes` | Project source-control card; delegates to `WorkspaceSourceControl` or `GitControls`+`ChangesList` |
@@ -112,6 +121,8 @@ _Maintained by the fe-agent · source of truth for tokens & reusable components 
 | `ExpandableRequest` | `components/ExpandableRequest.tsx` | `text: string` | Collapsible markdown task request (160-char preview) |
 | `Markdown` | `components/Markdown.tsx` | `children: string`, `onFileClick?: (path: string) => void` | react-markdown with GFM + break normalization; clickable file paths |
 | `RunDuration` | `components/RunDuration.tsx` | `createdAt: number`, `endedAt: number \| null`, `active: boolean` | Live-ticking elapsed time chip; ticks every second while active |
+| `AttachmentPicker` | `components/AttachmentPicker.tsx` | `files: File[]`, `onAdd: (files: File[]) => void`, `onRemove: (idx: number) => void` | File attach bar (Paperclip + chips); shared by `NewTaskForm` and `TaskLiveView` change-request box |
+| `Markdown` | `components/Markdown.tsx` | `children: string`, `onFileClick?: (path: string) => void` | `react-markdown` with GFM + remark-breaks; normalizes agent bullet glyphs; clickable `.fe/.swe` test-scenario / `.pm/tasks` file paths |
 
 ## Accessibility baseline
 - Target: WCAG AA (aspiration; not enforced by linting currently)

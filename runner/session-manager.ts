@@ -111,6 +111,16 @@ function userMessage(text: string): SDKUserMessage {
 const DONE_AT_END = /\[\[DONE\]\]\s*$/;
 const GATE_AT_END = /\[\[GATE:(PROPOSAL|REPORT)\]\]\s*$/;
 
+/** The agent sometimes ends a turn *mid-workflow* — e.g. right after dispatching
+ *  its review/audit subagents — narrating that it will pick back up once they
+ *  report. That is NOT completion: finalizing there synthesizes a bogus "done"
+ *  and drops the real report/gate the agent produces next. This matches that
+ *  "I'm waiting" phrasing so we can nudge the agent to continue instead. */
+const WAITING_RE =
+  /\b(standing by|will resume|report(?:ing)? back|waiting (?:for|on)|i'?ll (?:resume|continue)|continue once|once (?:they|it|the)\b[^.]*\b(?:report|finish|complete|return|back)|dispatch(?:ed|ing)\b[^.]*\b(?:review|audit|sub-?agents?|sub-?tasks?))/i;
+/** Cap auto-continue nudges so a stuck agent can't loop forever. */
+const MAX_AUTO_CONTINUE = 3;
+
 /** True for messages from the main agent thread (subagent messages carry a
  *  parent_tool_use_id / subagent_type and must not drive task completion). */
 function isMainThread(m: SDKMessage): boolean {
@@ -258,6 +268,8 @@ function runTask(
   // Whether the run has surfaced a report the user can see (report gate or a
   // [[DONE]] summary). If not, we synthesize one from the final message at the end.
   let producedReport = false;
+  // How many times we've nudged the agent to continue after it paused mid-workflow.
+  let autoContinues = 0;
 
   const onGate = (gate: GateKind, summary: string): Promise<GateDecision> => {
     if (gate === "report") producedReport = true;
@@ -406,6 +418,29 @@ function runTask(
               setStatus(
                 handle,
                 kind === "proposal" ? "awaiting_proposal" : "awaiting_report",
+              );
+            } else if (
+              !producedReport &&
+              autoContinues < MAX_AUTO_CONTINUE &&
+              WAITING_RE.test(lastAssistantText)
+            ) {
+              // The agent ended the turn mid-workflow (e.g. it dispatched review
+              // subagents and said it would resume). It isn't done — nudge it to
+              // continue rather than finalizing and dropping the real report/gate
+              // it still owes us.
+              autoContinues += 1;
+              record(handle, "log", {
+                message:
+                  "Agent paused mid-workflow; nudging it to finish (continue → report gate).",
+              });
+              handle.pushInput(
+                userMessage(
+                  "Your dispatched sub-tasks/reviews have completed and their results are " +
+                    "above. Do NOT stop here — continue this SAME task: incorporate the " +
+                    "findings and carry the workflow through to its report gate by calling " +
+                    'the request_approval tool with { gate: "report", summary: <plain-language ' +
+                    "report> }. Only print [[DONE]] once the task is genuinely complete.",
+                ),
               );
             } else {
               // Turn ended with nothing pending → the task is complete. If the run

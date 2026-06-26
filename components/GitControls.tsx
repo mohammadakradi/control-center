@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import type { BranchInfo } from "@/lib/git";
+import { Select } from "@/components/ui/select";
 
 export function GitControls({
   projectId,
@@ -102,23 +103,21 @@ export function GitControls({
           </form>
         ) : (
           <>
-            <div className="relative min-w-0 flex-1">
-              <select
-                value={info.current ?? ""}
-                disabled={disabled}
-                onChange={(e) => call("checkout", e.target.value)}
-                className="w-full truncate rounded-lg border border-neutral-700 bg-neutral-900 py-2 pr-8 pl-3 text-sm text-neutral-200 outline-none focus:border-sky-500 disabled:opacity-50"
-              >
-                {info.current && !info.branches.includes(info.current) && (
-                  <option value={info.current}>{info.current}</option>
-                )}
-                {info.branches.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <Select
+              mono
+              searchable
+              ariaLabel="Switch branch"
+              className="min-w-0 flex-1"
+              value={info.current ?? ""}
+              disabled={disabled}
+              onChange={(branch) => call("checkout", branch)}
+              options={[
+                ...(info.current && !info.branches.includes(info.current)
+                  ? [{ value: info.current, label: info.current }]
+                  : []),
+                ...info.branches.map((b) => ({ value: b, label: b })),
+              ]}
+            />
             <button
               onClick={() => setCreating(true)}
               disabled={disabled}

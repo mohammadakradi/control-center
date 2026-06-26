@@ -3,7 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "concurrently -n web,runner -c cyan,magenta \"npm:dev:web\" \"npm:dev:runner\"",
+    "dev": "docker compose -f infra/docker/docker-compose.yml up --build",
+    "dev:clean": "docker compose -f infra/docker/docker-compose.yml down --volumes",
+    "stop": "docker compose -f infra/docker/docker-compose.yml down",
+    "dev:local": "concurrently -n web,runner -c cyan,magenta \"npm:dev:web\" \"npm:dev:runner\"",
+    "dev:container": "concurrently -n web,runner -c cyan,magenta \"next dev -H 0.0.0.0\" \"npm:dev:runner\"",
     "dev:web": "next dev",
     "dev:runner": "tsx watch runner/server.ts",
     "build": "next build",
