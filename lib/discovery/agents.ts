@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
-import { agents, type AgentCommand } from "../db/schema";
+import { agents, tasks, type AgentCommand } from "../db/schema";
 import { INSTALLED_PLUGINS_JSON, KNOWN_MARKETPLACES_JSON } from "../config";
 import { parseFrontmatter } from "../util";
 
@@ -117,11 +117,21 @@ export function syncAgents() {
       })
       .run();
   }
-  // Drop agents that are no longer installed.
+  // Drop agents that are no longer installed — but NEVER one that has task
+  // history. `tasks.agent_id` is ON DELETE CASCADE, so deleting an agent here
+  // would wipe its tasks + events. Discovery can miss an agent transiently
+  // (e.g. while its plugin is being updated), and pruning on that miss would
+  // permanently destroy a real agent's history. Agents with tasks are kept.
   const liveIds = new Set(discovered.map((a) => a.id));
   for (const row of db.select({ id: agents.id }).from(agents).all()) {
-    if (!liveIds.has(row.id))
-      db.delete(agents).where(eq(agents.id, row.id)).run();
+    if (liveIds.has(row.id)) continue;
+    const hasHistory = db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(eq(tasks.agentId, row.id))
+      .limit(1)
+      .get();
+    if (!hasHistory) db.delete(agents).where(eq(agents.id, row.id)).run();
   }
   return db.select().from(agents).all();
 }

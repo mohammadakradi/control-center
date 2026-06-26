@@ -68,7 +68,8 @@ export function FileModal({
   }, [onClose]);
 
   const isMarkdown = path.endsWith(".md") || path.endsWith(".markdown");
-  const isTask = isPmTaskPath(path);
+  // Only individual task files are hand-offable — not the request's index/summary.
+  const isTask = isPmTaskPath(path) && !/\/index\.md$/i.test(path);
 
   async function copy() {
     if (!content) return;

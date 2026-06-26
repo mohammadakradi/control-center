@@ -7,6 +7,7 @@ import {
   projects,
   taskEvents,
   tasks,
+  type Attachment,
   type TaskStatus,
 } from "../lib/db/schema";
 import { GATE_PROMPT } from "./gate-prompt";
@@ -181,17 +182,42 @@ function continuePrompt(namespace: string): string {
   );
 }
 
+/** Resume prompt when the user reviewed the result and is asking for changes/follow-up. */
+function changesPrompt(namespace: string, message: string): string {
+  return (
+    "The user reviewed your work on this task and is requesting changes / follow-up:\n\n" +
+    `${message}\n\n` +
+    "Continue the SAME task — do NOT start over. First re-orient: review your previous work, " +
+    `the current git diff / working tree, \`.${namespace}/notes.md\`, and anything you already ` +
+    "produced for this task. Then make the requested changes (updating, not duplicating, your " +
+    "earlier output) and carry the workflow through its gates to completion. If the change is " +
+    "out of scope for this task, say so plainly instead of guessing."
+  );
+}
+
 /** Start executing a task. Loads task/project/agent from the shared DB. */
 export function startTask(taskId: string): SessionHandle {
   return runTask(taskId, false);
 }
 
-/** Resume a failed/cancelled task from where it left off (SDK session resume + a continuation prompt). */
-export function continueTask(taskId: string): SessionHandle {
-  return runTask(taskId, true);
+/**
+ * Resume a task (failed/cancelled/done) in its existing SDK session. With no message it
+ * picks up where it left off; with a message it applies the user's requested changes.
+ */
+export function continueTask(
+  taskId: string,
+  message?: string,
+  attachments: Attachment[] = [],
+): SessionHandle {
+  return runTask(taskId, true, message, attachments);
 }
 
-function runTask(taskId: string, resume: boolean): SessionHandle {
+function runTask(
+  taskId: string,
+  resume: boolean,
+  changeMessage?: string,
+  extraAttachments: Attachment[] = [],
+): SessionHandle {
   const existing = sessions.get(taskId);
   if (existing && !existing.done) return existing; // already live (running or queued)
   if (existing) sessions.delete(taskId); // a finished handle still lingering — replace it
@@ -249,11 +275,29 @@ function runTask(taskId: string, resume: boolean): SessionHandle {
   };
 
   const canResume = resume && Boolean(task.sessionId);
-  const prompt = resume
-    ? continuePrompt(agent.namespace)
-    : task.requestText
-      ? `/${agent.namespace}:${task.command} ${task.requestText}`
-      : `/${agent.namespace}:${task.command}`;
+  // Files/photos to point the agent at so it Reads them (Read renders images visually and
+  // parses PDFs/docs). On the initial run that's the request's attachments; on a follow-up
+  // it's the files added with the change request.
+  const attachSet = resume
+    ? extraAttachments
+    : ((task.attachments ?? []) as Attachment[]);
+  const attachNote = attachSet.length
+    ? `\n\nThe user attached ${attachSet.length} file(s)${resume ? " with this follow-up" : " to this request"}. Read each with the Read tool before acting on it (images render visually; PDFs and docs are parsed):\n` +
+      attachSet
+        .map((a) => `- ${a.path}  (${a.type}, ${Math.round(a.size / 1024)} KB)`)
+        .join("\n")
+    : "";
+  const resumePrompt = changeMessage
+    ? changesPrompt(agent.namespace, changeMessage)
+    : extraAttachments.length
+      ? `The user added file(s) to this task and wants you to continue. Read the attached file(s) below, then continue the SAME task — update your earlier work as needed, don't restart.`
+      : continuePrompt(agent.namespace);
+  const prompt =
+    (resume
+      ? resumePrompt
+      : task.requestText
+        ? `/${agent.namespace}:${task.command} ${task.requestText}`
+        : `/${agent.namespace}:${task.command}`) + attachNote;
 
   if (resume) {
     db.update(tasks)
@@ -262,9 +306,24 @@ function runTask(taskId: string, resume: boolean): SessionHandle {
       .run();
   }
   setStatus(handle, "running");
+  // Show the user's change request as a chat bubble so the transcript reflects the ask.
+  if (resume && (changeMessage || extraAttachments.length)) {
+    const filesNote = extraAttachments.length
+      ? ` (+${extraAttachments.length} file${extraAttachments.length === 1 ? "" : "s"})`
+      : "";
+    record(handle, "message", {
+      type: "user",
+      message: {
+        role: "user",
+        content: `✏️ Requested changes: ${changeMessage ?? "(see attached files)"}${filesNote}`,
+      },
+    });
+  }
   record(handle, "log", {
     message: resume
-      ? `Continuing task${canResume ? ` (resuming session ${task.sessionId!.slice(0, 8)})` : " (fresh session — inspecting working tree)"}`
+      ? changeMessage
+        ? `Continuing with requested changes${canResume ? ` (resuming session ${task.sessionId!.slice(0, 8)})` : " (fresh session)"}`
+        : `Continuing task${canResume ? ` (resuming session ${task.sessionId!.slice(0, 8)})` : " (fresh session — inspecting working tree)"}`
       : `Dispatched: ${prompt}`,
   });
 

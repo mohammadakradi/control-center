@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { projectAgents, tasks } from "@/lib/db/schema";
+import { projectAgents, tasks, type Attachment } from "@/lib/db/schema";
 import { daemonStartTask } from "@/lib/daemon-client";
+import { saveAttachments } from "@/lib/uploads";
 import { newId } from "@/lib/util";
 
 export const dynamic = "force-dynamic";
@@ -21,42 +22,64 @@ export async function GET(request: Request) {
   return NextResponse.json(rows);
 }
 
-// POST /api/tasks { projectId, agentId, command, requestText } — create and dispatch a task.
+type TaskFields = {
+  projectId?: string;
+  agentId?: string;
+  command?: string;
+  requestText?: string;
+  model?: string;
+};
+
+// POST /api/tasks — create and dispatch a task.
+// Accepts JSON { projectId, agentId, command, requestText, model } OR multipart/form-data
+// with the same fields plus one or more `files` (documents/photos attached to the request).
 export async function POST(request: Request) {
-  const body = (await request.json()) as {
-    projectId?: string;
-    agentId?: string;
-    command?: string;
-    requestText?: string;
-    model?: string;
-  };
-  if (!body.projectId || !body.agentId || !body.command) {
+  const id = newId("task");
+  let fields: TaskFields;
+  let attachments: Attachment[] = [];
+
+  if (request.headers.get("content-type")?.includes("multipart/form-data")) {
+    const form = await request.formData();
+    fields = {
+      projectId: form.get("projectId")?.toString(),
+      agentId: form.get("agentId")?.toString(),
+      command: form.get("command")?.toString(),
+      requestText: form.get("requestText")?.toString(),
+      model: form.get("model")?.toString(),
+    };
+    const files = form.getAll("files").filter((f): f is File => f instanceof File);
+    attachments = await saveAttachments(id, files);
+  } else {
+    fields = (await request.json()) as TaskFields;
+  }
+
+  if (!fields.projectId || !fields.agentId || !fields.command) {
     return NextResponse.json(
       { error: "projectId, agentId and command are required" },
       { status: 400 },
     );
   }
 
-  const model = ["auto", "sonnet", "opus"].includes(body.model ?? "")
-    ? (body.model as string)
+  const model = ["auto", "sonnet", "opus"].includes(fields.model ?? "")
+    ? (fields.model as string)
     : "auto";
 
-  const id = newId("task");
   db.insert(tasks)
     .values({
       id,
-      projectId: body.projectId,
-      agentId: body.agentId,
-      command: body.command,
-      requestText: body.requestText ?? "",
+      projectId: fields.projectId,
+      agentId: fields.agentId,
+      command: fields.command,
+      requestText: fields.requestText ?? "",
       status: "queued",
       model,
+      attachments,
     })
     .run();
 
   // Ensure the agent is linked to the project.
   db.insert(projectAgents)
-    .values({ projectId: body.projectId, agentId: body.agentId })
+    .values({ projectId: fields.projectId, agentId: fields.agentId })
     .onConflictDoNothing()
     .run();
 

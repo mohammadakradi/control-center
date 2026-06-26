@@ -62,6 +62,14 @@ export const projectAgents = sqliteTable(
   (t) => [uniqueIndex("project_agent_unq").on(t.projectId, t.agentId)],
 );
 
+/** A file/photo the user attached to a task request. `path` is absolute (under data/uploads). */
+export type Attachment = {
+  name: string; // original filename
+  path: string; // absolute path on disk
+  type: string; // MIME type (best-effort)
+  size: number; // bytes
+};
+
 export type TaskStatus =
   | "queued"
   | "running"
@@ -89,6 +97,11 @@ export const tasks = sqliteTable("tasks", {
   // runner with the resolved label once selected.
   model: text("model").notNull().default("auto"),
   modelReason: text("model_reason"),
+  // Files/photos the user attached to the request (stored under data/uploads/<taskId>/).
+  attachments: text("attachments", { mode: "json" })
+    .notNull()
+    .$type<Attachment[]>()
+    .default(sql`'[]'`),
   sessionId: text("session_id"), // SDK session_id, for resume fallback
   branch: text("branch"),
   error: text("error"),
