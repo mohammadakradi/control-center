@@ -27,6 +27,16 @@ services:
     environment:
       NODE_ENV: development
       NEXT_TELEMETRY_DISABLED: "1"
+      # Make git push/pull and `gh pr create` over HTTPS to github.com authenticate
+      # with your GH_TOKEN (set in .env) via gh's credential helper — WITHOUT writing
+      # to the read-only, bind-mounted ~/.gitconfig. These GIT_CONFIG_* vars are read
+      # after the config files, so KEY_0 clears the host's macOS `osxkeychain` helper
+      # (which doesn't exist in Linux), and KEY_1 routes github.com creds through gh.
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: credential.helper
+      GIT_CONFIG_VALUE_0: ""
+      GIT_CONFIG_KEY_1: credential.https://github.com.helper
+      GIT_CONFIG_VALUE_1: "!gh auth git-credential"
     # Auth for the Claude the runner spawns. On macOS the host login lives in the
     # Keychain (not in ~/.claude/.credentials.json), so the bind-mounted ~/.claude
     # carries no usable credentials into Linux. Supply one via a repo-root .env (see
@@ -50,6 +60,11 @@ services:
       - ${HOME}/Dev:${HOME}/Dev
       # Git identity for commits the agent makes.
       - ${HOME}/.gitconfig:/home/node/.gitconfig:ro
+      # SSH keys — only needed if your project remotes use SSH (git@github.com:…).
+      # HTTPS remotes authenticate via GH_TOKEN (above) and don't need this. Uncomment
+      # if you push/pull over SSH (keys are read-only; passphrase-protected keys won't
+      # work without an agent — switch the remote to HTTPS, or use GH_TOKEN instead):
+      # - ${HOME}/.ssh:/home/node/.ssh:ro
     # tini (image ENTRYPOINT) reaps the concurrently-spawned web + runner processes.
 
 volumes:

@@ -25,8 +25,17 @@ RUN pnpm install --frozen-lockfile
 #    (e.g. after a dependency change) can recompile native modules. Source and the
 #    node_modules/.next volumes are mounted at run time by docker-compose. ──
 FROM base AS dev
+# git + tini for the runtime; gh (GitHub CLI) so agents can `gh pr create` and the
+# UI's push/pull can authenticate over HTTPS via gh's git credential helper.
+# python3/make/g++ stay so an in-container `pnpm install` can rebuild native modules.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 make g++ git tini \
+      python3 make g++ git tini curl ca-certificates \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+         -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+         > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=development
 ENV NEXT_TELEMETRY_DISABLED=1
