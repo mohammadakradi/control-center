@@ -1,0 +1,51 @@
+name: platform
+
+# `pnpm dev` runs this. One container runs both the Next.js dashboard (:3000) and
+# the runner daemon (:4319) via `pnpm dev:container`. The app is host-coupled by
+# design, so we bind-mount the pieces it needs to stay functional inside the container:
+#   - the repo source (hot reload), with node_modules/.next masked by named volumes
+#     so the Linux-built native modules from the image aren't shadowed by the host's
+#   - ~/.claude  → the runner reuses your Claude Code login + plugins
+#   - ~/Dev      → mounted at the SAME absolute path so project paths stored in the
+#                  DB (e.g. /Users/you/Dev/Matcher) resolve inside the container
+#   - ~/.gitconfig → so commits the agent makes carry your identity
+# This yields a reproducible runtime, not isolation. The container runs as the
+# unprivileged `node` user (HOME=/home/node) and ports bind to loopback only.
+
+services:
+  platform:
+    container_name: platform
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: dev
+    working_dir: /app
+    # Loopback-only: reachable from the browser on this host, not from the LAN.
+    ports:
+      - "127.0.0.1:3000:3000" # Next.js dashboard
+      - "127.0.0.1:4319:4319" # runner daemon
+    environment:
+      NODE_ENV: development
+      NEXT_TELEMETRY_DISABLED: "1"
+      # Reuse the host Claude Code login by default; set ANTHROPIC_API_KEY in your
+      # shell (or a repo-root .env — compose loads it from the dir `pnpm dev` runs in)
+      # to bill an API key instead.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      # Repo source for hot reload. node_modules + .next are masked so the image's
+      # Linux build wins over the host's (better-sqlite3 is a native module).
+      - ../..:/app
+      - platform_node_modules:/app/node_modules
+      - platform_next:/app/.next
+      # Claude Code login + installed plugins (read-write: the SDK writes sessions).
+      - ${HOME}/.claude:/home/node/.claude
+      # Local projects, mounted at the identical absolute path so DB-stored paths
+      # resolve. All managed projects must live under this directory.
+      - ${HOME}/Dev:${HOME}/Dev
+      # Git identity for commits the agent makes.
+      - ${HOME}/.gitconfig:/home/node/.gitconfig:ro
+    # tini (image ENTRYPOINT) reaps the concurrently-spawned web + runner processes.
+
+volumes:
+  platform_node_modules:
+  platform_next:

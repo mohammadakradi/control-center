@@ -27,13 +27,29 @@ there; never hardcode values a token already expresses.
 ## Build / run / test
 > Commands run during onboarding; baseline status noted.
 - Install: `pnpm install`
-- Dev server: `pnpm dev`  (Next.js + runner together; URL: http://localhost:3000)
-- Next.js only: `pnpm dev:web`
-- Runner only: `pnpm dev:runner`
+- Dev server: `pnpm dev`  (Docker: builds the image + runs web :3000 + runner :4319 in one
+  container via `infra/docker/docker-compose.yml`; URL: http://localhost:3000)
+- Stop the container: `pnpm stop`  ·  reset volumes after a dep change: `pnpm dev:clean`
+- Native dev (no Docker): `pnpm dev:local`  (Next.js + runner directly on the host)
+- Next.js only: `pnpm dev:web`  ·  Runner only: `pnpm dev:runner`
+- Container-only entrypoint: `pnpm dev:container`  (= `dev:local` but binds Next to `0.0.0.0`)
 - Build: `pnpm build`  (baseline: ✅)
 - Lint: `pnpm lint`  (baseline: ✅ — no warnings)
 - Test: n/a — no test suite exists
 - DB migration: `pnpm db:push`
+
+### Docker dev notes
+- The app is host-coupled (drives Claude against absolute host project paths, reuses
+  `~/.claude`), so the container bind-mounts `~/.claude` → `/home/node/.claude`, `~/Dev` (at
+  the same absolute path — managed projects must live under it), `~/.gitconfig`, and the repo
+  source. `node_modules` and `.next` are masked by named volumes so the Linux-built
+  `better-sqlite3` isn't shadowed by the host's macOS build — **never** bind-mount host
+  `node_modules` into the container. After a dependency change, `pnpm dev:clean` drops those
+  volumes so they re-seed from the rebuilt image.
+- The container runs as the non-root `node` user (UID 1000, `HOME=/home/node`); published
+  ports bind to `127.0.0.1` only.
+- Files: `Dockerfile` (multi-stage dev image), `infra/docker/docker-compose.yml`,
+  `.dockerignore`.
 
 ## UI architecture map
 - `app/` — Next.js App Router pages and API routes

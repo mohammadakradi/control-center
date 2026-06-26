@@ -1,0 +1,37 @@
+# Keep the build context small and never bake local state/secrets into the image.
+
+# Dependencies & build output (the image installs/builds its own)
+node_modules
+.pnpm-store
+.next
+out
+build
+.turbo
+coverage
+*.tsbuildinfo
+
+# Local runtime state — SQLite db + uploads live in a bind mount, not the image
+data
+
+# Local env — never bake secrets into images
+.env
+.env.*
+!.env.example
+
+# Git / editor
+.git
+.gitignore
+.github
+.vscode
+.idea
+*.swp
+
+# Logs & OS cruft
+*.log
+.DS_Store
+*.pem
+
+# Agent scratch / docs we don't need in the image
+.swe
+.fe
+drizzle
