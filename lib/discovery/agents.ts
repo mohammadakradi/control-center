@@ -93,8 +93,8 @@ export function discoverAgents(): DiscoveredAgent[] {
       scope: entry.scope ?? null,
     });
   }
-  // This platform surfaces the locally-built agents (swe, fe).
-  const SURFACED = new Set(["swe", "fe"]);
+  // This platform surfaces the locally-built agents (swe, fe, pm).
+  const SURFACED = new Set(["swe", "fe", "pm"]);
   return result.filter((a) => SURFACED.has(a.namespace));
 }
 
