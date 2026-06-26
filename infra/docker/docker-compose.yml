@@ -27,10 +27,16 @@ services:
     environment:
       NODE_ENV: development
       NEXT_TELEMETRY_DISABLED: "1"
-      # Reuse the host Claude Code login by default; set ANTHROPIC_API_KEY in your
-      # shell (or a repo-root .env — compose loads it from the dir `pnpm dev` runs in)
-      # to bill an API key instead.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    # Auth for the Claude the runner spawns. On macOS the host login lives in the
+    # Keychain (not in ~/.claude/.credentials.json), so the bind-mounted ~/.claude
+    # carries no usable credentials into Linux. Supply one via a repo-root .env (see
+    # .env.example) — env_file paths are relative to THIS compose file, hence ../../.
+    #   - CLAUDE_CODE_OAUTH_TOKEN: run `claude setup-token` once; uses your
+    #     subscription, long-lived, no plaintext creds on disk. Preferred.
+    #   - ANTHROPIC_API_KEY: bills an API key instead.
+    env_file:
+      - path: ../../.env
+        required: false
     volumes:
       # Repo source for hot reload. node_modules + .next are masked so the image's
       # Linux build wins over the host's (better-sqlite3 is a native module).
