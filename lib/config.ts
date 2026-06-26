@@ -12,6 +12,11 @@ export const RUNNER_URL =
 export const PUBLIC_RUNNER_URL =
   process.env.NEXT_PUBLIC_RUNNER_URL ?? RUNNER_URL;
 
+/** Local data dir (sqlite + uploads). Both the Next app and the runner run with cwd = repo root. */
+export const DATA_DIR = resolve(process.cwd(), "data");
+/** Where task attachments (docs/photos the user adds to a request) are stored, per task. */
+export const UPLOADS_DIR = resolve(DATA_DIR, "uploads");
+
 /** Claude Code plugin registry on this machine. */
 export const CLAUDE_DIR = resolve(homedir(), ".claude");
 export const INSTALLED_PLUGINS_JSON = resolve(

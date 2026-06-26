@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 const PHOTOS: Record<string, string> = {
   swe: "/swe-agent.png",
   fe: "/fe-agent.png",
+  pm: "/pm-agent.png",
 };
 
 export function Avatar({

@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronDown, Loader2, Play, Sparkles } from "lucide-react";
+import { AttachmentPicker, mergeFiles } from "@/components/AttachmentPicker";
 
 type Cmd = {
   name: string;
@@ -93,6 +94,8 @@ export function NewTaskForm({
   const [model, setModel] = useState("auto");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [dragging, setDragging] = useState(false);
 
   const cmd = commands.find((c) => c.name === command);
   const hasOnboard = (agent?.commands ?? []).some((c) => c.name === "onboard");
@@ -111,11 +114,15 @@ export function NewTaskForm({
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const res = await fetch("/api/tasks", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId, agentId, command, requestText, model }),
-    });
+    // FormData so we can attach files; the API accepts both multipart and JSON.
+    const fd = new FormData();
+    fd.set("projectId", projectId);
+    fd.set("agentId", agentId);
+    fd.set("command", command);
+    fd.set("requestText", requestText);
+    fd.set("model", model);
+    for (const f of files) fd.append("files", f);
+    const res = await fetch("/api/tasks", { method: "POST", body: fd });
     const body = await res.json().catch(() => ({}));
     setBusy(false);
     if (!res.ok) {
@@ -191,7 +198,23 @@ export function NewTaskForm({
         </p>
       )}
 
-      <div className="mt-4 overflow-hidden rounded-xl border border-neutral-700 bg-neutral-950 focus-within:border-sky-500 focus-within:ring-2 focus-within:ring-sky-500/20">
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+          const { files: merged, error: err } = mergeFiles(files, e.dataTransfer.files);
+          setFiles(merged);
+          if (err) setError(err);
+        }}
+        className={`mt-4 overflow-hidden rounded-xl border bg-neutral-950 focus-within:border-sky-500 focus-within:ring-2 focus-within:ring-sky-500/20 ${
+          dragging ? "border-sky-500 ring-2 ring-sky-500/20" : "border-neutral-700"
+        }`}
+      >
         <div className="relative">
           <span className="absolute top-3.5 left-4 font-mono text-sm text-sky-400/80">
             ❯
@@ -207,6 +230,11 @@ export function NewTaskForm({
             }}
             className="min-h-24 w-full resize-y bg-transparent py-3 pr-4 pl-9 text-sm leading-relaxed text-neutral-100 outline-none placeholder:text-neutral-600"
           />
+        </div>
+
+        {/* Attachments bar */}
+        <div className="border-t border-neutral-800 px-3 py-2">
+          <AttachmentPicker files={files} setFiles={setFiles} />
         </div>
       </div>
 

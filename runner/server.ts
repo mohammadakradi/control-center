@@ -4,7 +4,7 @@ import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import { db } from "../lib/db";
-import { taskEvents, tasks, type TaskStatus } from "../lib/db/schema";
+import { taskEvents, tasks, type Attachment, type TaskStatus } from "../lib/db/schema";
 import { RUNNER_PORT } from "../lib/config";
 import {
   continueTask,
@@ -147,10 +147,18 @@ app.post("/tasks/:id/stop", async (c) => {
   return c.json({ ok }, ok ? 200 : 404);
 });
 
-// Continue a failed/cancelled task from where it left off.
-app.post("/tasks/:id/continue", (c) => {
+// Continue a task (failed/cancelled/done) — optionally with a user change request + files.
+app.post("/tasks/:id/continue", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    message?: string;
+    attachments?: Attachment[];
+  };
   try {
-    continueTask(c.req.param("id"));
+    continueTask(
+      c.req.param("id"),
+      body.message?.trim() || undefined,
+      body.attachments ?? [],
+    );
     return c.json({ ok: true });
   } catch (err) {
     return c.json({ error: (err as Error).message }, 500);

@@ -2,8 +2,20 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, FileText, ListTree, Square, Wrench, X } from "lucide-react";
+import {
+  Check,
+  FileText,
+  ImageIcon,
+  ListTree,
+  MessageSquare,
+  RotateCcw,
+  Send,
+  Square,
+  Wrench,
+  X,
+} from "lucide-react";
 import { ACTIVE_STATUSES, STATUS_LABEL, reportHasFindings } from "@/lib/ui";
+import { AttachmentPicker } from "@/components/AttachmentPicker";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Markdown } from "@/components/Markdown";
 import { FileModal } from "@/components/FileModal";
@@ -32,7 +44,9 @@ type ToolCall = {
 };
 type ToolResult = { id: string; text: string; isError: boolean };
 
+type Attachment = { name: string; type: string };
 type Bubble =
+  | { kind: "request"; text: string; attachments: Attachment[] }
   | { kind: "assistant"; text: string; tools: ToolCall[] }
   | { kind: "report"; text: string }
   | { kind: "decision"; text: string; allow: boolean }
@@ -40,10 +54,10 @@ type Bubble =
   | { kind: "log"; text: string }
   | { kind: "gate"; gate: Gate };
 
-/** The agent's intermediate work (vs. milestones the user must act on:
- *  reports, gates/proposals, and the user's own decisions). */
+/** The agent's intermediate work (vs. milestones the user acts on: the request, proposals,
+ *  reports, approvals, and the user's own follow-up messages — all always shown). */
 const isActivity = (b: Bubble) =>
-  b.kind === "assistant" || b.kind === "log" || b.kind === "user";
+  b.kind === "assistant" || b.kind === "log";
 
 // Markers the agent prints (see GATE_PROMPT). `[[DONE]]` ends the final summary;
 // proposals/reports normally arrive as `gate` events via the approval tool.
@@ -187,29 +201,77 @@ function partialText(e: StreamEvent): string {
   return "";
 }
 
+/** Fold persisted events into initial transcript state (server-rendered, so a completed
+ *  task shows its proposal/report even if the live daemon is unreachable). Mirrors handle(). */
+function seedFromEvents(
+  events: StreamEvent[],
+  fallbackStatus: string,
+  request?: { text: string; attachments: Attachment[] },
+) {
+  // The original request always pins to the top of the transcript.
+  let bubbles: Bubble[] =
+    request && (request.text.trim() || request.attachments.length)
+      ? [{ kind: "request", text: request.text, attachments: request.attachments }]
+      : [];
+  let status = fallbackStatus;
+  let gate: Gate | null = null;
+  let lastId = 0;
+  for (const e of events) {
+    if (e.id !== undefined) lastId = e.id;
+    if (e.type === "status") {
+      const s = (e.payload as { status: string }).status;
+      status = s;
+      if (["building", "committing", "done", "failed", "cancelled"].includes(s)) gate = null;
+    } else if (e.type === "end") {
+      status = (e.payload as { status?: string })?.status ?? "done";
+      gate = null;
+    } else if (e.type === "gate") {
+      gate = e.payload as Gate;
+    }
+    if (e.type === "message") {
+      const m = e.payload as SdkMsg;
+      if (m?.type === "user") {
+        const results = toolResultsOf(m.message?.content);
+        if (results.length) bubbles = attachResults(bubbles, results);
+      }
+    }
+    const b = eventToBubble(e);
+    if (b) bubbles.push(b);
+  }
+  return { bubbles, status, gate, lastId };
+}
+
 export function TaskLiveView({
   taskId,
   runnerUrl,
   initialStatus,
+  initialEvents = [],
+  request,
   projectId,
   agentId,
 }: {
   taskId: string;
   runnerUrl: string;
   initialStatus: string;
+  /** Persisted events, server-rendered so the transcript shows without the live daemon. */
+  initialEvents?: StreamEvent[];
+  /** The original request (text + attachments), pinned to the top of the transcript. */
+  request?: { text: string; attachments: Attachment[] };
   projectId: string;
   agentId: string;
 }) {
   const router = useRouter();
-  const [bubbles, setBubbles] = useState<Bubble[]>([]);
-  const [status, setStatus] = useState(initialStatus);
-  const [gate, setGate] = useState<Gate | null>(null);
+  // Seed from server-rendered persisted events (computed once on mount).
+  const [seed] = useState(() => seedFromEvents(initialEvents, initialStatus, request));
+  const [bubbles, setBubbles] = useState<Bubble[]>(seed.bubbles);
+  const [status, setStatus] = useState(seed.status);
+  const [gate, setGate] = useState<Gate | null>(seed.gate);
   const [live, setLive] = useState("");
   const [feedback, setFeedback] = useState("");
   const [connected, setConnected] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
   const [reconnectKey, setReconnectKey] = useState(0);
-  const lastId = useRef(0);
+  const lastId = useRef(seed.lastId);
   const scroller = useRef<HTMLDivElement>(null);
 
   const active = ACTIVE_STATUSES.has(status);
@@ -328,12 +390,30 @@ export function TaskLiveView({
   const [scenarioPath, setScenarioPath] = useState<string | null>(null);
 
   const [continuing, setContinuing] = useState(false);
-  // Resume a failed/cancelled task from where it left off, then re-open the live stream.
-  async function continueRun() {
+  const [changeReq, setChangeReq] = useState("");
+  const [changeFiles, setChangeFiles] = useState<File[]>([]);
+  // Resume a terminal task in its existing session, then re-open the live stream.
+  // With a message and/or files the agent applies the requested changes; with neither
+  // (the quick "Continue" button) it picks up where it left off.
+  async function continueRun(withChanges: boolean) {
+    const message = withChanges ? changeReq.trim() : "";
+    const files = withChanges ? changeFiles : [];
+    if (withChanges && !message && files.length === 0) return;
     setContinuing(true);
-    const res = await fetch(`/api/tasks/${taskId}/continue`, { method: "POST" });
+    // FormData when there are files; the continue API accepts multipart and JSON.
+    const fd = new FormData();
+    if (message) fd.set("message", message);
+    for (const f of files) fd.append("files", f);
+    const res = await fetch(`/api/tasks/${taskId}/continue`, {
+      method: "POST",
+      body: fd,
+    });
     setContinuing(false);
     if (!res.ok) return;
+    if (withChanges) {
+      setChangeReq("");
+      setChangeFiles([]);
+    }
     setStatus("running");
     setReconnectKey((k) => k + 1); // reopen SSE from the last event id
   }
@@ -440,19 +520,58 @@ export function TaskLiveView({
       </div>
 
       {!active && (
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <p className="text-sm text-neutral-400">
-            Task {STATUS_LABEL[status as keyof typeof STATUS_LABEL] ?? status}.
-          </p>
-          {(status === "failed" || status === "cancelled") && (
-            <button
-              onClick={continueRun}
-              disabled={continuing}
-              className="inline-flex items-center gap-2 rounded-lg border border-sky-700 bg-sky-600/15 px-3.5 py-1.5 text-sm font-medium text-sky-200 hover:bg-sky-600/25 disabled:opacity-50"
-            >
-              {continuing ? "Resuming…" : "Continue from where it left off"}
-            </button>
-          )}
+        <div className="mt-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-sm text-neutral-400">
+              Task {STATUS_LABEL[status as keyof typeof STATUS_LABEL] ?? status}.
+            </p>
+            {(status === "failed" || status === "cancelled") && (
+              <button
+                onClick={() => continueRun(false)}
+                disabled={continuing}
+                className="inline-flex items-center gap-2 rounded-lg border border-sky-700 bg-sky-600/15 px-3.5 py-1.5 text-sm font-medium text-sky-200 hover:bg-sky-600/25 disabled:opacity-50"
+              >
+                <RotateCcw className="size-3.5" />
+                {continuing ? "Resuming…" : "Continue from where it left off"}
+              </button>
+            )}
+          </div>
+
+          {/* Ask the agent to keep going — request changes (with optional files) on the
+              result; it resumes the same session and updates its earlier work. */}
+          <div className="mt-3 overflow-hidden rounded-xl border border-neutral-700 bg-neutral-950 focus-within:border-sky-500 focus-within:ring-2 focus-within:ring-sky-500/20">
+            <textarea
+              value={changeReq}
+              onChange={(e) => setChangeReq(e.target.value)}
+              placeholder="Request changes or a follow-up — the agent continues this same job and updates its work…"
+              rows={2}
+              onKeyDown={(e) => {
+                if (
+                  (e.metaKey || e.ctrlKey) &&
+                  e.key === "Enter" &&
+                  (changeReq.trim() || changeFiles.length)
+                )
+                  continueRun(true);
+              }}
+              className="w-full resize-y bg-transparent px-3 py-2.5 text-sm leading-relaxed text-neutral-100 outline-none placeholder:text-neutral-600"
+            />
+            <div className="border-t border-neutral-800 px-3 py-2">
+              <AttachmentPicker files={changeFiles} setFiles={setChangeFiles} />
+            </div>
+            <div className="flex items-center justify-between gap-3 border-t border-neutral-800 px-3 py-2">
+              <span className="text-xs text-neutral-600">
+                Continues the same session — edits its prior work, doesn&apos;t restart.
+              </span>
+              <button
+                onClick={() => continueRun(true)}
+                disabled={continuing || (!changeReq.trim() && changeFiles.length === 0)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-blue-700 bg-gradient-to-b from-sky-500 to-blue-600 px-3.5 py-1.5 text-sm font-semibold text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Send className="size-3.5" />
+                {continuing ? "Sending…" : "Send to agent"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -526,6 +645,38 @@ function BubbleView({
   converting?: boolean;
   onFileClick?: (path: string) => void;
 }) {
+  if (bubble.kind === "request")
+    return (
+      <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 p-4">
+        <div className="mb-2 inline-flex items-center gap-1.5 text-xs font-medium text-sky-300">
+          <MessageSquare className="size-3.5" /> Request
+        </div>
+        {bubble.text.trim() ? (
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-200">
+            {bubble.text}
+          </p>
+        ) : (
+          <p className="text-sm text-neutral-500">(no description)</p>
+        )}
+        {bubble.attachments.length > 0 && (
+          <div className="mt-2.5 flex flex-wrap gap-2">
+            {bubble.attachments.map((a, i) => (
+              <span
+                key={`${a.name}-${i}`}
+                className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-300"
+              >
+                {a.type.startsWith("image/") ? (
+                  <ImageIcon className="size-3.5 shrink-0 text-sky-400" />
+                ) : (
+                  <FileText className="size-3.5 shrink-0 text-violet-400" />
+                )}
+                <span className="truncate">{a.name}</span>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    );
   if (bubble.kind === "log")
     return (
       <p className="font-mono text-xs text-neutral-500">— {bubble.text}</p>

@@ -1,19 +1,19 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import {
   ArrowLeft,
   Clock,
   Cpu,
   FolderGit2,
   GitBranch,
+  Paperclip,
   TriangleAlert,
 } from "lucide-react";
 import { db } from "@/lib/db";
-import { agents, projects, tasks } from "@/lib/db/schema";
+import { agents, projects, taskEvents, tasks } from "@/lib/db/schema";
 import { PUBLIC_RUNNER_URL } from "@/lib/config";
 import { Avatar } from "@/components/AgentAvatar";
-import { ExpandableRequest } from "@/components/ExpandableRequest";
 import { TaskLiveView } from "@/components/TaskLiveView";
 import { RunDuration } from "@/components/RunDuration";
 import { Chip } from "@/components/ui-cards";
@@ -36,6 +36,21 @@ export default async function TaskPage({
     .get();
   const agent = db.select().from(agents).where(eq(agents.id, task.agentId)).get();
 
+  // Server-render the persisted transcript so a completed task always shows its
+  // proposal/report, even if the live runner daemon is unreachable.
+  const events = db
+    .select()
+    .from(taskEvents)
+    .where(eq(taskEvents.taskId, id))
+    .orderBy(asc(taskEvents.id))
+    .all()
+    .map((e) => ({
+      id: e.id,
+      type: e.type,
+      payload: e.payload,
+      ts: e.ts instanceof Date ? e.ts.getTime() : Number(e.ts),
+    }));
+
   return (
     <div>
       <Link
@@ -52,7 +67,6 @@ export default async function TaskPage({
           <h1 className="font-mono text-xl font-semibold tracking-tight break-words text-sky-300 sm:text-2xl">
             /{agent?.namespace ?? "?"}:{task.command}
           </h1>
-          {task.requestText && <ExpandableRequest text={task.requestText} />}
           <div className="mt-2.5 flex flex-wrap items-center gap-2.5 text-xs">
             {project && (
               <Chip icon={<FolderGit2 className="size-3" />}>{project.name}</Chip>
@@ -68,6 +82,12 @@ export default async function TaskPage({
             <Chip icon={<Clock className="size-3" />}>
               {timeAgo(task.createdAt)}
             </Chip>
+            {task.attachments?.length > 0 && (
+              <Chip icon={<Paperclip className="size-3" />} tone="violet">
+                {task.attachments.length} file
+                {task.attachments.length === 1 ? "" : "s"}
+              </Chip>
+            )}
             <RunDuration
               createdAt={task.createdAt.getTime()}
               endedAt={task.endedAt ? task.endedAt.getTime() : null}
@@ -86,6 +106,14 @@ export default async function TaskPage({
         taskId={task.id}
         runnerUrl={PUBLIC_RUNNER_URL}
         initialStatus={task.status}
+        initialEvents={events}
+        request={{
+          text: task.requestText,
+          attachments: (task.attachments ?? []).map((a) => ({
+            name: a.name,
+            type: a.type,
+          })),
+        }}
         projectId={task.projectId}
         agentId={task.agentId}
       />
