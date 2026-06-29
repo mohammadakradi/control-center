@@ -37,8 +37,6 @@
     </filter>
   </defs>
 
-  <rect width="600" height="600" fill="url(#bg)"/>
-
   <g filter="url(#lift)">
     <!-- Outer ring: silver left -->
     <path d="M 48.61 282.42 A 252.00 252.00 0 0 1 282.42 48.61 L 285.56 93.50 A 207.00 207.00 0 0 0 93.50 285.56 Z" fill="url(#silver)"/>

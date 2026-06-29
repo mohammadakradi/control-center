@@ -92,6 +92,10 @@ export const tasks = sqliteTable("tasks", {
     .references(() => agents.id, { onDelete: "cascade" }),
   command: text("command").notNull(), // onboard | task | fix | review | ship | workspace
   requestText: text("request_text").notNull().default(""),
+  // Smart, human-readable name (e.g. "Add invoice approval flow"), generated from
+  // the request at dispatch so history is scannable by intent, not by command.
+  // Null until generated; the UI falls back to the request text, then the command.
+  title: text("title"),
   status: text("status").notNull().$type<TaskStatus>().default("queued"),
   // Model routing: the user's choice ("auto" | "sonnet" | "opus"), overwritten by the
   // runner with the resolved label once selected.

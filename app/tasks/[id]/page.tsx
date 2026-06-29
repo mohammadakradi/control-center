@@ -64,9 +64,12 @@ export default async function TaskPage({
       <div className="mt-3 mb-6 flex items-start gap-4">
         {agent && <Avatar namespace={agent.namespace} size={56} />}
         <div className="min-w-0">
-          <h1 className="font-mono text-xl font-semibold tracking-tight break-words text-sky-300 sm:text-2xl">
-            /{agent?.namespace ?? "?"}:{task.command}
+          <h1 className="text-xl font-semibold tracking-tight wrap-break-word text-neutral-100 sm:text-2xl">
+            {task.title || task.requestText || `/${agent?.namespace ?? "?"}:${task.command}`}
           </h1>
+          <p className="mt-1 font-mono text-sm text-sky-300/90">
+            /{agent?.namespace ?? "?"}:{task.command}
+          </p>
           <div className="mt-2.5 flex flex-wrap items-center gap-2.5 text-xs">
             {project && (
               <Chip icon={<FolderGit2 className="size-3" />}>{project.name}</Chip>

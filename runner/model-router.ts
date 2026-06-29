@@ -5,6 +5,10 @@ export const MODELS = {
   opus: "claude-opus-4-8",
 } as const;
 
+// Cheapest/fastest model — used for tiny side calls (naming a task) where quality
+// of prose doesn't matter and latency/cost do.
+const HAIKU = "claude-haiku-4-5-20251001";
+
 export type ModelChoice = "auto" | "sonnet" | "opus";
 export type ResolvedModel = {
   id: string; // SDK model id
@@ -66,6 +70,55 @@ Request: ${requestText || "(none given)"}`;
   const complex = /\bcomplex\b/.test(firstLine) && !/\bsimple\b/.test(firstLine);
   const reason = out.trim().split(/\r?\n/).slice(1).join(" ").trim().slice(0, 180);
   return { complex, reason: reason || firstLine };
+}
+
+/**
+ * Generate a short, human-readable task title from the request, so task history reads
+ * by intent ("Add invoice approval flow") instead of by command ("/swe:task"). Returns
+ * null if there's no request to summarize or the model call fails — the caller then
+ * falls back to a command-based default.
+ */
+export async function generateTitle(
+  command: string,
+  requestText: string,
+): Promise<string | null> {
+  const base = requestText.trim();
+  if (!base) return null;
+
+  const prompt = `Summarize this software task as a short title: 3–8 words, Title Case, no quotes, no trailing period. Name WHAT changes and WHERE (the feature/area/page), not the command or the agent. Reply with ONLY the title.
+
+Command: ${command}
+Request: ${base.slice(0, 1500)}`;
+
+  let out = "";
+  try {
+    for await (const m of query({
+      prompt,
+      options: {
+        model: HAIKU,
+        allowedTools: [],
+        systemPrompt: "You write terse, specific task titles.",
+      },
+    }) as AsyncIterable<SDKMessage>) {
+      if (m.type === "assistant") out += textOf(m);
+      if (m.type === "result") break;
+    }
+  } catch {
+    return null;
+  }
+
+  // Take the first non-empty line, strip stray quotes/markdown/leading bullets, cap length.
+  const line = out
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find(Boolean);
+  if (!line) return null;
+  const title = line
+    .replace(/^[#*\-\s"'`]+/, "")
+    .replace(/["'`.\s]+$/, "")
+    .slice(0, 80)
+    .trim();
+  return title || null;
 }
 
 /**

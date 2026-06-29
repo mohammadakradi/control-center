@@ -43,11 +43,11 @@ export function TaskHistory({
                 href={`/tasks/${t.id}`}
                 className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg px-2 py-3 hover:bg-white/2.5"
               >
-                <span className="min-w-28 shrink-0 font-mono text-sm text-sky-300">
+                <span className="min-w-28 shrink-0 font-mono text-xs text-sky-300/90">
                   /{namespaceById[t.agentId] ?? "?"}:{t.command}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-sm text-neutral-200">
-                  {t.requestText || (
+                  {t.title || t.requestText || (
                     <span className="text-neutral-600">no description</span>
                   )}
                 </span>

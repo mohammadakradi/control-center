@@ -14,6 +14,7 @@
     "start": "next start",
     "runner": "tsx runner/server.ts",
     "db:push": "drizzle-kit push",
+    "db:backfill-titles": "tsx runner/backfill-titles.ts",
     "lint": "eslint"
   },
   "dependencies": {

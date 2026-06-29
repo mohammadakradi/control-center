@@ -16,7 +16,7 @@ import {
   type GateDecision,
   type GateKind,
 } from "./approval-tool";
-import { resolveModel, type ModelChoice } from "./model-router";
+import { generateTitle, resolveModel, type ModelChoice } from "./model-router";
 
 export type StreamEvent = {
   id?: number;
@@ -205,6 +205,46 @@ function changesPrompt(namespace: string, message: string): string {
   );
 }
 
+/** Fallback title when there's no request text to summarize (e.g. onboard). */
+export function defaultTitle(command: string, projectName: string): string {
+  switch (command) {
+    case "onboard":
+      return `Onboard ${projectName}`;
+    case "workspace":
+      return `Set up the ${projectName} workspace`;
+    case "review":
+      return "Review the working changes";
+    case "security":
+      return "Security audit";
+    case "audit":
+      return "Frontend consistency audit";
+    case "ship":
+      return "Open a pull request";
+    default:
+      return `${command.charAt(0).toUpperCase()}${command.slice(1)} task`;
+  }
+}
+
+/** Give the task a smart, human-readable name so history reads by intent, not by
+ *  command. Fire-and-forget: best-effort, never blocks or fails the run. */
+function nameTask(
+  taskId: string,
+  command: string,
+  requestText: string,
+  projectName: string,
+): void {
+  void (async () => {
+    try {
+      const title =
+        (await generateTitle(command, requestText)) ??
+        defaultTitle(command, projectName);
+      db.update(tasks).set({ title }).where(eq(tasks.id, taskId)).run();
+    } catch {
+      /* naming is best-effort */
+    }
+  })();
+}
+
 /** Start executing a task. Loads task/project/agent from the shared DB. */
 export function startTask(taskId: string): SessionHandle {
   return runTask(taskId, false);
@@ -264,6 +304,11 @@ function runTask(
     if (handle.started || handle.done) return;
     handle.started = true;
     handle.start = undefined;
+
+    // Name the task for readable history (fire-and-forget; never blocks the run).
+    if (!resume && !task.title) {
+      nameTask(taskId, task.command, task.requestText, project.name);
+    }
 
   // Whether the run has surfaced a report the user can see (report gate or a
   // [[DONE]] summary). If not, we synthesize one from the final message at the end.
