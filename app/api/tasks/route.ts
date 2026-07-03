@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { projectAgents, tasks, type Attachment } from "@/lib/db/schema";
+import { agents, projectAgents, tasks, type Attachment } from "@/lib/db/schema";
 import { daemonStartTask } from "@/lib/daemon-client";
 import { saveAttachments } from "@/lib/uploads";
 import { newId } from "@/lib/util";
@@ -64,12 +64,20 @@ export async function POST(request: Request) {
     ? (fields.model as string)
     : "auto";
 
+  // Snapshot the agent's current version so history records which version ran this task.
+  const agent = db
+    .select({ version: agents.version })
+    .from(agents)
+    .where(eq(agents.id, fields.agentId))
+    .get();
+
   db.insert(tasks)
     .values({
       id,
       projectId: fields.projectId,
       agentId: fields.agentId,
       command: fields.command,
+      agentVersion: agent?.version ?? null,
       requestText: fields.requestText ?? "",
       status: "queued",
       model,

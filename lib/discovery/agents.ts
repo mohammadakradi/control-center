@@ -77,7 +77,7 @@ export function discoverAgents(): DiscoveredAgent[] {
     if (!pluginDir) continue;
 
     const manifest =
-      readJson<{ name?: string; description?: string }>(
+      readJson<{ name?: string; description?: string; version?: string }>(
         resolve(pluginDir, ".claude-plugin/plugin.json"),
       ) ?? {};
     const namespace = manifest.name ?? pluginKey.split("@")[0];
@@ -86,6 +86,7 @@ export function discoverAgents(): DiscoveredAgent[] {
       id: pluginKey,
       name: namespace,
       namespace,
+      version: manifest.version ?? null,
       sourcePath: pluginDir,
       pluginId: pluginKey,
       description: manifest.description ?? null,
@@ -109,6 +110,7 @@ export function syncAgents() {
         set: {
           name: a.name,
           namespace: a.namespace,
+          version: a.version,
           sourcePath: a.sourcePath,
           description: a.description,
           commands: a.commands,

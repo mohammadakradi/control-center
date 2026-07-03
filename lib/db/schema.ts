@@ -6,6 +6,7 @@ export const agents = sqliteTable("agents", {
   id: text("id").primaryKey(), // plugin id, e.g. "swe@swe-agent-local"
   name: text("name").notNull(),
   namespace: text("namespace").notNull(), // slash-command namespace, e.g. "swe"
+  version: text("version"), // plugin.json version, e.g. "0.4.0" (null if unset)
   sourcePath: text("source_path").notNull(), // local plugin dir
   pluginId: text("plugin_id").notNull(),
   description: text("description"),
@@ -91,6 +92,10 @@ export const tasks = sqliteTable("tasks", {
     .notNull()
     .references(() => agents.id, { onDelete: "cascade" }),
   command: text("command").notNull(), // onboard | task | fix | review | ship | workspace
+  // The agent's plugin version at the time this task ran (snapshot — the agent may be
+  // upgraded later, so history records which version actually did the work). Null for
+  // tasks created before versions were tracked.
+  agentVersion: text("agent_version"),
   requestText: text("request_text").notNull().default(""),
   // Smart, human-readable name (e.g. "Add invoice approval flow"), generated from
   // the request at dispatch so history is scannable by intent, not by command.

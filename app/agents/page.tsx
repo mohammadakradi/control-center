@@ -53,7 +53,14 @@ export default function AgentsPage() {
               </div>
               <div className="mt-2 flex items-center gap-3">
                 <Avatar namespace={a.namespace} size={48} />
-                <h2 className="text-lg font-medium">{a.name}</h2>
+                <h2 className="flex items-center gap-2 text-lg font-medium">
+                  {a.name}
+                  {a.version && (
+                    <span className="rounded-md border border-neutral-700 bg-neutral-800/60 px-1.5 py-0.5 font-mono text-xs font-normal text-neutral-400">
+                      v{a.version}
+                    </span>
+                  )}
+                </h2>
               </div>
               {a.description && (
                 <p className="mt-2 line-clamp-2 text-sm text-neutral-400">

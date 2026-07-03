@@ -29,6 +29,7 @@ type AgentLite = {
   id: string;
   namespace: string;
   name?: string | null;
+  version?: string | null;
   description?: string | null;
   commands: Cmd[];
 };
@@ -196,8 +197,11 @@ export function NewTaskForm({
                 </span>
                 {selected && <Check className="size-4 text-sky-400" />}
               </div>
-              <div className="font-mono text-xs text-neutral-500">
+              <div className="flex items-center gap-1.5 font-mono text-xs text-neutral-500">
                 /{a.namespace}
+                {a.version && (
+                  <span className="text-neutral-600">v{a.version}</span>
+                )}
               </div>
               <div className="flex items-center gap-1.5 text-sm font-medium text-neutral-100">
                 {meta?.icon && (
