@@ -69,6 +69,9 @@ export default async function TaskPage({
           </h1>
           <p className="mt-1 font-mono text-sm text-sky-300/90">
             /{agent?.namespace ?? "?"}:{task.command}
+            {task.agentVersion && (
+              <span className="ml-2 text-neutral-500">v{task.agentVersion}</span>
+            )}
           </p>
           <div className="mt-2.5 flex flex-wrap items-center gap-2.5 text-xs">
             {project && (

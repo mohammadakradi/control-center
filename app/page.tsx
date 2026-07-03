@@ -103,8 +103,13 @@ export default function Dashboard() {
                   >
                     <Avatar namespace={a.namespace} size={40} />
                     <div className="min-w-0 flex-1">
-                      <div className="font-mono text-sm text-sky-300">
+                      <div className="flex items-center gap-2 font-mono text-sm text-sky-300">
                         /{a.namespace}
+                        {a.version && (
+                          <span className="text-xs font-normal text-neutral-500">
+                            v{a.version}
+                          </span>
+                        )}
                       </div>
                       <div className="truncate text-xs text-neutral-500">
                         {a.commands.length} command

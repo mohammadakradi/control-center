@@ -35,6 +35,7 @@ export default async function ProjectDetail({
     id: a.id,
     namespace: a.namespace,
     name: a.name,
+    version: a.version,
     description: a.description,
     commands: a.commands,
   }));

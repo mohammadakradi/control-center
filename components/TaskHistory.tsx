@@ -45,6 +45,11 @@ export function TaskHistory({
               >
                 <span className="min-w-28 shrink-0 font-mono text-xs text-sky-300/90">
                   /{namespaceById[t.agentId] ?? "?"}:{t.command}
+                  {t.agentVersion && (
+                    <span className="ml-1.5 text-neutral-600">
+                      v{t.agentVersion}
+                    </span>
+                  )}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-sm text-neutral-200">
                   {t.title || t.requestText || (
