@@ -117,7 +117,7 @@ const GATE_AT_END = /\[\[GATE:(PROPOSAL|REPORT)\]\]\s*$/;
  *  and drops the real report/gate the agent produces next. This matches that
  *  "I'm waiting" phrasing so we can nudge the agent to continue instead. */
 const WAITING_RE =
-  /\b(standing by|will resume|report(?:ing)? back|waiting (?:for|on)|i'?ll (?:resume|continue)|continue once|once (?:they|it|the)\b[^.]*\b(?:report|finish|complete|return|back)|dispatch(?:ed|ing)\b[^.]*\b(?:review|audit|sub-?agents?|sub-?tasks?))/i;
+  /\b(standing by|will resume|report(?:ing)? back|wait(?:ing|s)? (?:for|on)|i'?ll (?:resume|continue|wait)|continue once|once (?:they|it|the)\b[^.]*\b(?:report|finish|complete|return|back)|running in the background|in the background\b[^.]*\b(?:wait|report|verdict|result|finish)|before the (?:report|proposal) gate|dispatch(?:ed|ing)\b[^.]*\b(?:review|audit|sub-?agents?|sub-?tasks?))/i;
 /** Cap auto-continue nudges so a stuck agent can't loop forever. */
 const MAX_AUTO_CONTINUE = 3;
 
@@ -389,7 +389,12 @@ function runTask(
     try {
       // On resume, task.model is already a concrete label → resolveModel returns it as-is.
       const choice = (task.model as ModelChoice) || "auto";
-      const chosen = await resolveModel(task.command, task.requestText, choice);
+      const chosen = await resolveModel(
+        agent.namespace,
+        task.command,
+        task.requestText,
+        choice,
+      );
       db.update(tasks)
         .set({ model: chosen.label, modelReason: chosen.reason })
         .where(eq(tasks.id, taskId))

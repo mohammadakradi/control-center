@@ -60,7 +60,17 @@ export async function POST(request: Request) {
     );
   }
 
-  const model = ["auto", "sonnet", "opus"].includes(fields.model ?? "")
+  // "sonnet"/"opus" are legacy aliases (mapped to Sonnet 4.6 / Opus 4.8 by the router).
+  const ALLOWED_MODELS = new Set([
+    "auto",
+    "sonnet-4.6",
+    "opus-4.8",
+    "sonnet-5",
+    "fable-5",
+    "sonnet",
+    "opus",
+  ]);
+  const model = ALLOWED_MODELS.has(fields.model ?? "")
     ? (fields.model as string)
     : "auto";
 

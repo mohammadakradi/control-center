@@ -39,9 +39,18 @@ const SWE_ORDER = ["task", "fix", "review", "ship", "onboard", "workspace"];
 
 const MODELS = [
   { value: "auto", label: "Auto (smart)" },
-  { value: "sonnet", label: "Sonnet 4.6" },
-  { value: "opus", label: "Opus 4.8" },
+  { value: "fable-5", label: "Fable 5" },
+  { value: "sonnet-5", label: "Sonnet 5" },
+  { value: "opus-4.8", label: "Opus 4.8" },
+  { value: "sonnet-4.6", label: "Sonnet 4.6" },
 ];
+
+/** What "Auto" routes to, per agent (mirrors runner/model-router.ts). */
+function autoHint(namespace?: string): string {
+  if (namespace === "pm")
+    return "Auto picks Sonnet 5 for complex planning and Sonnet 4.6 for simple requests.";
+  return "Auto picks Fable 5 for complex tasks, Opus 4.8 for routine work, and Sonnet 4.6 for trivial changes.";
+}
 
 // Per-namespace presentation for the agent cards. Falls back gracefully for
 // agents we don't recognize (the agent's own name/description).
@@ -326,9 +335,7 @@ export function NewTaskForm({
         </div>
       </div>
       {model === "auto" && (
-        <p className="mt-2 text-xs text-neutral-500">
-          Auto picks Sonnet 4.6 for simple work and Opus 4.8 for complex tasks.
-        </p>
+        <p className="mt-2 text-xs text-neutral-500">{autoHint(agent?.namespace)}</p>
       )}
 
       {/* Run row */}

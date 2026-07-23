@@ -31,6 +31,17 @@ export function statusColor(status: string): string {
   }
 }
 
+/** Stored model label → display name. "sonnet"/"opus" are legacy labels from
+ *  before the per-agent tiering (kept so old tasks render correctly). */
+export const MODEL_DISPLAY: Record<string, string> = {
+  "sonnet-4.6": "Sonnet 4.6",
+  "opus-4.8": "Opus 4.8",
+  "sonnet-5": "Sonnet 5",
+  "fable-5": "Fable 5",
+  sonnet: "Sonnet 4.6",
+  opus: "Opus 4.8",
+};
+
 export const ACTIVE_STATUSES = new Set([
   "queued",
   "running",

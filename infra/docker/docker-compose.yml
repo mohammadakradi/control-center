@@ -1,6 +1,6 @@
 name: platform
 
-# `pnpm dev` runs this. One container runs both the Next.js dashboard (:3000) and
+# `pnpm dev` runs this. One container runs both the Next.js dashboard (:3001) and
 # the runner daemon (:4319) via `pnpm dev:container`. The app is host-coupled by
 # design, so we bind-mount the pieces it needs to stay functional inside the container:
 #   - the repo source (hot reload), with node_modules/.next masked by named volumes
@@ -22,7 +22,7 @@ services:
     working_dir: /app
     # Loopback-only: reachable from the browser on this host, not from the LAN.
     ports:
-      - "127.0.0.1:3000:3000" # Next.js dashboard
+      - "127.0.0.1:3001:3001" # Next.js dashboard
       - "127.0.0.1:4319:4319" # runner daemon
     environment:
       NODE_ENV: development

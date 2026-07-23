@@ -27,8 +27,8 @@ there; never hardcode values a token already expresses.
 ## Build / run / test
 > Commands run during onboarding; baseline status noted.
 - Install: `pnpm install`
-- Dev server: `pnpm dev`  (Docker: builds the image + runs web :3000 + runner :4319 in one
-  container via `infra/docker/docker-compose.yml`; URL: http://localhost:3000)
+- Dev server: `pnpm dev`  (Docker: builds the image + runs web :3001 + runner :4319 in one
+  container via `infra/docker/docker-compose.yml`; URL: http://localhost:3001)
 - Stop the container: `pnpm stop`  ·  reset volumes after a dep change: `pnpm dev:clean`
 - Native dev (no Docker): `pnpm dev:local`  (Next.js + runner directly on the host)
 - Next.js only: `pnpm dev:web`  ·  Runner only: `pnpm dev:runner`

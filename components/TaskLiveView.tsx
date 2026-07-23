@@ -48,7 +48,7 @@ type Attachment = { name: string; type: string };
 type Bubble =
   | { kind: "request"; text: string; attachments: Attachment[] }
   | { kind: "assistant"; text: string; tools: ToolCall[] }
-  | { kind: "report"; text: string }
+  | { kind: "report"; text: string; fromMarker?: boolean }
   | { kind: "decision"; text: string; allow: boolean }
   | { kind: "user"; text: string }
   | { kind: "log"; text: string }
@@ -64,6 +64,7 @@ const isActivity = (b: Bubble) =>
 // Only a TRAILING marker is a real signal — matching it anywhere misfires when
 // the agent quotes the marker in prose (e.g. "tasks without `[[DONE]]`…").
 const DONE_AT_END = /\[\[DONE\]\]\s*$/;
+const REPORT_AT_END = /\[\[GATE:REPORT\]\]\s*$/;
 const ALL_MARKERS = ["[[DONE]]", "[[GATE:PROPOSAL]]", "[[GATE:REPORT]]"];
 const stripMarkers = (text: string) =>
   ALL_MARKERS.reduce((t, m) => t.split(m).join(""), text).trim();
@@ -175,6 +176,15 @@ function eventToBubble(e: StreamEvent): Bubble | null {
           const clean = stripMarkers(text);
           return clean ? { kind: "report", text: clean } : null;
         }
+        // A report delivered via the [[GATE:REPORT]] marker (e.g. when the approval
+        // tool errored with "Stream closed" and the agent fell back to the marker):
+        // surface it as a visible report milestone instead of burying it in activity.
+        // `fromMarker` lets us drop it at render if a real report `gate` event also
+        // exists (the normal path), so the success case isn't doubled.
+        if (REPORT_AT_END.test(text)) {
+          const clean = stripMarkers(text);
+          if (clean) return { kind: "report", text: clean, fromMarker: true };
+        }
         if (!text && tools.length === 0) return null;
         return { kind: "assistant", text, tools };
       }
@@ -276,10 +286,19 @@ export function TaskLiveView({
 
   const active = ACTIVE_STATUSES.has(status);
 
+  // A marker-derived report bubble is only a fallback for when no real report `gate`
+  // event was emitted; if one exists, drop the fallback so the report isn't doubled.
+  const hasReportGate = bubbles.some(
+    (b) => b.kind === "gate" && b.gate.gate === "report",
+  );
+  const deduped = hasReportGate
+    ? bubbles.filter((b) => !(b.kind === "report" && b.fromMarker))
+    : bubbles;
+
   // Milestones (proposals, reports, approvals) are always shown; the agent's
   // intermediate work (prose, tool calls, logs) is hidden behind a toggle.
-  const visible = showActivity ? bubbles : bubbles.filter((b) => !isActivity(b));
-  const hiddenCount = bubbles.length - visible.length;
+  const visible = showActivity ? deduped : deduped.filter((b) => !isActivity(b));
+  const hiddenCount = deduped.length - visible.length;
 
   // The currently-pending gate (matches the latest gate bubble) renders inline
   // as an interactive card; once resolved it falls back to a static record.

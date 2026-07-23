@@ -17,7 +17,7 @@ import { Avatar } from "@/components/AgentAvatar";
 import { TaskLiveView } from "@/components/TaskLiveView";
 import { RunDuration } from "@/components/RunDuration";
 import { Chip } from "@/components/ui-cards";
-import { ACTIVE_STATUSES, timeAgo } from "@/lib/ui";
+import { ACTIVE_STATUSES, MODEL_DISPLAY, timeAgo } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -82,7 +82,7 @@ export default async function TaskPage({
             )}
             {task.model && task.model !== "auto" && (
               <Chip icon={<Cpu className="size-3" />} tone="sky">
-                {task.model === "opus" ? "Opus 4.8" : "Sonnet 4.6"}
+                {MODEL_DISPLAY[task.model] ?? task.model}
               </Chip>
             )}
             <Chip icon={<Clock className="size-3" />}>

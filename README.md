@@ -9,7 +9,7 @@ the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) in each projec
 
 ## Run it
 
-`pnpm dev` runs the whole app inside a Docker container (dashboard :3000 + runner
+`pnpm dev` runs the whole app inside a Docker container (dashboard :3001 + runner
 daemon :4319):
 
 ```bash
@@ -20,7 +20,7 @@ pnpm stop           # stop the container
 pnpm dev:clean      # stop + drop the node_modules/.next volumes (run after changing deps)
 ```
 
-Open http://localhost:3000. The container runs as a non-root user and the ports bind to
+Open http://localhost:3001. The container runs as a non-root user and the ports bind to
 `127.0.0.1` only. **After changing dependencies** (`pnpm add/remove`), run `pnpm dev:clean`
 once before `pnpm dev` so the container's `node_modules` volume is rebuilt — otherwise the
 container keeps the previous dependency set.
@@ -53,7 +53,7 @@ pnpm dev:local      # next dev + runner daemon directly on the host
 ## Architecture
 
 ```
-Browser ──HTTP──▶ Next.js app (:3000)  ──shared SQLite──▶  Runner daemon (:4319)
+Browser ──HTTP──▶ Next.js app (:3001)  ──shared SQLite──▶  Runner daemon (:4319)
    └─────────── SSE stream + approvals ──────────────────────────┘
 ```
 

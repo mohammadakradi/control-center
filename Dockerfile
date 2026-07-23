@@ -48,6 +48,6 @@ RUN mkdir -p /app/.next /app/data && chown -R node:node /app
 # Run as non-root: the container has the host's ~/.claude + ~/Dev mounted in, so a
 # compromised process must not run as root over those paths.
 USER node
-EXPOSE 3000 4319
+EXPOSE 3001 4319
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["pnpm", "dev:container"]

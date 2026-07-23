@@ -102,8 +102,8 @@ export const tasks = sqliteTable("tasks", {
   // Null until generated; the UI falls back to the request text, then the command.
   title: text("title"),
   status: text("status").notNull().$type<TaskStatus>().default("queued"),
-  // Model routing: the user's choice ("auto" | "sonnet" | "opus"), overwritten by the
-  // runner with the resolved label once selected.
+  // Model routing: the user's choice ("auto" or a concrete label like "fable-5"),
+  // overwritten by the runner with the resolved label once selected.
   model: text("model").notNull().default("auto"),
   modelReason: text("model_reason"),
   // Files/photos the user attached to the request (stored under data/uploads/<taskId>/).
