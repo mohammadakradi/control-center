@@ -60,15 +60,16 @@ export async function POST(request: Request) {
     );
   }
 
-  // "sonnet"/"opus" are legacy aliases (mapped to Sonnet 4.6 / Opus 4.8 by the router).
+  // "sonnet"/"opus"/"sonnet-4.6" are legacy aliases — the router maps them to the
+  // current equivalents (Sonnet 4.6 is retired → Sonnet 5).
   const ALLOWED_MODELS = new Set([
     "auto",
-    "sonnet-4.6",
+    "fable-5",
     "opus-4.8",
     "sonnet-5",
-    "fable-5",
     "sonnet",
     "opus",
+    "sonnet-4.6",
   ]);
   const model = ALLOWED_MODELS.has(fields.model ?? "")
     ? (fields.model as string)

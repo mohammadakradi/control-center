@@ -2,34 +2,35 @@ import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 /** Model labels (stored on the task) → SDK model ids. */
 export const MODELS = {
-  "sonnet-4.6": "claude-sonnet-4-6",
-  "opus-4.8": "claude-opus-4-8",
   "sonnet-5": "claude-sonnet-5",
+  "opus-4.8": "claude-opus-4-8",
   "fable-5": "claude-fable-5",
 } as const;
 
 export type ModelLabel = keyof typeof MODELS;
-export type ModelChoice = "auto" | ModelLabel | "sonnet" | "opus"; // last two: legacy stored labels
+export type ModelChoice = "auto" | ModelLabel | "sonnet" | "opus" | "sonnet-4.6"; // last three: legacy stored labels
 export type ResolvedModel = {
   id: string; // SDK model id
   label: ModelLabel;
   reason: string;
 };
 
-// Legacy labels from before the per-agent tiering (still stored on old tasks).
+// Legacy labels still stored on old tasks. Sonnet 4.6 is retired — anything that
+// used it (or the bare aliases) now runs on the current tier equivalents.
 const LEGACY: Record<string, ModelLabel> = {
-  sonnet: "sonnet-4.6",
+  sonnet: "sonnet-5",
+  "sonnet-4.6": "sonnet-5",
   opus: "opus-4.8",
 };
 
 /** Complexity tiers, mapped to models per agent.
- *  - pm: planning quality is what matters → Sonnet 5 for complex, Sonnet 4.6 otherwise.
- *  - swe/fe (default): Fable 5 for complex builds, Opus 4.8 for routine work,
- *    Sonnet 4.6 for trivial/mechanical changes. */
-type Tier = "complex" | "simple" | "trivial";
+ *  - pm: Fable 5 only for very complex planning; Sonnet 5 for everything else.
+ *  - swe/fe (default): Fable 5 for very complex builds, Opus 4.8 for complex work,
+ *    Sonnet 5 for simple changes. Sonnet 4.6 is no longer used. */
+type Tier = "very-complex" | "complex" | "simple";
 const TIERS: Record<string, Record<Tier, ModelLabel>> = {
-  pm: { complex: "sonnet-5", simple: "sonnet-4.6", trivial: "sonnet-4.6" },
-  default: { complex: "fable-5", simple: "opus-4.8", trivial: "sonnet-4.6" },
+  pm: { "very-complex": "fable-5", complex: "sonnet-5", simple: "sonnet-5" },
+  default: { "very-complex": "fable-5", complex: "opus-4.8", simple: "sonnet-5" },
 };
 
 // Cheapest/fastest model — used for tiny side calls (naming a task) where quality
@@ -39,7 +40,8 @@ const HAIKU = "claude-haiku-4-5-20251001";
 // Commands that are mechanical / read-only → always the cheapest tier.
 // Shared across agents (swe + fe): includes fe's read-only `audit`.
 const MECHANICAL = new Set(["ship", "review", "security", "onboard", "workspace", "audit"]);
-// Commands that are inherently complex → the agent's top tier.
+// Commands that are inherently at least complex — triage still runs so a truly
+// massive request can escalate to very-complex, but the floor is "complex".
 const COMPLEX_CMDS = new Set(["plan"]);
 
 function tiersFor(namespace: string): Record<Tier, ModelLabel> {
@@ -61,16 +63,16 @@ function textOf(m: SDKMessage): string {
   return "";
 }
 
-/** Cheap one-shot complexity classifier (runs on Sonnet 4.6, no tools). */
+/** Cheap one-shot complexity classifier (runs on Sonnet 5, no tools). */
 async function classify(
   command: string,
   requestText: string,
 ): Promise<{ tier: Tier; reason: string }> {
-  const prompt = `Classify this software-engineering request for model routing. Reply with ONLY one word on the first line — "trivial", "simple" or "complex" — then a short reason on the next line.
+  const prompt = `Classify this software-engineering request for model routing. Reply with ONLY the tier on the first line — "simple", "complex" or "very complex" — then a short reason on the next line.
 
-trivial = a tiny mechanical change: one file / one spot, no design decisions (rename, copy/text tweak, bump a value, toggle a flag).
-simple = small, localized, low-risk change: a few files, clear scope (add a small function/component, straightforward bug fix).
-complex = multi-file or multi-system, architectural, ambiguous, security-sensitive, concurrency, data migrations, or large/uncertain scope.
+simple = small, localized, low-risk change: one or a few files, clear scope, no design decisions (rename, copy tweak, small function/component, straightforward bug fix).
+complex = multi-file work with real design decisions: a feature touching several components, a non-trivial bug, refactoring, API/schema changes with clear scope.
+very complex = architectural or system-wide: multi-system/cross-stack, ambiguous or very large scope, security-sensitive, concurrency, data migrations, or high-risk changes.
 
 Command: ${command}
 Request: ${requestText || "(none given)"}`;
@@ -80,7 +82,7 @@ Request: ${requestText || "(none given)"}`;
     for await (const m of query({
       prompt,
       options: {
-        model: MODELS["sonnet-4.6"],
+        model: MODELS["sonnet-5"],
         allowedTools: [],
         systemPrompt: "You are a terse software task-complexity classifier.",
       },
@@ -89,11 +91,14 @@ Request: ${requestText || "(none given)"}`;
       if (m.type === "result") break;
     }
   } catch {
-    return { tier: "complex", reason: "triage failed — defaulting to the strongest model" };
+    return {
+      tier: "very-complex",
+      reason: "triage failed — defaulting to the strongest model",
+    };
   }
   const firstLine = (out.trim().split(/\r?\n/)[0] || "").toLowerCase();
-  const tier: Tier = /\btrivial\b/.test(firstLine)
-    ? "trivial"
+  const tier: Tier = /very[\s-]?complex/.test(firstLine)
+    ? "very-complex"
     : /\bcomplex\b/.test(firstLine) && !/\bsimple\b/.test(firstLine)
       ? "complex"
       : "simple";
@@ -152,13 +157,13 @@ Request: ${base.slice(0, 1500)}`;
 
 /**
  * Decide which model a task should run on.
- * - explicit user choice (a concrete model) wins — legacy "sonnet"/"opus" map to
- *   Sonnet 4.6 / Opus 4.8
- * - mechanical commands → the cheapest tier; `plan` → the agent's top tier
- * - task/fix on "auto" → triage the request into trivial/simple/complex and map it
- *   through the agent's tier table:
- *     pm      → complex: Sonnet 5 · otherwise: Sonnet 4.6
- *     swe/fe  → complex: Fable 5 · simple: Opus 4.8 · trivial: Sonnet 4.6
+ * - explicit user choice (a concrete model) wins — legacy labels ("sonnet",
+ *   "sonnet-4.6", "opus") map to their current equivalents
+ * - mechanical commands → the simple tier
+ * - "auto" → triage the request into simple/complex/very-complex and map it
+ *   through the agent's tier table (for `plan` the floor is "complex"):
+ *     pm      → very complex: Fable 5 · otherwise: Sonnet 5
+ *     swe/fe  → very complex: Fable 5 · complex: Opus 4.8 · simple: Sonnet 5
  */
 export async function resolveModel(
   namespace: string,
@@ -173,10 +178,12 @@ export async function resolveModel(
     if (label in MODELS) return pick(label, "selected by user");
   }
   if (MECHANICAL.has(command))
-    return pick(tiers.trivial, `mechanical command :${command}`);
-  if (COMPLEX_CMDS.has(command))
-    return pick(tiers.complex, `:${command} is inherently complex`);
+    return pick(tiers.simple, `mechanical command :${command}`);
 
-  const { tier, reason } = await classify(command, requestText);
+  let { tier, reason } = await classify(command, requestText);
+  if (COMPLEX_CMDS.has(command) && tier === "simple") {
+    tier = "complex";
+    reason = `:${command} is inherently complex (floor)`;
+  }
   return pick(tiers[tier], `${tier} — ${reason}`);
 }
