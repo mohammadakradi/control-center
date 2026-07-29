@@ -53,13 +53,13 @@ export function GitControls({
 
   const disabled = busy !== null;
   const syncBtn =
-    "inline-flex items-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 hover:bg-neutral-800 disabled:opacity-50";
+    "inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface-2 px-3 py-1.5 text-sm text-fg hover:bg-surface-3 disabled:opacity-50";
 
   return (
     <div className="space-y-3">
       {/* Branch row */}
       <div className="flex flex-wrap items-center gap-2">
-        <GitBranch className="size-4 shrink-0 text-neutral-500" />
+        <GitBranch className="size-4 shrink-0 text-fg-faint" />
         {creating ? (
           <form
             onSubmit={(e) => {
@@ -78,7 +78,8 @@ export function GitControls({
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder="new-branch-name"
-              className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 font-mono text-sm outline-none focus:border-sky-500"
+              aria-label="New branch name"
+              className="min-w-0 flex-1 rounded-lg border border-line-strong bg-surface-2 px-3 py-2 font-mono text-sm text-fg outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-ring/40"
             />
             <button
               type="submit"
@@ -95,7 +96,7 @@ export function GitControls({
                 setCreating(false);
                 setNewName("");
               }}
-              className="p-1.5 text-neutral-500 hover:text-neutral-300"
+              className="p-1.5 text-fg-faint hover:text-fg-muted"
               aria-label="Cancel"
             >
               <X className="size-4" />
@@ -133,26 +134,26 @@ export function GitControls({
       {/* Remote sync row — on wide viewports Pull/Push stay anchored right and the
           tracking text truncates so the buttons keep a constant position; on cramped
           (mobile) widths the button group wraps to its own line instead of overflowing. */}
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-xl border border-neutral-800 bg-neutral-950/40 px-3.5 py-2.5">
-        <div className="flex min-w-0 flex-1 items-center gap-2 text-xs text-neutral-400">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-xl border border-line bg-sunken px-3.5 py-2.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2 text-xs text-fg-subtle">
           {info.tracking ? (
             <>
               <span className="min-w-0 truncate">
                 tracking{" "}
-                <span className="font-mono text-neutral-300">{info.tracking}</span>
+                <span className="font-mono text-fg-muted">{info.tracking}</span>
               </span>
               {info.ahead > 0 && (
-                <span className="shrink-0 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 font-mono text-amber-300">
+                <span className="shrink-0 rounded-md border border-warn-line bg-warn-soft px-1.5 py-0.5 font-mono text-warn">
                   ↑{info.ahead}
                 </span>
               )}
               {info.behind > 0 && (
-                <span className="shrink-0 rounded-md border border-sky-500/25 bg-sky-500/10 px-1.5 py-0.5 font-mono text-sky-300">
+                <span className="shrink-0 rounded-md border border-info-line bg-info-soft px-1.5 py-0.5 font-mono text-accent">
                   ↓{info.behind}
                 </span>
               )}
               {info.ahead === 0 && info.behind === 0 && (
-                <span className="shrink-0 text-emerald-400">· up to date</span>
+                <span className="shrink-0 text-ok">· up to date</span>
               )}
             </>
           ) : info.hasRemote ? (
@@ -194,10 +195,14 @@ export function GitControls({
 
       {msg && (
         <pre
-          className={`max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg px-3 py-2 font-mono text-xs ${
+          // Pull/push/create results are announced — they're the only feedback
+          // these actions give.
+          role={msg.ok ? "status" : "alert"}
+          aria-live={msg.ok ? "polite" : "assertive"}
+          className={`scroll-thin max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg px-3 py-2 font-mono text-xs ${
             msg.ok
-              ? "bg-neutral-950/60 text-neutral-400"
-              : "bg-red-950/40 text-red-300"
+              ? "bg-sunken text-fg-subtle"
+              : "bg-danger-soft text-danger"
           }`}
         >
           {msg.text}

@@ -68,33 +68,33 @@ export function AttachmentPicker({
       <button
         type="button"
         onClick={() => input.current?.click()}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-line-strong px-2.5 py-1 text-xs text-fg-muted hover:bg-surface-3"
         title="Attach documents or photos"
       >
         <Paperclip className="size-3.5" />
         Attach files
       </button>
       {files.length === 0 ? (
-        <span className="text-xs text-neutral-600">{hint}</span>
+        <span className="text-xs text-fg-ghost">{hint}</span>
       ) : (
         files.map((f, i) => {
           const isImg = f.type.startsWith("image/");
           return (
             <span
               key={`${f.name}-${i}`}
-              className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-300"
+              className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-lg border border-line-strong bg-surface-2 px-2 py-1 text-xs text-fg-muted"
             >
               {isImg ? (
-                <ImageIcon className="size-3.5 shrink-0 text-sky-400" />
+                <ImageIcon className="size-3.5 shrink-0 text-accent" />
               ) : (
-                <FileText className="size-3.5 shrink-0 text-violet-400" />
+                <FileText className="size-3.5 shrink-0 text-violet" />
               )}
               <span className="truncate">{f.name}</span>
-              <span className="shrink-0 text-neutral-600">{fmtSize(f.size)}</span>
+              <span className="shrink-0 text-fg-ghost">{fmtSize(f.size)}</span>
               <button
                 type="button"
                 onClick={() => setFiles(files.filter((_, idx) => idx !== i))}
-                className="shrink-0 rounded p-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+                className="shrink-0 rounded p-0.5 text-fg-faint hover:bg-surface-3 hover:text-fg"
                 aria-label={`Remove ${f.name}`}
               >
                 <X className="size-3" />
@@ -103,7 +103,11 @@ export function AttachmentPicker({
           );
         })
       )}
-      {error && <span className="text-xs text-amber-400">{error}</span>}
+      {error && (
+        <span role="alert" className="text-xs text-warn">
+          {error}
+        </span>
+      )}
     </div>
   );
 }

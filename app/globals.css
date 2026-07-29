@@ -1,18 +1,208 @@
 @import "tailwindcss";
 
+/* Class-based dark mode. The theme script always resolves `system` to an explicit
+   `.dark`/`.light` class on <html>, so this never falls back to a media query. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Sidebar collapsed state. Driven by `data-sidebar` on <html> (set pre-paint by
+   the init script) rather than React state, so the rail can't flash open on
+   hydration. Usage: `w-60 rail:w-16`, `rail:hidden`, … */
+@custom-variant rail (&:where([data-sidebar="collapsed"] *));
+
+/* ---------------------------------------------------------------------------
+   Semantic tokens
+   `:root` = light, `.dark` = dark. Components reference the semantic utilities
+   (`bg-surface`, `text-fg-subtle`, `border-line`, `text-ok`, …) — never a raw
+   `neutral-*` shade — so both themes stay in sync from one place.
+--------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+
+  /* Elevation ramp */
+  --canvas: #f7f7f8;
+  --surface: #ffffff;
+  --surface-2: #f4f4f5;
+  --surface-3: #e7e7ea;
+  --sunken: #fafafa;
+
+  /* Borders */
+  --line: #e4e4e7;
+  --line-strong: #d1d1d6;
+
+  /* Text ramp (strong → ghost) */
+  /* Text ramp. Everything down to `fg-faint` clears WCAG AA (4.5:1) on
+     `surface`, `surface-2`, and `canvas`; `fg-ghost` is decorative only. */
+  --fg-strong: #09090b;
+  --fg: #18181b;
+  --fg-muted: #3f3f46;
+  --fg-subtle: #5f5f6a;
+  --fg-faint: #67676f;
+  --fg-ghost: #8e8e98;
+
+  /* Accent (links, selected state) */
+  --accent: #0369a1;
+  --accent-hover: #075985;
+  --accent-contrast: #ffffff;
+
+  /* Faint wash used for row hovers */
+  --hover: rgb(0 0 0 / 0.04);
+
+  /* Modal scrim */
+  --overlay: rgb(24 24 27 / 0.4);
+
+  /* Focus ring */
+  --ring: #0ea5e9;
+
+  /* Tones — `soft` = background, base = text/icon, `line` = border */
+  --ok-soft: #ecfdf5;
+  --ok: #047857;
+  --ok-line: #a7f3d0;
+
+  --danger-soft: #fef2f2;
+  --danger: #b91c1c;
+  --danger-line: #fecaca;
+
+  --warn-soft: #fffbeb;
+  --warn: #b45309;
+  --warn-line: #fde68a;
+
+  --info-soft: #f0f9ff;
+  --info: #0369a1;
+  --info-line: #bae6fd;
+
+  --violet-soft: #f5f3ff;
+  --violet: #6d28d9;
+  --violet-line: #ddd6fe;
+
+  --muted-soft: #f4f4f5;
+  --muted: #3f3f46;
+  --muted-line: #d4d4d8;
+
+  --scrollbar: #c9c9cf;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --canvas: #0a0a0b;
+  --surface: #121214;
+  --surface-2: #17171a;
+  --surface-3: #232327;
+  --sunken: #08080a;
+
+  --line: #262629;
+  --line-strong: #3a3a3f;
+
+  --fg-strong: #ffffff;
+  --fg: #e7e7ea;
+  --fg-muted: #d4d4d4;
+  --fg-subtle: #a3a3a3;
+  --fg-faint: #8a8a92;
+  --fg-ghost: #6e6e76;
+
+  --accent: #38bdf8;
+  --accent-hover: #7dd3fc;
+  --accent-contrast: #04141f;
+
+  --hover: rgb(255 255 255 / 0.04);
+
+  --overlay: rgb(0 0 0 / 0.6);
+
+  --ring: #0ea5e9;
+
+  --ok-soft: rgb(16 185 129 / 0.15);
+  --ok: #6ee7b7;
+  --ok-line: rgb(16 185 129 / 0.3);
+
+  --danger-soft: rgb(239 68 68 / 0.15);
+  --danger: #fca5a5;
+  --danger-line: rgb(239 68 68 / 0.3);
+
+  --warn-soft: rgb(245 158 11 / 0.15);
+  --warn: #fcd34d;
+  --warn-line: rgb(245 158 11 / 0.3);
+
+  --info-soft: rgb(14 165 233 / 0.15);
+  --info: #7dd3fc;
+  --info-line: rgb(14 165 233 / 0.3);
+
+  --violet-soft: rgb(139 92 246 / 0.15);
+  --violet: #c4b5fd;
+  --violet-line: rgb(139 92 246 / 0.3);
+
+  --muted-soft: rgb(115 115 115 / 0.15);
+  --muted: #d4d4d4;
+  --muted-line: rgb(115 115 115 / 0.3);
+
+  --scrollbar: #2a2a2e;
+}
+
 @theme inline {
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-sunken: var(--sunken);
+
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-fg-strong: var(--fg-strong);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-fg-faint: var(--fg-faint);
+  --color-fg-ghost: var(--fg-ghost);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-contrast: var(--accent-contrast);
+  --color-hover: var(--hover);
+  --color-overlay: var(--overlay);
+  --color-ring: var(--ring);
+
+  --color-ok-soft: var(--ok-soft);
+  --color-ok: var(--ok);
+  --color-ok-line: var(--ok-line);
+
+  --color-danger-soft: var(--danger-soft);
+  --color-danger: var(--danger);
+  --color-danger-line: var(--danger-line);
+
+  --color-warn-soft: var(--warn-soft);
+  --color-warn: var(--warn);
+  --color-warn-line: var(--warn-line);
+
+  --color-info-soft: var(--info-soft);
+  --color-info: var(--info);
+  --color-info-line: var(--info-line);
+
+  --color-violet-soft: var(--violet-soft);
+  --color-violet: var(--violet);
+  --color-violet-line: var(--violet-line);
+
+  --color-muted-soft: var(--muted-soft);
+  --color-muted: var(--muted);
+  --color-muted-line: var(--muted-line);
 }
 
-html {
-  color-scheme: dark;
-}
+@layer base {
+  body {
+    background: var(--canvas);
+    color: var(--fg);
+    font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  }
 
-body {
-  background: #0a0a0b;
-  color: #e7e7ea;
-  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  /* Baseline keyboard affordance for every interactive element. Components may
+     override with a ring, but nothing is left without a visible focus state. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
 }
 
 /* Thin scrollbars for the live transcript */
@@ -21,6 +211,17 @@ body {
   height: 8px;
 }
 .scroll-thin::-webkit-scrollbar-thumb {
-  background: #2a2a2e;
+  background: var(--scrollbar);
   border-radius: 9999px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

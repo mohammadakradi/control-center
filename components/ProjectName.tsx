@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Loader2, Pencil, X } from "lucide-react";
+import { Check, Pencil, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 /** The project title, editable in place. Click the pencil to rename; the name is
  *  cosmetic (the on-disk path is the project's stable identity) and survives rescans. */
@@ -61,7 +62,7 @@ export function ProjectName({
           onClick={open}
           aria-label="Rename project"
           title="Rename project"
-          className="shrink-0 rounded-md p-1.5 text-neutral-500 opacity-0 transition-opacity hover:bg-neutral-800 hover:text-neutral-200 focus-visible:opacity-100 group-hover:opacity-100"
+          className="shrink-0 rounded-md p-1.5 text-fg-faint opacity-0 transition-opacity hover:bg-surface-3 hover:text-fg focus-visible:opacity-100 group-hover:opacity-100"
         >
           <Pencil className="size-4" />
         </button>
@@ -82,32 +83,29 @@ export function ProjectName({
             if (e.key === "Escape") setEditing(false);
           }}
           aria-label="Project name"
-          className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-2xl font-bold tracking-tight text-neutral-100 outline-none focus:border-sky-500 sm:text-3xl"
+          className="min-w-0 flex-1 rounded-lg border border-line-strong bg-sunken px-3 py-1.5 text-2xl font-bold tracking-tight text-fg-strong outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-ring/40 sm:text-3xl"
         />
-        <button
-          type="button"
+        <Button
+          variant="primary"
           onClick={save}
-          disabled={busy}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-blue-700 bg-linear-to-b from-sky-500 to-blue-600 px-3 py-2 text-sm font-semibold text-white hover:brightness-110 disabled:opacity-50"
+          loading={busy}
+          icon={<Check className="size-4" />}
         >
-          {busy ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <Check className="size-4" />
-          )}
           Save
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
           onClick={() => setEditing(false)}
           disabled={busy}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-700 px-3 py-2 text-sm text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+          icon={<X className="size-4" />}
         >
-          <X className="size-4" />
           Cancel
-        </button>
+        </Button>
       </div>
-      {error && <p className="mt-1.5 text-sm text-red-400">{error}</p>}
+      {error && (
+        <p role="alert" className="mt-1.5 text-sm text-danger">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { sql } from "drizzle-orm";
+import { Boxes } from "lucide-react";
 import { db } from "@/lib/db";
 import { projectAgents } from "@/lib/db/schema";
 import { syncAgents } from "@/lib/discovery/agents";
 import { Avatar } from "@/components/AgentAvatar";
+import { EmptyState, PageHeader } from "@/components/ui-cards";
 
 export const dynamic = "force-dynamic";
 
@@ -22,31 +24,31 @@ export default function AgentsPage() {
   }
 
   return (
-    <div>
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Agents</h1>
-          <p className="text-sm text-neutral-400">
-            Auto-discovered from your installed Claude Code plugins.
-          </p>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Agents"
+        description="Auto-discovered from your installed Claude Code plugins."
+      />
 
       {agents.length === 0 ? (
-        <p className="text-neutral-400">No plugins installed.</p>
+        <EmptyState
+          icon={<Boxes className="size-6" />}
+          title="No agents discovered"
+          hint="Install a Claude Code plugin and reload — agents are picked up automatically."
+        />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2">
           {agents.map((a) => (
             <Link
               key={a.id}
               href={`/agents/${encodeURIComponent(a.id)}`}
-              className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-5 transition-colors hover:border-neutral-700 hover:bg-neutral-900"
+              className="rounded-xl border border-line bg-surface p-5 transition-colors hover:border-line-strong hover:bg-surface-2"
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="min-w-0 truncate font-mono text-sm text-sky-400">
+                <span className="min-w-0 truncate font-mono text-sm text-accent">
                   /{a.namespace}
                 </span>
-                <span className="shrink-0 text-xs text-neutral-500">
+                <span className="shrink-0 text-xs text-fg-faint">
                   {counts.get(a.id) ?? 0} project
                   {(counts.get(a.id) ?? 0) === 1 ? "" : "s"}
                 </span>
@@ -56,14 +58,14 @@ export default function AgentsPage() {
                 <h2 className="flex items-center gap-2 text-lg font-medium">
                   {a.name}
                   {a.version && (
-                    <span className="rounded-md border border-neutral-700 bg-neutral-800/60 px-1.5 py-0.5 font-mono text-xs font-normal text-neutral-400">
+                    <span className="rounded-md border border-line-strong bg-surface-3 px-1.5 py-0.5 font-mono text-xs font-normal text-fg-subtle">
                       v{a.version}
                     </span>
                   )}
                 </h2>
               </div>
               {a.description && (
-                <p className="mt-2 line-clamp-2 text-sm text-neutral-400">
+                <p className="mt-2 line-clamp-2 text-sm text-fg-subtle">
                   {a.description}
                 </p>
               )}
@@ -71,7 +73,7 @@ export default function AgentsPage() {
                 {a.commands.map((c) => (
                   <span
                     key={c.full}
-                    className="rounded-md bg-neutral-800 px-2 py-0.5 font-mono text-xs text-neutral-300"
+                    className="rounded-md bg-surface-3 px-2 py-0.5 font-mono text-xs text-fg-muted"
                   >
                     {c.name}
                   </span>

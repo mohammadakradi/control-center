@@ -15,7 +15,7 @@ import { syncAgents } from "@/lib/discovery/agents";
 import { Avatar } from "@/components/AgentAvatar";
 import { AgentContributors } from "@/components/AgentContributors";
 import { StatusBadge } from "@/components/StatusBadge";
-import { card } from "@/components/ui-cards";
+import { card, PageHeader } from "@/components/ui-cards";
 import { ACTIVE_STATUSES, timeAgo } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
@@ -53,12 +53,10 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="mt-1 text-sm text-neutral-400">
-          Overview of your agents, projects, and recent activity.
-        </p>
-      </div>
+      <PageHeader
+        title="Dashboard"
+        description="Overview of your agents, projects, and recent activity."
+      />
 
       {/* Stats */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -99,24 +97,24 @@ export default function Dashboard() {
                 <li key={a.id}>
                   <Link
                     href={`/agents/${encodeURIComponent(a.id)}`}
-                    className="flex items-center gap-3 rounded-xl border border-neutral-800 bg-neutral-900/60 p-3 hover:border-neutral-700 hover:bg-neutral-900"
+                    className="flex items-center gap-3 rounded-xl border border-line bg-surface-2 p-3 hover:border-line-strong hover:bg-surface-3"
                   >
                     <Avatar namespace={a.namespace} size={40} />
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 font-mono text-sm text-sky-300">
+                      <div className="flex items-center gap-2 font-mono text-sm text-accent">
                         /{a.namespace}
                         {a.version && (
-                          <span className="text-xs font-normal text-neutral-500">
+                          <span className="text-xs font-normal text-fg-faint">
                             v{a.version}
                           </span>
                         )}
                       </div>
-                      <div className="truncate text-xs text-neutral-500">
+                      <div className="truncate text-xs text-fg-faint">
                         {a.commands.length} command
                         {a.commands.length === 1 ? "" : "s"}
                       </div>
                     </div>
-                    <span className="shrink-0 text-xs text-neutral-500">
+                    <span className="shrink-0 text-xs text-fg-faint">
                       {runCount.get(a.id) ?? 0} run
                       {(runCount.get(a.id) ?? 0) === 1 ? "" : "s"}
                     </span>
@@ -138,12 +136,12 @@ export default function Dashboard() {
                 <li key={p.id}>
                   <Link
                     href={`/projects/${p.id}`}
-                    className="flex items-center gap-3 rounded-xl border border-neutral-800 bg-neutral-900/60 p-3 hover:border-neutral-700 hover:bg-neutral-900"
+                    className="flex items-center gap-3 rounded-xl border border-line bg-surface-2 p-3 hover:border-line-strong hover:bg-surface-3"
                   >
-                    <FolderGit2 className="size-4 shrink-0 text-neutral-500" />
+                    <FolderGit2 className="size-4 shrink-0 text-fg-faint" />
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-medium">{p.name}</div>
-                      <div className="truncate font-mono text-xs text-neutral-500">
+                      <div className="truncate font-mono text-xs text-fg-faint">
                         {p.path}
                       </div>
                     </div>
@@ -166,25 +164,25 @@ export default function Dashboard() {
             {recent.map((t) => (
               <li
                 key={t.id}
-                className="border-t border-neutral-800/80 first:border-t-0"
+                className="border-t border-line first:border-t-0"
               >
                 <Link
                   href={`/tasks/${t.id}`}
-                  className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg px-2 py-3 hover:bg-white/2.5"
+                  className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg px-2 py-3 hover:bg-hover"
                 >
-                  <span className="min-w-28 shrink-0 font-mono text-sm text-sky-300">
+                  <span className="min-w-28 shrink-0 font-mono text-sm text-accent">
                     /{agentName(t.agentId)}:{t.command}
                   </span>
-                  <span className="hidden min-w-0 flex-1 truncate text-sm text-neutral-300 sm:block">
+                  <span className="hidden min-w-0 flex-1 truncate text-sm text-fg-muted sm:block">
                     {t.requestText || (
-                      <span className="text-neutral-600">no description</span>
+                      <span className="text-fg-ghost">no description</span>
                     )}
                   </span>
-                  <span className="inline-flex min-w-0 shrink items-center gap-1.5 text-xs text-neutral-500">
+                  <span className="inline-flex min-w-0 shrink items-center gap-1.5 text-xs text-fg-faint">
                     <FolderGit2 className="size-3.5 shrink-0" />
                     <span className="truncate">{projectName(t.projectId)}</span>
                   </span>
-                  <span className="hidden shrink-0 items-center gap-1 text-xs text-neutral-500 md:inline-flex">
+                  <span className="hidden shrink-0 items-center gap-1 text-xs text-fg-faint md:inline-flex">
                     <Clock className="size-3.5" />
                     {timeAgo(t.createdAt)}
                   </span>
@@ -212,19 +210,19 @@ function Stat({
   href?: string;
   tone?: "warn";
 }) {
-  const cls = `${card} flex items-center gap-4 ${href ? "transition-colors hover:border-neutral-700" : ""}`;
+  const cls = `${card} flex items-center gap-4 ${href ? "transition-colors hover:border-line-strong" : ""}`;
   const body = (
     <>
-      <div className="grid size-11 shrink-0 place-items-center rounded-xl border border-neutral-800 bg-neutral-900/60 text-neutral-400">
+      <div className="grid size-11 shrink-0 place-items-center rounded-xl border border-line bg-surface-2 text-fg-subtle">
         {icon}
       </div>
       <div>
         <div
-          className={`text-2xl font-bold tracking-tight ${tone === "warn" ? "text-amber-400" : ""}`}
+          className={`text-2xl font-bold tracking-tight ${tone === "warn" ? "text-warn" : ""}`}
         >
           {value}
         </div>
-        <div className="text-xs text-neutral-500">{label}</div>
+        <div className="text-xs text-fg-faint">{label}</div>
       </div>
     </>
   );
@@ -252,7 +250,7 @@ function CardHead({
       {href && (
         <Link
           href={href}
-          className="inline-flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300"
+          className="inline-flex items-center gap-1 text-xs text-accent hover:text-accent-hover"
         >
           {linkLabel ?? "View all"} <ArrowRight className="size-3.5" />
         </Link>
@@ -262,5 +260,5 @@ function CardHead({
 }
 
 function Empty({ children }: { children: ReactNode }) {
-  return <p className="py-3 text-sm text-neutral-400">{children}</p>;
+  return <p className="py-3 text-sm text-fg-subtle">{children}</p>;
 }

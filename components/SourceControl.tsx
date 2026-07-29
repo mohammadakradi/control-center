@@ -32,9 +32,9 @@ export function SourceControl({
         branchInfo && (
           <>
             <GitControls projectId={projectId} info={branchInfo} />
-            <div className="mt-4 border-t border-neutral-800 pt-4">
-              <div className="mb-2 inline-flex items-center gap-2 text-sm font-medium text-neutral-300">
-                <FileDiff className="size-4 text-neutral-500" />
+            <div className="mt-4 border-t border-line pt-4">
+              <div className="mb-2 inline-flex items-center gap-2 text-sm font-medium text-fg-muted">
+                <FileDiff className="size-4 text-fg-faint" />
                 Changes
               </div>
               {changes && changes.files.length > 0 ? (
@@ -42,14 +42,14 @@ export function SourceControl({
                   <div className="scroll-thin max-h-72 overflow-auto">
                     <ChangesList projectId={projectId} changes={changes} />
                   </div>
-                  <p className="mt-3 text-xs text-neutral-500">
+                  <p className="mt-3 text-xs text-fg-faint">
                     Run{" "}
-                    <span className="font-mono text-sky-300">/swe:ship</span> to
+                    <span className="font-mono text-accent">/swe:ship</span> to
                     commit these changes and open a PR.
                   </p>
                 </>
               ) : (
-                <p className="text-sm text-neutral-500">Working tree clean.</p>
+                <p className="text-sm text-fg-faint">Working tree clean.</p>
               )}
             </div>
           </>

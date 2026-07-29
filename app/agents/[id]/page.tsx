@@ -60,7 +60,7 @@ export default async function AgentDetail({
     <div>
       <Link
         href="/agents"
-        className="inline-flex items-center gap-1.5 text-sm text-neutral-400 hover:text-white"
+        className="inline-flex items-center gap-1.5 text-sm text-fg-subtle hover:text-fg-strong"
       >
         <ArrowLeft className="size-4" /> Agents
       </Link>
@@ -72,7 +72,7 @@ export default async function AgentDetail({
           <h1 className="flex flex-wrap items-center gap-2.5 text-3xl font-bold tracking-tight">
             {agent.name}
             {agent.version && (
-              <span className="rounded-md border border-neutral-700 bg-neutral-800/60 px-2 py-0.5 font-mono text-sm font-normal text-neutral-400">
+              <span className="rounded-md border border-line-strong bg-surface-3 px-2 py-0.5 font-mono text-sm font-normal text-fg-subtle">
                 v{agent.version}
               </span>
             )}
@@ -93,7 +93,7 @@ export default async function AgentDetail({
       </div>
 
       {agent.description && (
-        <p className="mt-4 max-w-3xl leading-relaxed text-neutral-300">
+        <p className="mt-4 max-w-3xl leading-relaxed text-fg-muted">
           {agent.description}
         </p>
       )}
@@ -119,7 +119,7 @@ export default async function AgentDetail({
               </span>
             </Fact>
             <Fact icon={<Boxes className="size-3.5" />} tag={agent.scope ?? "—"}>
-              Plugin <span className="font-mono text-neutral-300">{agent.pluginId}</span>
+              Plugin <span className="font-mono text-fg-muted">{agent.pluginId}</span>
             </Fact>
           </ul>
         </section>
@@ -128,10 +128,10 @@ export default async function AgentDetail({
         <section className={card}>
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-base font-semibold">Connected projects</h2>
-            <span className="text-xs text-neutral-500">{connected.length}</span>
+            <span className="text-xs text-fg-faint">{connected.length}</span>
           </div>
           {connected.length === 0 ? (
-            <p className="py-2 text-sm text-neutral-400">
+            <p className="py-2 text-sm text-fg-subtle">
               Not connected to any project yet. Open a project and run a task with
               this agent.
             </p>
@@ -141,12 +141,12 @@ export default async function AgentDetail({
                 <li key={p.id}>
                   <Link
                     href={`/projects/${p.id}`}
-                    className="flex items-center gap-3 rounded-xl border border-neutral-800 bg-neutral-900/60 px-3.5 py-3 hover:border-neutral-700 hover:bg-neutral-900"
+                    className="flex items-center gap-3 rounded-xl border border-line bg-surface-2 px-3.5 py-3 hover:border-line-strong hover:bg-surface-3"
                   >
-                    <FolderGit2 className="size-4 shrink-0 text-neutral-500" />
+                    <FolderGit2 className="size-4 shrink-0 text-fg-faint" />
                     <div className="min-w-0">
                       <div className="truncate text-sm font-medium">{p.name}</div>
-                      <div className="truncate font-mono text-xs text-neutral-500">
+                      <div className="truncate font-mono text-xs text-fg-faint">
                         {p.path}
                       </div>
                     </div>
@@ -160,25 +160,25 @@ export default async function AgentDetail({
         {/* Commands */}
         <section className={`${card} lg:col-span-2`}>
           <h2 className="mb-4 inline-flex items-center gap-2 text-base font-semibold">
-            <SquareTerminal className="size-4 text-neutral-500" />
+            <SquareTerminal className="size-4 text-fg-faint" />
             Commands
           </h2>
           <div className="grid gap-2 sm:grid-cols-2">
             {agent.commands.map((c) => (
               <div
                 key={c.full}
-                className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-3.5"
+                className="rounded-xl border border-line bg-surface-2 p-3.5"
               >
                 <div className="flex flex-wrap items-baseline gap-2">
-                  <span className="font-mono text-sm text-sky-300">{c.full}</span>
+                  <span className="font-mono text-sm text-accent">{c.full}</span>
                   {c.argumentHint && (
-                    <span className="font-mono text-xs text-neutral-500">
+                    <span className="font-mono text-xs text-fg-faint">
                       {c.argumentHint}
                     </span>
                   )}
                 </div>
                 {c.description && (
-                  <p className="mt-1.5 text-sm leading-relaxed text-neutral-400">
+                  <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
                     {c.description}
                   </p>
                 )}
@@ -191,12 +191,12 @@ export default async function AgentDetail({
         <section className={`${card} lg:col-span-2`}>
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-base font-semibold">Recent runs</h2>
-            <span className="text-xs text-neutral-500">
+            <span className="text-xs text-fg-faint">
               {runs.length} run{runs.length === 1 ? "" : "s"}
             </span>
           </div>
           {runs.length === 0 ? (
-            <p className="py-4 text-sm text-neutral-400">
+            <p className="py-4 text-sm text-fg-subtle">
               This agent hasn&apos;t run any tasks yet.
             </p>
           ) : (
@@ -204,25 +204,25 @@ export default async function AgentDetail({
               {runs.slice(0, 10).map(({ task, project }) => (
                 <li
                   key={task.id}
-                  className="border-t border-neutral-800/80 first:border-t-0"
+                  className="border-t border-line first:border-t-0"
                 >
                   <Link
                     href={`/tasks/${task.id}`}
-                    className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg px-2 py-3 hover:bg-white/[0.025]"
+                    className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg px-2 py-3 hover:bg-hover"
                   >
-                    <span className="min-w-28 shrink-0 font-mono text-sm text-sky-300">
+                    <span className="min-w-28 shrink-0 font-mono text-sm text-accent">
                       /{agent.namespace}:{task.command}
                     </span>
-                    <span className="hidden min-w-0 flex-1 truncate text-sm text-neutral-400 sm:block">
+                    <span className="hidden min-w-0 flex-1 truncate text-sm text-fg-subtle sm:block">
                       {task.requestText || (
-                        <span className="text-neutral-600">no description</span>
+                        <span className="text-fg-ghost">no description</span>
                       )}
                     </span>
-                    <span className="inline-flex min-w-0 shrink items-center gap-1.5 text-xs text-neutral-500">
+                    <span className="inline-flex min-w-0 shrink items-center gap-1.5 text-xs text-fg-faint">
                       <FolderGit2 className="size-3.5 shrink-0" />
                       <span className="truncate">{project.name}</span>
                     </span>
-                    <span className="hidden shrink-0 text-xs text-neutral-500 md:block">
+                    <span className="hidden shrink-0 text-xs text-fg-faint md:block">
                       {timeAgo(task.createdAt)}
                     </span>
                     <StatusBadge status={task.status} />

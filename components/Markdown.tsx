@@ -50,24 +50,24 @@ const isClickablePath = (text: string) =>
 // Styling is applied via descendant variants so we don't need per-element
 // component overrides (which would each receive an unused `node` prop).
 const MD = [
-  "text-sm text-neutral-200 break-words",
+  "text-sm text-fg break-words",
   "[&>:first-child]:mt-0 [&>:last-child]:mb-0",
-  "[&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-neutral-100",
-  "[&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-neutral-100",
-  "[&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-neutral-200",
+  "[&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-fg-strong",
+  "[&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-fg-strong",
+  "[&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-fg-strong",
   "[&_p]:my-1.5 [&_p]:leading-relaxed",
   "[&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5",
-  "[&_li]:my-0.5 [&_li]:leading-relaxed [&_li]:marker:text-neutral-600",
-  "[&_strong]:font-semibold [&_strong]:text-neutral-100 [&_em]:italic",
-  "[&_a]:text-sky-400 [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-sky-300",
-  "[&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-neutral-700 [&_blockquote]:pl-3 [&_blockquote]:text-neutral-400",
-  "[&_hr]:my-3 [&_hr]:border-neutral-800",
-  "[&_code]:rounded [&_code]:bg-neutral-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.85em] [&_code]:text-sky-200",
-  "[&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-neutral-950/70 [&_pre]:p-3 [&_pre]:text-xs",
-  "[&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-neutral-300",
+  "[&_li]:my-0.5 [&_li]:leading-relaxed [&_li]:marker:text-fg-ghost",
+  "[&_strong]:font-semibold [&_strong]:text-fg-strong [&_em]:italic",
+  "[&_a]:text-accent [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-accent-hover",
+  "[&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-line-strong [&_blockquote]:pl-3 [&_blockquote]:text-fg-subtle",
+  "[&_hr]:my-3 [&_hr]:border-line",
+  "[&_code]:rounded [&_code]:bg-surface-3 [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.85em] [&_code]:text-accent",
+  "[&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-sunken [&_pre]:p-3 [&_pre]:text-xs",
+  "[&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-fg-muted",
   "[&_table]:my-2 [&_table]:block [&_table]:overflow-x-auto [&_table]:border-collapse [&_table]:text-xs",
-  "[&_th]:border [&_th]:border-neutral-800 [&_th]:bg-neutral-900 [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_th]:font-medium",
-  "[&_td]:border [&_td]:border-neutral-800 [&_td]:px-2 [&_td]:py-1",
+  "[&_th]:border [&_th]:border-line [&_th]:bg-surface-2 [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_th]:font-medium",
+  "[&_td]:border [&_td]:border-line [&_td]:px-2 [&_td]:py-1",
 ].join(" ");
 
 /** Render trusted agent markdown (reports, proposals) as formatted text.
@@ -95,7 +95,7 @@ export function Markdown({
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") onFileClick(text);
                 }}
-                className="cursor-pointer underline decoration-dotted underline-offset-2 hover:!text-sky-300"
+                className="cursor-pointer underline decoration-dotted underline-offset-2 hover:!text-accent-hover"
                 title={isPmTaskPath(text) ? "Open task" : "View test scenario"}
               >
                 {kids}

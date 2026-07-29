@@ -186,25 +186,25 @@ export function Select({
           if (open) setOpen(false);
           else openMenu();
         }}
-        className={`flex w-full items-center justify-between gap-2 rounded-lg border border-neutral-700 bg-neutral-900 py-2 pr-3 pl-3 text-sm text-neutral-100 outline-none focus:border-sky-500 disabled:opacity-50 ${mf}`}
+        className={`flex w-full items-center justify-between gap-2 rounded-lg border border-line-strong bg-surface-2 py-2 pr-3 pl-3 text-sm text-fg outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50 ${mf}`}
       >
         <span
-          className={`min-w-0 flex-1 truncate text-left ${selected ? "" : "text-neutral-500"}`}
+          className={`min-w-0 flex-1 truncate text-left ${selected ? "" : "text-fg-faint"}`}
         >
           {selected ? selected.label : placeholder}
         </span>
-        <ChevronDown className="size-4 shrink-0 text-neutral-500" />
+        <ChevronDown className="size-4 shrink-0 text-fg-faint" />
       </button>
 
       {open && (
         <div
-          className={`absolute left-0 z-50 max-h-72 w-full min-w-48 overflow-hidden rounded-lg border border-neutral-700 bg-neutral-900 shadow-2xl ${
+          className={`absolute left-0 z-50 max-h-72 w-full min-w-48 overflow-hidden rounded-lg border border-line-strong bg-surface-2 shadow-2xl ${
             placement === "up" ? "bottom-full mb-1" : "top-full mt-1"
           }`}
         >
           {showSearch && (
-            <div className="flex items-center gap-2 border-b border-neutral-800 px-2.5 py-2">
-              <Search className="size-4 shrink-0 text-neutral-500" />
+            <div className="flex items-center gap-2 border-b border-line px-2.5 py-2">
+              <Search className="size-4 shrink-0 text-fg-faint" />
               <input
                 ref={searchRef}
                 value={query}
@@ -218,7 +218,7 @@ export function Select({
                 aria-expanded={open}
                 aria-autocomplete="list"
                 aria-activedescendant={activeId}
-                className={`w-full bg-transparent text-sm text-neutral-100 outline-none placeholder:text-neutral-600 ${mf}`}
+                className={`w-full bg-transparent text-sm text-fg outline-none placeholder:text-fg-faint ${mf}`}
               />
             </div>
           )}
@@ -230,7 +230,7 @@ export function Select({
             className="max-h-60 overflow-auto py-1"
           >
             {filtered.length === 0 ? (
-              <li className="px-3 py-2 text-sm text-neutral-500">No matches</li>
+              <li className="px-3 py-2 text-sm text-fg-faint">No matches</li>
             ) : (
               filtered.map((o, i) => {
                 const isSelected = o.value === value;
@@ -245,28 +245,28 @@ export function Select({
                     onMouseEnter={() => setActive(i)}
                     onClick={() => choose(o)}
                     className={`flex cursor-pointer items-start gap-2 px-3 py-2 text-sm ${
-                      isActive ? "bg-neutral-800" : ""
+                      isActive ? "bg-surface-3" : ""
                     } ${mf}`}
                   >
                     {o.icon && (
-                      <span className="mt-0.5 shrink-0 text-neutral-400">
+                      <span className="mt-0.5 shrink-0 text-fg-subtle">
                         {o.icon}
                       </span>
                     )}
                     <span className="min-w-0 flex-1">
                       <span
-                        className={`block truncate ${isSelected ? "text-sky-300" : "text-neutral-200"}`}
+                        className={`block truncate ${isSelected ? "text-accent" : "text-fg"}`}
                       >
                         {o.label}
                       </span>
                       {o.description && (
-                        <span className="mt-0.5 block truncate text-xs text-neutral-500">
+                        <span className="mt-0.5 block truncate text-xs text-fg-faint">
                           {o.description}
                         </span>
                       )}
                     </span>
                     {isSelected && (
-                      <Check className="mt-0.5 size-4 shrink-0 text-sky-400" />
+                      <Check className="mt-0.5 size-4 shrink-0 text-accent" />
                     )}
                   </li>
                 );

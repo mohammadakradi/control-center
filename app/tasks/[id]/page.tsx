@@ -55,7 +55,7 @@ export default async function TaskPage({
     <div>
       <Link
         href={project ? `/projects/${project.id}` : "/"}
-        className="inline-flex items-center gap-1.5 text-sm text-neutral-400 hover:text-white"
+        className="inline-flex items-center gap-1.5 text-sm text-fg-subtle hover:text-fg-strong"
       >
         <ArrowLeft className="size-4" /> {project?.name ?? "Back"}
       </Link>
@@ -64,13 +64,13 @@ export default async function TaskPage({
       <div className="mt-3 mb-6 flex items-start gap-4">
         {agent && <Avatar namespace={agent.namespace} size={56} />}
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight wrap-break-word text-neutral-100 sm:text-2xl">
+          <h1 className="text-xl font-semibold tracking-tight wrap-break-word text-fg-strong sm:text-2xl">
             {task.title || task.requestText || `/${agent?.namespace ?? "?"}:${task.command}`}
           </h1>
-          <p className="mt-1 font-mono text-sm text-sky-300/90">
+          <p className="mt-1 font-mono text-sm text-accent">
             /{agent?.namespace ?? "?"}:{task.command}
             {task.agentVersion && (
-              <span className="ml-2 text-neutral-500">v{task.agentVersion}</span>
+              <span className="ml-2 text-fg-faint">v{task.agentVersion}</span>
             )}
           </p>
           <div className="mt-2.5 flex flex-wrap items-center gap-2.5 text-xs">
@@ -101,7 +101,7 @@ export default async function TaskPage({
             />
           </div>
           {project && (
-            <p className="mt-1.5 font-mono text-xs break-all text-neutral-600">
+            <p className="mt-1.5 font-mono text-xs break-all text-fg-ghost">
               {project.path}
             </p>
           )}
@@ -125,7 +125,7 @@ export default async function TaskPage({
       />
 
       {task.error && (
-        <div className="mt-4 flex items-start gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+        <div className="mt-4 flex items-start gap-2 rounded-xl border border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger">
           <TriangleAlert className="mt-0.5 size-4 shrink-0" />
           <span>{task.error}</span>
         </div>

@@ -33,6 +33,22 @@ update after every change.
     stay localhost. `dev:clean` (`compose down --volumes`) re-seeds the `node_modules`/`.next`
     named volumes after a dependency change.
 
+- **2026-07-29 — Sidebar + light/dark theming via a semantic token layer.** The app was
+  dark-only with ~315 hardcoded `neutral-*` classes across 28 files. Rather than sprinkle
+  `dark:` variants (which doubles every class string), we introduced a **semantic CSS-variable
+  token layer** in `app/globals.css`: `:root` holds light values, `.dark` holds dark values,
+  and `@theme inline` maps them to Tailwind utilities (`bg-surface`, `text-fg-subtle`,
+  `border-line`, `text-ok`, …). One sweep, both themes, and it retires the "no semantic token
+  layer" debt logged in `.fe/design-system.md`.
+  - Top navbar → **sidebar** on `md+` (collapsible to an icon rail, persisted). Per the user,
+    the **mobile bottom tab bar stays** — it's the right pattern on phones — so mobile gets a
+    slim top bar (brand + theme toggle) plus the existing bottom tabs.
+  - Theme modes are `light | dark | system`, default **system**. A blocking inline script in
+    `<head>` applies the class before paint (no FOUC); the value read from `localStorage` is
+    validated against an allowlist before it is used as a class name.
+  - **Tests were explicitly waived by the user for this change** (repo has no test setup).
+    Verification was lint + typecheck + build-compile + rendered-HTML inspection only.
+
 ## Gotchas
 - **Never bind-mount host `node_modules` into the linux container** — `better-sqlite3` is
   compiled for the host (macOS/arm); the container needs its own linux build. We mask
@@ -44,3 +60,18 @@ update after every change.
   so `chown -R node:node /app` in the Dockerfile (before `USER node`) lets the non-root
   process write to the `node_modules`/`.next` volumes. Don't forget the `chown` if adding a
   new volume-masked path.
+- **`pnpm build` can't fully run outside the container** — it compiles and typechecks fine,
+  then dies at "Collecting page data" with `invalid ELF header` on `better-sqlite3` (the
+  host's macOS binary). So the honest local gate is: `pnpm lint` + `npx tsc --noEmit` +
+  `pnpm build` reaching "Finished TypeScript", then smoke-testing routes against the
+  container's dev server on :3001. Don't report a green build from outside Docker.
+- **Theme/sidebar state must not live in React state.** Reading `localStorage` in an effect
+  and calling `setState` trips this project's hard `react-hooks/set-state-in-effect` error
+  *and* flashes the wrong theme. The pattern here: a blocking `<head>` script writes
+  `class`/`data-*` onto `<html>` pre-paint, and components read it with
+  `useSyncExternalStore`. `<html>` needs `suppressHydrationWarning`.
+- **Tailwind v4 sorts variant utilities after plain ones**, so `w-60 rail:w-16` resolves
+  correctly even though `@custom-variant rail (&:where(...))` has zero added specificity.
+  Verified in the compiled CSS (`rail:w-16` emitted after `w-60`).
+- Tailwind v4 **does** support fractional spacing like `size-4.5` (dynamic spacing scale) —
+  it compiles to `1.125rem`. Grepping the built CSS for it needs the escaped form `size-4\\.5`.
