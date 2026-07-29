@@ -36,7 +36,7 @@ export function Avatar({
         width={size}
         height={size}
         onError={() => setBroken(true)}
-        className="shrink-0 rounded-full border border-neutral-700 object-cover"
+        className="shrink-0 rounded-full border border-line-strong object-cover"
         style={{ width: size, height: size }}
       />
     );
@@ -45,7 +45,7 @@ export function Avatar({
   // Fallback: initial on a neutral disc.
   return (
     <div
-      className="flex shrink-0 items-center justify-center rounded-full border border-neutral-700 bg-neutral-800 font-mono text-sky-300"
+      className="flex shrink-0 items-center justify-center rounded-full border border-line-strong bg-surface-3 font-mono text-accent"
       style={{ width: size, height: size, fontSize: size * 0.4 }}
     >
       {namespace.charAt(0).toUpperCase()}

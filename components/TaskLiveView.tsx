@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Check,
   FileText,
+  Flag,
   ImageIcon,
   ListTree,
   MessageSquare,
@@ -15,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { ACTIVE_STATUSES, STATUS_LABEL, reportHasFindings } from "@/lib/ui";
+import { Button } from "@/components/ui/button";
 import { AttachmentPicker } from "@/components/AttachmentPicker";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Markdown } from "@/components/Markdown";
@@ -400,9 +402,15 @@ export function TaskLiveView({
     });
   }
 
+  const [stopping, setStopping] = useState(false);
   async function stop() {
-    await fetch(`${runnerUrl}/tasks/${taskId}/stop`, { method: "POST" });
-    router.refresh();
+    setStopping(true);
+    try {
+      await fetch(`${runnerUrl}/tasks/${taskId}/stop`, { method: "POST" });
+      router.refresh();
+    } finally {
+      setStopping(false);
+    }
   }
 
   // A test-scenario file referenced in a report, opened in a modal.
@@ -463,47 +471,50 @@ export function TaskLiveView({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2.5">
           <StatusBadge status={status} />
-          <span className="inline-flex items-center gap-1.5 text-xs text-neutral-500">
+          <span className="inline-flex items-center gap-1.5 text-xs text-fg-faint">
             <span
               className={`size-1.5 rounded-full ${
                 connected
-                  ? "bg-emerald-400"
+                  ? "bg-ok"
                   : active
-                    ? "animate-pulse bg-amber-400"
-                    : "bg-neutral-600"
+                    ? "animate-pulse bg-warn"
+                    : "bg-fg-ghost"
               }`}
             />
             {connected ? "live" : active ? "reconnecting…" : "ended"}
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <button
+          <Button
+            size="sm"
             onClick={() => setShowActivity((v) => !v)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800"
+            aria-expanded={showActivity}
+            icon={<ListTree className="size-3.5" />}
           >
-            <ListTree className="size-3.5" />
             {showActivity
               ? "Hide activity"
               : `Show activity${hiddenCount ? ` (${hiddenCount})` : ""}`}
-          </button>
+          </Button>
           {active && (
-            <button
+            <Button
+              size="sm"
+              variant="danger"
               onClick={stop}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm text-red-300 hover:bg-red-500/20"
+              loading={stopping}
+              icon={<Square className="size-3.5 fill-current" />}
             >
-              <Square className="size-3.5 fill-current" />
-              Stop
-            </button>
+              {stopping ? "Stopping…" : "Stop"}
+            </Button>
           )}
         </div>
       </div>
 
       <div
         ref={scroller}
-        className="scroll-thin h-[55vh] overflow-y-auto rounded-xl border border-neutral-800 bg-neutral-950 p-4"
+        className="scroll-thin h-[55vh] overflow-y-auto rounded-xl border border-line bg-sunken p-4"
       >
         {visible.length === 0 && (!showActivity || !live) && (
-          <p className="text-sm text-neutral-500">
+          <p className="text-sm text-fg-faint">
             {active
               ? "Agent is working… proposals, approvals and reports will appear here."
               : "Waiting for the agent…"}
@@ -530,7 +541,7 @@ export function TaskLiveView({
             ),
           )}
           {showActivity && live && (
-            <div className="whitespace-pre-wrap text-sm text-neutral-300">
+            <div className="whitespace-pre-wrap text-sm text-fg-muted">
               {live}
               <span className="ml-0.5 animate-pulse">▍</span>
             </div>
@@ -541,24 +552,25 @@ export function TaskLiveView({
       {!active && (
         <div className="mt-4">
           <div className="flex flex-wrap items-center gap-3">
-            <p className="text-sm text-neutral-400">
+            <p className="text-sm text-fg-subtle">
               Task {STATUS_LABEL[status as keyof typeof STATUS_LABEL] ?? status}.
             </p>
             {(status === "failed" || status === "cancelled") && (
-              <button
+              <Button
+                size="sm"
+                variant="accent"
                 onClick={() => continueRun(false)}
-                disabled={continuing}
-                className="inline-flex items-center gap-2 rounded-lg border border-sky-700 bg-sky-600/15 px-3.5 py-1.5 text-sm font-medium text-sky-200 hover:bg-sky-600/25 disabled:opacity-50"
+                loading={continuing}
+                icon={<RotateCcw className="size-3.5" />}
               >
-                <RotateCcw className="size-3.5" />
                 {continuing ? "Resuming…" : "Continue from where it left off"}
-              </button>
+              </Button>
             )}
           </div>
 
           {/* Ask the agent to keep going — request changes (with optional files) on the
               result; it resumes the same session and updates its earlier work. */}
-          <div className="mt-3 overflow-hidden rounded-xl border border-neutral-700 bg-neutral-950 focus-within:border-sky-500 focus-within:ring-2 focus-within:ring-sky-500/20">
+          <div className="mt-3 overflow-hidden rounded-xl border border-line-strong bg-sunken focus-within:border-accent focus-within:ring-2 focus-within:ring-ring/25">
             <textarea
               value={changeReq}
               onChange={(e) => setChangeReq(e.target.value)}
@@ -572,23 +584,25 @@ export function TaskLiveView({
                 )
                   continueRun(true);
               }}
-              className="w-full resize-y bg-transparent px-3 py-2.5 text-sm leading-relaxed text-neutral-100 outline-none placeholder:text-neutral-600"
+              className="w-full resize-y bg-transparent px-3 py-2.5 text-sm leading-relaxed text-fg-strong outline-none placeholder:text-fg-faint"
             />
-            <div className="border-t border-neutral-800 px-3 py-2">
+            <div className="border-t border-line px-3 py-2">
               <AttachmentPicker files={changeFiles} setFiles={setChangeFiles} />
             </div>
-            <div className="flex items-center justify-between gap-3 border-t border-neutral-800 px-3 py-2">
-              <span className="text-xs text-neutral-600">
+            <div className="flex items-center justify-between gap-3 border-t border-line px-3 py-2">
+              <span className="text-xs text-fg-ghost">
                 Continues the same session — edits its prior work, doesn&apos;t restart.
               </span>
-              <button
+              <Button
+                size="sm"
+                variant="primary"
                 onClick={() => continueRun(true)}
-                disabled={continuing || (!changeReq.trim() && changeFiles.length === 0)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-blue-700 bg-gradient-to-b from-sky-500 to-blue-600 px-3.5 py-1.5 text-sm font-semibold text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!changeReq.trim() && changeFiles.length === 0}
+                loading={continuing}
+                icon={<Send className="size-3.5" />}
               >
-                <Send className="size-3.5" />
                 {continuing ? "Sending…" : "Send to agent"}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -618,14 +632,16 @@ function GateCard({
   onRespond: (allow: boolean) => void;
 }) {
   return (
-    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4">
-      <div className="mb-2 flex items-center gap-2 text-sm font-medium text-amber-200">
-        <span className="text-base">🚦</span>
+    // A *pending* gate is the one thing the user must act on, so it gets a louder
+    // border + ring than the resolved gate bubbles further up the transcript.
+    <div className="rounded-lg border border-warn bg-warn-soft p-4 ring-1 ring-warn-line">
+      <div className="mb-2 flex items-center gap-2 text-sm font-medium text-warn">
+        <Flag className="size-4 shrink-0" aria-hidden="true" />
         {gate.gate === "proposal"
           ? "Proposal — approve to start building"
           : "Change report — approve to commit"}
       </div>
-      <div className="mb-3 max-h-72 overflow-auto rounded-lg bg-neutral-950/50 p-3">
+      <div className="mb-3 max-h-72 overflow-auto rounded-lg bg-sunken p-3">
         <Markdown>{gate.summary}</Markdown>
       </div>
       <textarea
@@ -633,21 +649,15 @@ function GateCard({
         onChange={(e) => setFeedback(e.target.value)}
         placeholder="Optional feedback (sent with Approve-with-changes or Reject)"
         rows={2}
-        className="mb-2 w-full rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-amber-500"
+        className="mb-2 w-full rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm text-fg outline-none focus:border-warn focus-visible:ring-2 focus-visible:ring-warn-line"
       />
       <div className="flex flex-wrap gap-2">
-        <button
-          onClick={() => onRespond(true)}
-          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
-        >
+        <Button variant="success" onClick={() => onRespond(true)}>
           {feedback.trim() ? "Approve with changes" : "Approve"}
-        </button>
-        <button
-          onClick={() => onRespond(false)}
-          className="rounded-lg border border-red-800 px-4 py-2 text-sm text-red-300 hover:bg-red-950/50"
-        >
+        </Button>
+        <Button variant="danger" onClick={() => onRespond(false)}>
           Reject &amp; revise
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -666,28 +676,28 @@ function BubbleView({
 }) {
   if (bubble.kind === "request")
     return (
-      <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 p-4">
-        <div className="mb-2 inline-flex items-center gap-1.5 text-xs font-medium text-sky-300">
+      <div className="rounded-lg border border-info-line bg-info-soft p-4">
+        <div className="mb-2 inline-flex items-center gap-1.5 text-xs font-medium text-accent">
           <MessageSquare className="size-3.5" /> Request
         </div>
         {bubble.text.trim() ? (
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-200">
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-fg">
             {bubble.text}
           </p>
         ) : (
-          <p className="text-sm text-neutral-500">(no description)</p>
+          <p className="text-sm text-fg-faint">(no description)</p>
         )}
         {bubble.attachments.length > 0 && (
           <div className="mt-2.5 flex flex-wrap gap-2">
             {bubble.attachments.map((a, i) => (
               <span
                 key={`${a.name}-${i}`}
-                className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-300"
+                className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-lg border border-line-strong bg-surface-2 px-2 py-1 text-xs text-fg-muted"
               >
                 {a.type.startsWith("image/") ? (
-                  <ImageIcon className="size-3.5 shrink-0 text-sky-400" />
+                  <ImageIcon className="size-3.5 shrink-0 text-accent" />
                 ) : (
-                  <FileText className="size-3.5 shrink-0 text-violet-400" />
+                  <FileText className="size-3.5 shrink-0 text-violet" />
                 )}
                 <span className="truncate">{a.name}</span>
               </span>
@@ -698,25 +708,26 @@ function BubbleView({
     );
   if (bubble.kind === "log")
     return (
-      <p className="font-mono text-xs text-neutral-500">— {bubble.text}</p>
+      <p className="font-mono text-xs text-fg-faint">— {bubble.text}</p>
     );
   if (bubble.kind === "report")
     return (
-      <div className="rounded-lg border border-neutral-700 bg-neutral-900/60 p-4">
+      <div className="rounded-lg border border-line-strong bg-surface-2 p-4">
         <div className="mb-2 flex items-center justify-between gap-2">
-          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-neutral-400">
+          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-fg-subtle">
             <FileText className="size-3.5" /> Report
           </span>
           {onConvert && reportHasFindings(bubble.text) && (
-            <button
+            <Button
+              size="sm"
+              variant="accent"
               onClick={() => onConvert(bubble.text)}
-              disabled={converting}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-300 hover:bg-sky-500/20 disabled:opacity-50"
+              loading={converting}
+              icon={<Wrench className="size-3.5" />}
               title="Create a new task that fixes the issues in this report"
             >
-              <Wrench className="size-3.5" />
               {converting ? "Creating…" : "Create fix task"}
-            </button>
+            </Button>
           )}
         </div>
         <Markdown onFileClick={onFileClick}>{bubble.text}</Markdown>
@@ -727,8 +738,8 @@ function BubbleView({
       <div
         className={`ml-8 inline-flex max-w-[calc(100%-2rem)] items-start gap-1.5 rounded-lg border px-3 py-2 text-sm ${
           bubble.allow
-            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-            : "border-red-500/30 bg-red-500/10 text-red-200"
+            ? "border-ok-line bg-ok-soft text-ok"
+            : "border-danger-line bg-danger-soft text-danger"
         }`}
       >
         {bubble.allow ? (
@@ -741,9 +752,9 @@ function BubbleView({
     );
   if (bubble.kind === "gate")
     return (
-      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
-        <div className="mb-1.5 flex items-center gap-2 text-sm font-medium text-amber-300">
-          <span>🚦</span>
+      <div className="rounded-lg border border-warn-line bg-warn-soft p-3">
+        <div className="mb-1.5 flex items-center gap-2 text-sm font-medium text-warn">
+          <Flag className="size-3.5 shrink-0" aria-hidden="true" />
           {bubble.gate.gate === "proposal" ? "Proposal" : "Change report"}
         </div>
         <div className="max-h-72 overflow-auto">
@@ -753,14 +764,14 @@ function BubbleView({
     );
   if (bubble.kind === "user")
     return (
-      <div className="ml-8 rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-sm text-neutral-300">
+      <div className="ml-8 rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm text-fg-muted">
         {bubble.text}
       </div>
     );
   return (
-    <div className="rounded-lg bg-neutral-900/40 px-3 py-2">
+    <div className="rounded-lg bg-surface px-3 py-2">
       {bubble.text && (
-        <p className="whitespace-pre-wrap text-sm text-neutral-200">
+        <p className="whitespace-pre-wrap text-sm text-fg">
           {bubble.text}
         </p>
       )}
@@ -768,11 +779,11 @@ function BubbleView({
         <div className="mt-1.5 space-y-1.5">
           {bubble.tools.map((t, i) => (
             <div key={i}>
-              <span className="rounded bg-sky-500/15 px-1.5 py-0.5 font-mono text-xs text-sky-300">
+              <span className="rounded bg-info-soft px-1.5 py-0.5 font-mono text-xs text-accent">
                 {t.name}
               </span>
               {t.detail && (
-                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-neutral-950/70 px-2 py-1 font-mono text-xs text-neutral-400">
+                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-sunken px-2 py-1 font-mono text-xs text-fg-subtle">
                   {t.detail}
                 </pre>
               )}
@@ -780,8 +791,8 @@ function BubbleView({
                 <pre
                   className={`mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded px-2 py-1 font-mono text-xs ${
                     t.isError
-                      ? "bg-red-950/40 text-red-300"
-                      : "bg-neutral-900/60 text-neutral-500"
+                      ? "bg-danger-soft text-danger"
+                      : "bg-surface-2 text-fg-faint"
                   }`}
                 >
                   {t.result}

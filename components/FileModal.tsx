@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Copy, Loader2, Send, X } from "lucide-react";
+import { Check, Copy, Loader2, Send } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
+import { Button } from "@/components/ui/button";
+import { Modal } from "@/components/ui/modal";
 
 /** A pm task spec lives at `.pm/tasks/<timestamp>/<task>.md`. */
 const isPmTaskPath = (p: string) => /(^|\/)\.pm\/tasks\//.test(p);
@@ -61,11 +63,7 @@ export function FileModal({
       .catch((e) => setErr((e as Error).message));
   }, [projectId, member, path]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // Escape-to-close, the focus trap, and scroll locking all live in `Modal`.
 
   const isMarkdown = path.endsWith(".md") || path.endsWith(".markdown");
   // Only individual task files are hand-offable — not the request's index/summary.
@@ -127,81 +125,76 @@ export function FileModal({
   const assignee = content && isTask ? targetNamespace(parseFrontmatter(content)) : null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between gap-3 border-b border-neutral-800 px-4 py-3">
-          <span className="truncate font-mono text-sm text-neutral-200">{path}</span>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              onClick={copy}
-              disabled={content === null}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
-            >
-              {copied ? (
-                <>
-                  <Check className="size-3.5 text-emerald-400" /> Copied
-                </>
+    <Modal
+      label={path}
+      header={<span className="truncate font-mono text-sm text-fg">{path}</span>}
+      onClose={onClose}
+      className="max-w-3xl"
+      actions={
+        <>
+          <Button
+            size="sm"
+            onClick={copy}
+            disabled={content === null}
+            icon={
+              copied ? (
+                <Check className="size-3.5 text-ok" />
               ) : (
-                <>
-                  <Copy className="size-3.5" /> Copy
-                </>
-              )}
-            </button>
-            {isTask && (
-              <button
-                onClick={createTask}
-                disabled={content === null || creating}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-300 hover:bg-sky-500/20 disabled:opacity-40"
-                title={assignee ? `Dispatch this task to the ${assignee} agent` : "Create a task"}
-              >
-                {creating ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <Send className="size-3.5" />
-                )}
-                {creating
-                  ? "Creating…"
-                  : `Create task${assignee ? ` → ${assignee}` : ""}`}
-              </button>
-            )}
-            <button
-              onClick={onClose}
-              className="rounded-lg p-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
-              aria-label="Close"
+                <Copy className="size-3.5" />
+              )
+            }
+          >
+            {copied ? "Copied" : "Copy"}
+          </Button>
+          {isTask && (
+            <Button
+              size="sm"
+              variant="accent"
+              onClick={createTask}
+              disabled={content === null}
+              loading={creating}
+              icon={<Send className="size-3.5" />}
+              title={
+                assignee
+                  ? `Dispatch this task to the ${assignee} agent`
+                  : "Create a task"
+              }
             >
-              <X className="size-4" />
-            </button>
-          </div>
-        </div>
-        {createErr && (
-          <p className="border-b border-red-500/20 bg-red-500/10 px-4 py-2 text-xs text-red-300">
-            {createErr}
-          </p>
-        )}
-        <div className="scroll-thin overflow-auto p-4">
-          {err ? (
-            <p className="p-3 text-sm text-red-400">{err}</p>
-          ) : content === null ? (
-            <p className="inline-flex items-center gap-2 p-3 text-sm text-neutral-500">
-              <Loader2 className="size-4 animate-spin" /> Loading file…
-            </p>
-          ) : content.trim() === "" ? (
-            <p className="p-3 text-sm text-neutral-500">This file is empty.</p>
-          ) : isMarkdown ? (
-            <Markdown>{content}</Markdown>
-          ) : (
-            <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-neutral-300">
-              {content}
-            </pre>
+              {creating
+                ? "Creating…"
+                : `Create task${assignee ? ` → ${assignee}` : ""}`}
+            </Button>
           )}
-        </div>
+        </>
+      }
+    >
+      {createErr && (
+        <p
+          role="alert"
+          className="border-b border-danger-line bg-danger-soft px-4 py-2 text-xs text-danger"
+        >
+          {createErr}
+        </p>
+      )}
+      <div className="scroll-thin overflow-auto p-4">
+        {err ? (
+          <p role="alert" className="p-3 text-sm text-danger">
+            {err}
+          </p>
+        ) : content === null ? (
+          <p className="inline-flex items-center gap-2 p-3 text-sm text-fg-faint">
+            <Loader2 className="size-4 animate-spin" /> Loading file…
+          </p>
+        ) : content.trim() === "" ? (
+          <p className="p-3 text-sm text-fg-faint">This file is empty.</p>
+        ) : isMarkdown ? (
+          <Markdown>{content}</Markdown>
+        ) : (
+          <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-fg-muted">
+            {content}
+          </pre>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }

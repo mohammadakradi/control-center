@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { desc, eq } from "drizzle-orm";
+import { FolderGit2 } from "lucide-react";
 import { db } from "@/lib/db";
 import { agents, projects, tasks } from "@/lib/db/schema";
 import { AddProjectForm } from "@/components/AddProjectForm";
 import { AgentContributors } from "@/components/AgentContributors";
+import { EmptyState, PageHeader } from "@/components/ui-cards";
 
 export const dynamic = "force-dynamic";
 
@@ -28,41 +30,45 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div>
-      <h1 className="text-2xl font-semibold">Projects</h1>
-      <p className="mt-1 text-sm text-neutral-400">
-        Local folders the agent can work in. Add one by absolute path.
-      </p>
+    <div className="space-y-6">
+      <PageHeader
+        title="Projects"
+        description="Local folders the agent can work in. Add one by absolute path."
+      />
 
-      <div className="mt-5 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
+      <div className="rounded-xl border border-line bg-surface p-4">
         <AddProjectForm />
       </div>
 
-      <div className="mt-6 grid gap-3">
+      <div className="grid gap-3">
         {list.length === 0 ? (
-          <p className="text-neutral-400">No projects yet.</p>
+          <EmptyState
+            icon={<FolderGit2 className="size-6" />}
+            title="No projects yet"
+            hint="Add a local folder above to give your agents somewhere to work."
+          />
         ) : (
           list.map((p) => (
             <Link
               key={p.id}
               href={`/projects/${p.id}`}
-              className="flex items-center justify-between rounded-xl border border-neutral-800 bg-neutral-900/40 p-4 hover:border-neutral-700"
+              className="flex items-center justify-between rounded-xl border border-line bg-surface p-4 hover:border-line-strong"
             >
               <div className="min-w-0">
                 <div className="truncate font-medium">{p.name}</div>
-                <div className="truncate font-mono text-xs text-neutral-500">
+                <div className="truncate font-mono text-xs text-fg-faint">
                   {p.path}
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-3 text-xs">
                 {p.isWorkspace && (
-                  <span className="rounded-full border border-violet-500/30 bg-violet-500/15 px-2 py-0.5 text-violet-300">
+                  <span className="rounded-full border border-violet-line bg-violet-soft px-2 py-0.5 text-violet">
                     workspace · {p.members.length}
                   </span>
                 )}
                 <AgentContributors
                   namespaces={contributors.get(p.id) ?? []}
-                  ringClass="ring-neutral-900"
+                  ringClass="ring-surface"
                 />
               </div>
             </Link>

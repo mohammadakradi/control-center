@@ -1,18 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, X } from "lucide-react";
+import { Loader2 } from "lucide-react";
+import { Modal } from "@/components/ui/modal";
 
 function DiffView({ diff }: { diff: string }) {
   return (
     <pre className="font-mono text-xs leading-relaxed">
       {diff.split("\n").map((line, i) => {
-        let cls = "text-neutral-400";
+        let cls = "text-fg-subtle";
         if (line.startsWith("+") && !line.startsWith("+++"))
-          cls = "bg-emerald-500/10 text-emerald-300";
+          cls = "bg-ok-soft text-ok";
         else if (line.startsWith("-") && !line.startsWith("---"))
-          cls = "bg-red-500/10 text-red-300";
-        else if (line.startsWith("@@")) cls = "text-sky-400";
+          cls = "bg-danger-soft text-danger";
+        else if (line.startsWith("@@")) cls = "text-accent";
         else if (
           line.startsWith("diff ") ||
           line.startsWith("index ") ||
@@ -21,7 +22,7 @@ function DiffView({ diff }: { diff: string }) {
           line.startsWith("new file") ||
           line.startsWith("deleted file")
         )
-          cls = "text-neutral-600";
+          cls = "text-fg-ghost";
         return (
           <div key={i} className={`whitespace-pre-wrap px-2 ${cls}`}>
             {line || " "}
@@ -58,49 +59,30 @@ export function DiffModal({
       .catch((e) => setErr((e as Error).message));
   }, [projectId, member, path]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
-      onClick={onClose}
+    <Modal
+      label={`Diff for ${path}`}
+      header={<span className="truncate font-mono text-sm text-fg">{path}</span>}
+      onClose={onClose}
+      className="max-w-4xl"
     >
-      <div
-        className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between gap-3 border-b border-neutral-800 px-4 py-3">
-          <span className="truncate font-mono text-sm text-neutral-200">
-            {path}
-          </span>
-          <button
-            onClick={onClose}
-            className="shrink-0 rounded-lg p-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
-            aria-label="Close"
-          >
-            <X className="size-4" />
-          </button>
-        </div>
-        <div className="scroll-thin overflow-auto p-3">
-          {err ? (
-            <p className="p-3 text-sm text-red-400">{err}</p>
-          ) : diff === null ? (
-            <p className="inline-flex items-center gap-2 p-3 text-sm text-neutral-500">
-              <Loader2 className="size-4 animate-spin" /> Loading diff…
-            </p>
-          ) : diff.trim() === "" ? (
-            <p className="p-3 text-sm text-neutral-500">
-              No diff available for this file.
-            </p>
-          ) : (
-            <DiffView diff={diff} />
-          )}
-        </div>
+      <div className="scroll-thin overflow-auto bg-sunken p-3">
+        {err ? (
+          <p role="alert" className="p-3 text-sm text-danger">
+            {err}
+          </p>
+        ) : diff === null ? (
+          <p className="inline-flex items-center gap-2 p-3 text-sm text-fg-faint">
+            <Loader2 className="size-4 animate-spin" /> Loading diff…
+          </p>
+        ) : diff.trim() === "" ? (
+          <p className="p-3 text-sm text-fg-faint">
+            No diff available for this file.
+          </p>
+        ) : (
+          <DiffView diff={diff} />
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }

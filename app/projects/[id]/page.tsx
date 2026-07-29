@@ -89,7 +89,7 @@ export default async function ProjectDetail({
     <div>
       <Link
         href="/projects"
-        className="inline-flex items-center gap-1.5 text-sm text-neutral-400 hover:text-white"
+        className="inline-flex items-center gap-1.5 text-sm text-fg-subtle hover:text-fg-strong"
       >
         <ArrowLeft className="size-4" /> Projects
       </Link>
@@ -99,7 +99,7 @@ export default async function ProjectDetail({
         <div className="min-w-0 max-w-full">
           <ProjectName projectId={project.id} name={project.name} />
           <div className="mt-2.5 flex flex-wrap items-center gap-2.5 text-xs">
-            <span className="inline-flex min-w-0 items-center gap-1.5 font-mono text-neutral-500">
+            <span className="inline-flex min-w-0 items-center gap-1.5 font-mono text-fg-faint">
               <FolderGit2 className="size-3.5 shrink-0" />
               <span className="truncate">{project.path}</span>
             </span>
@@ -115,7 +115,7 @@ export default async function ProjectDetail({
             )}
             {contributors.length > 0 && (
               <span className="inline-flex items-center gap-2">
-                <Users className="size-3.5 text-neutral-500" />
+                <Users className="size-3.5 text-fg-faint" />
                 <AgentContributors namespaces={contributors} size={24} />
               </span>
             )}
@@ -130,7 +130,7 @@ export default async function ProjectDetail({
           title="New task"
           className="lg:col-span-2"
           right={
-            <span className="text-xs text-neutral-500">
+            <span className="text-xs text-fg-faint">
               Issue a command to an agent
             </span>
           }

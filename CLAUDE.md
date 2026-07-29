@@ -5,8 +5,8 @@
 ## Project overview
 Agent Platform is a control-center web UI for managing AI agents, projects, and tasks. It is
 a full-stack Next.js 16 App Router app running in SSR mode (`force-dynamic`), with a
-companion Hono runner process for task execution. The UI is dark-only and presents agent
-activity in real time via SSE.
+companion Hono runner process for task execution. The UI supports light/dark/system themes
+and presents agent activity in real time via SSE.
 
 ## Frontend stack
 - Framework: Next.js 16.2.9 (App Router) — **non-standard version; read `node_modules/next/dist/docs/` before coding**
@@ -14,15 +14,21 @@ activity in real time via SSE.
 - Build tool: Next.js built-in (Turbopack/PostCSS)
 - Package manager: pnpm
 - Styling: Tailwind CSS v4 (CSS-first, no config file — `@theme` in `app/globals.css`)
+- Theming: **light / dark / system**, default system. Semantic CSS-variable token layer in
+  `app/globals.css` (`:root` = light, `.dark` = dark); blocking init scripts in `<head>` apply
+  the theme + sidebar width before first paint
 - Component library: Bespoke (`components/`) — no shadcn/Radix/MUI
-- Routing & state: App Router; no external state library; `usePathname` for active nav
+- Routing & state: App Router; no external state library; `usePathname` for active nav;
+  `useSyncExternalStore` for theme/sidebar state read off `<html>`
 - Icons: lucide-react `^1.21.0`
 - Fonts: Geist Sans + Geist Mono via `next/font/google`
 
 ## Design system
 **Source of truth: `.fe/design-system.md`** — tokens (colors, typography, spacing, radii),
-dark-mode mechanism, and the reusable-component catalog. Reuse tokens & components from
-there; never hardcode values a token already expresses.
+the light/dark mechanism, and the reusable-component catalog. Reuse tokens & components from
+there; never hardcode values a token already expresses. **Components must use the semantic
+utilities (`bg-surface`, `text-fg-subtle`, `border-line`, `text-ok`, …), never raw palette
+shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 
 ## Build / run / test
 > Commands run during onboarding; baseline status noted.
@@ -71,11 +77,18 @@ there; never hardcode values a token already expresses.
 - `app/tasks/[id]/` — Task live view
 - `app/api/` — API routes (projects, tasks, agents, git, fs, diff, file)
 - `components/` — All reusable UI components (bespoke)
-- `components/ui-cards.tsx` — Core primitives: `card`, `Chip`, `Tile`, `Fact`
+- `components/ui-cards.tsx` — Core primitives: `card`, `CardSection`, `PageHeader`,
+  `EmptyState`, `Chip`, `Tile`, `Fact`
+- `components/ui/` — Base primitives: `button.tsx`, `modal.tsx`, `select.tsx`
+- `components/Sidebar.tsx` — Desktop primary nav (collapsible rail, `md+`)
+- `components/MobileNav.tsx` — Mobile top bar + bottom tab bar (`< md`)
+- `components/ThemeToggle.tsx` — Light/dark/system control (segmented + icon variants)
 - `lib/` — Shared logic: db (Drizzle + SQLite), discovery, git, ui utils
+- `lib/theme.ts` / `lib/sidebar.ts` — Pre-paint init scripts + external stores for the
+  theme and sidebar state (both persisted in `localStorage`, applied to `<html>`)
 - `runner/` — Hono task-execution server (separate from Next.js)
 - `public/` — Agent avatar images (`<namespace>-agent.png`)
-- Theme/global styles: `app/globals.css`
+- Theme tokens/global styles: `app/globals.css`
 - Tests: none
 
 ## Code graph (graphify)
