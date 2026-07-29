@@ -12,13 +12,14 @@ import {
 } from "@/lib/sidebar";
 import { ThemeToggle, ThemeToggleIcon } from "@/components/ThemeToggle";
 import { NAV_LINKS, isActive } from "@/components/nav-links";
+import { SignOutButton } from "@/components/SignOutButton";
 
 /** Desktop primary navigation. Hidden below `md`, where `MobileNav` takes over.
  *
  *  Collapse is styled entirely through the `rail:` variant (driven by
  *  `data-sidebar` on <html>), so the width is correct on first paint. React only
  *  reads the state to keep ARIA attributes honest. */
-export function Sidebar() {
+export function Sidebar({ userEmail }: { userEmail?: string }) {
   const pathname = usePathname();
   const collapsed = useSyncExternalStore(
     subscribeSidebar,
@@ -81,6 +82,23 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="space-y-2 border-t border-line p-3 rail:px-2">
+        {userEmail && (
+          <div className="rail:hidden">
+            <p
+              title={userEmail}
+              className="truncate px-2 text-xs text-fg-faint"
+            >
+              {userEmail}
+            </p>
+            <SignOutButton className="w-full px-3 py-2 text-sm" />
+          </div>
+        )}
+        {userEmail && (
+          <div className="hidden justify-center rail:flex">
+            <SignOutButton iconOnly className="p-2" />
+          </div>
+        )}
+
         <div className="rail:hidden">
           <ThemeToggle />
         </div>

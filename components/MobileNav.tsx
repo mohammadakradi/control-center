@@ -4,10 +4,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ThemeToggleIcon } from "@/components/ThemeToggle";
 import { NAV_LINKS, isActive } from "@/components/nav-links";
+import { SignOutButton } from "@/components/SignOutButton";
 
 /** Slim mobile header — carries the brand and the theme control, which live in
  *  the sidebar footer on desktop. Hidden from `md` up. */
-export function MobileTopBar() {
+export function MobileTopBar({ userEmail }: { userEmail?: string }) {
   return (
     <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-line bg-canvas/80 px-4 backdrop-blur md:hidden">
       <Link
@@ -19,7 +20,10 @@ export function MobileTopBar() {
         <img src="/logo.svg" alt="" width={22} height={22} aria-hidden="true" />
         Control Center
       </Link>
-      <ThemeToggleIcon />
+      <div className="flex items-center gap-1">
+        <ThemeToggleIcon />
+        {userEmail && <SignOutButton iconOnly className="p-2" />}
+      </div>
     </header>
   );
 }

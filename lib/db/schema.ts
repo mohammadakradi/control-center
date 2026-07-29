@@ -1,6 +1,32 @@
 import { sql } from "drizzle-orm";
 import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
+/** A registered account. */
+export const users = sqliteTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    email: text("email").notNull(),
+    passwordHash: text("password_hash").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => [uniqueIndex("users_email_unq").on(t.email)],
+);
+
+/** A signed-in session, keyed by a hash of the opaque cookie token (never the raw token). */
+export const sessions = sqliteTable("sessions", {
+  id: text("id").primaryKey(), // sha256 hex of the raw session token
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(unixepoch())`),
+});
+
 /** A discovered Claude Code agent (a plugin). */
 export const agents = sqliteTable("agents", {
   id: text("id").primaryKey(), // plugin id, e.g. "swe@swe-agent-local"
@@ -146,3 +172,5 @@ export type Agent = typeof agents.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskEvent = typeof taskEvents.$inferSelect;
+export type User = typeof users.$inferSelect;
+export type Session = typeof sessions.$inferSelect;
