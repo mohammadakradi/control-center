@@ -65,8 +65,9 @@ export async function POST(request: Request) {
   const ALLOWED_MODELS = new Set([
     "auto",
     "fable-5",
-    "opus-4.8",
+    "opus-5",
     "sonnet-5",
+    "opus-4.8",
     "sonnet",
     "opus",
     "sonnet-4.6",

@@ -1,8 +1,10 @@
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
-/** Model labels (stored on the task) → SDK model ids. */
+/** Model labels (stored on the task) → SDK model ids. Opus 4.8 stays resolvable
+ *  (legacy/explicit) but auto-routing never selects it — Opus 5 replaced it. */
 export const MODELS = {
   "sonnet-5": "claude-sonnet-5",
+  "opus-5": "claude-opus-5",
   "opus-4.8": "claude-opus-4-8",
   "fable-5": "claude-fable-5",
 } as const;
@@ -25,12 +27,12 @@ const LEGACY: Record<string, ModelLabel> = {
 
 /** Complexity tiers, mapped to models per agent.
  *  - pm: Fable 5 only for very complex planning; Sonnet 5 for everything else.
- *  - swe/fe (default): Fable 5 for very complex builds, Opus 4.8 for complex work,
- *    Sonnet 5 for simple changes. Sonnet 4.6 is no longer used. */
+ *  - swe/fe (default): Fable 5 for very complex builds, Opus 5 for complex work,
+ *    Sonnet 5 for simple changes. Sonnet 4.6 / Opus 4.8 are never auto-selected. */
 type Tier = "very-complex" | "complex" | "simple";
 const TIERS: Record<string, Record<Tier, ModelLabel>> = {
   pm: { "very-complex": "fable-5", complex: "sonnet-5", simple: "sonnet-5" },
-  default: { "very-complex": "fable-5", complex: "opus-4.8", simple: "sonnet-5" },
+  default: { "very-complex": "fable-5", complex: "opus-5", simple: "sonnet-5" },
 };
 
 // Cheapest/fastest model — used for tiny side calls (naming a task) where quality
@@ -163,7 +165,7 @@ Request: ${base.slice(0, 1500)}`;
  * - "auto" → triage the request into simple/complex/very-complex and map it
  *   through the agent's tier table (for `plan` the floor is "complex"):
  *     pm      → very complex: Fable 5 · otherwise: Sonnet 5
- *     swe/fe  → very complex: Fable 5 · complex: Opus 4.8 · simple: Sonnet 5
+ *     swe/fe  → very complex: Fable 5 · complex: Opus 5 · simple: Sonnet 5
  */
 export async function resolveModel(
   namespace: string,

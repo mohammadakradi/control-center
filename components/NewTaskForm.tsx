@@ -40,7 +40,7 @@ const SWE_ORDER = ["task", "fix", "review", "ship", "onboard", "workspace"];
 const MODELS = [
   { value: "auto", label: "Auto (smart)" },
   { value: "fable-5", label: "Fable 5" },
-  { value: "opus-4.8", label: "Opus 4.8" },
+  { value: "opus-5", label: "Opus 5" },
   { value: "sonnet-5", label: "Sonnet 5" },
 ];
 
@@ -48,7 +48,7 @@ const MODELS = [
 function autoHint(namespace?: string): string {
   if (namespace === "pm")
     return "Auto picks Fable 5 for very complex planning, otherwise Sonnet 5.";
-  return "Auto picks Fable 5 for very complex tasks, Opus 4.8 for complex work, and Sonnet 5 for simple changes.";
+  return "Auto picks Fable 5 for very complex tasks, Opus 5 for complex work, and Sonnet 5 for simple changes.";
 }
 
 // Per-namespace presentation for the agent cards. Falls back gracefully for
