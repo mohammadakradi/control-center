@@ -1,5 +1,11 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  integer,
+  real,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 /** A registered account. */
 export const users = sqliteTable(
@@ -144,6 +150,15 @@ export const tasks = sqliteTable("tasks", {
   sessionId: text("session_id"), // SDK session_id, for resume fallback
   branch: text("branch"),
   error: text("error"),
+  // What this task cost to run, accumulated over every SDK turn it took — including
+  // continues/resumes, which each spawn a fresh subprocess whose own counters restart
+  // (see runner/usage.ts for how the deltas are derived). Totals cover every model the
+  // run touched: the main agent, its subagents, and the router/title calls.
+  usageInputTokens: integer("usage_input_tokens").notNull().default(0),
+  usageOutputTokens: integer("usage_output_tokens").notNull().default(0),
+  usageCacheReadTokens: integer("usage_cache_read_tokens").notNull().default(0),
+  usageCacheCreationTokens: integer("usage_cache_creation_tokens").notNull().default(0),
+  usageCostUsd: real("usage_cost_usd").notNull().default(0),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),
