@@ -17,6 +17,7 @@ import {
   type GateKind,
 } from "./approval-tool";
 import { generateTitle, resolveModel, type ModelChoice } from "./model-router";
+import { buildTaskEnv, sensitiveEnvValues, type TaskEnv } from "./user-env";
 
 export type StreamEvent = {
   id?: number;
@@ -36,6 +37,11 @@ type SessionHandle = {
   started: boolean; // false while queued behind another job on the same project
   start?: () => void; // launches the SDK session (set only while queued)
   done: boolean;
+  /** Credential values injected into this task's subprocess env. Task transcripts are
+   *  visible to every signed-in user, so any event that would echo one of these (e.g.
+   *  the agent running `env` — deliberately or via prompt injection) is scrubbed
+   *  before it is persisted or streamed. */
+  secrets: string[];
 };
 
 const sessions = new Map<string, SessionHandle>();
@@ -140,12 +146,35 @@ function extractText(m: SDKMessage): string {
   return "";
 }
 
+const REDACTED = "[REDACTED_TOKEN]";
+
+/** Replace any occurrence of the given secret values in `text`. */
+export function redactString(text: string, secrets: string[]): string {
+  let out = text;
+  for (const s of secrets) if (s) out = out.split(s).join(REDACTED);
+  return out;
+}
+
+/** Scrub secret values anywhere inside an event payload (tool output, prose, errors).
+ *  Works on the JSON serialization: tokens are plain ASCII (`sk-ant-…`), so they can't
+ *  be altered by JSON string escaping. Returns the payload unchanged when clean. */
+export function redactPayload(payload: unknown, secrets: string[]): unknown {
+  if (secrets.length === 0) return payload;
+  const json = JSON.stringify(payload);
+  if (json === undefined || !secrets.some((s) => s && json.includes(s))) return payload;
+  return JSON.parse(redactString(json, secrets));
+}
+
 function record(
   handle: SessionHandle,
   type: string,
-  payload: unknown,
+  rawPayload: unknown,
   persist = true,
 ): void {
+  // Single chokepoint for everything that reaches task_events or an SSE subscriber —
+  // the owner's injected credential must never appear in either (transcripts are
+  // visible to all signed-in users).
+  const payload = redactPayload(rawPayload, handle.secrets);
   const ts = Date.now();
   if (!persist) {
     handle.out.emit("event", { type, payload, ts } satisfies StreamEvent);
@@ -168,9 +197,11 @@ function setStatus(handle: SessionHandle, status: TaskStatus): void {
   record(handle, "status", { status });
 }
 
-function finalize(handle: SessionHandle, status: TaskStatus, error?: string): void {
+function finalize(handle: SessionHandle, status: TaskStatus, rawError?: string): void {
   if (handle.done) return;
   handle.done = true;
+  // The error column is user-visible too — scrub it like any event payload.
+  const error = rawError ? redactString(rawError, handle.secrets) : rawError;
   db.update(tasks)
     .set({ status, error: error ?? null, endedAt: new Date() })
     .where(eq(tasks.id, handle.taskId))
@@ -232,11 +263,12 @@ function nameTask(
   command: string,
   requestText: string,
   projectName: string,
+  env: TaskEnv,
 ): void {
   void (async () => {
     try {
       const title =
-        (await generateTitle(command, requestText)) ??
+        (await generateTitle(command, requestText, env)) ??
         defaultTitle(command, projectName);
       db.update(tasks).set({ title }).where(eq(tasks.id, taskId)).run();
     } catch {
@@ -283,6 +315,14 @@ function runTask(
   if (!project) throw new Error("project not found");
   if (!agent) throw new Error("agent not found");
 
+  // Resolve the owner's credential BEFORE creating a handle: every SDK session this
+  // task opens (triage, title, the run itself) bills the owner's token, and a missing
+  // token must fail the dispatch with a clear error, not a dead session. The decrypted
+  // env stays in this closure — never in the DB, task events, or logs. (Re-resolved
+  // again at launch: a queued task must not run on a token snapshot the owner has
+  // since replaced or cleared.)
+  const taskEnv = buildTaskEnv(task.userId);
+
   const channel = makeInputChannel();
   const out = new EventEmitter();
   out.setMaxListeners(50);
@@ -295,6 +335,7 @@ function runTask(
     query: null,
     started: false,
     done: false,
+    secrets: sensitiveEnvValues(taskEnv),
   };
   sessions.set(taskId, handle);
 
@@ -305,9 +346,20 @@ function runTask(
     handle.started = true;
     handle.start = undefined;
 
+    // Re-resolve the credential now that the task actually starts — it may have sat
+    // queued while the owner replaced or cleared their token in Settings.
+    let env: TaskEnv;
+    try {
+      env = buildTaskEnv(task.userId);
+    } catch (err) {
+      finalize(handle, "failed", (err as Error).message);
+      return;
+    }
+    handle.secrets = sensitiveEnvValues(env);
+
     // Name the task for readable history (fire-and-forget; never blocks the run).
     if (!resume && !task.title) {
-      nameTask(taskId, task.command, task.requestText, project.name);
+      nameTask(taskId, task.command, task.requestText, project.name, env);
     }
 
   // Whether the run has surfaced a report the user can see (report gate or a
@@ -394,6 +446,7 @@ function runTask(
         task.command,
         task.requestText,
         choice,
+        env,
       );
       db.update(tasks)
         .set({ model: chosen.label, modelReason: chosen.reason })
@@ -409,6 +462,7 @@ function runTask(
         options: {
           model: chosen.id,
           cwd: project.path,
+          env, // owner's token; replaces process.env (see buildTaskEnv)
           plugins: [{ type: "local", path: agent.sourcePath }],
           settingSources: ["user", "project", "local"],
           permissionMode: "bypassPermissions",
@@ -449,9 +503,18 @@ function runTask(
         // that finish without printing [[DONE]] — e.g. onboard — hang in "running".)
         if (m.type === "result") {
           const sub = (m as { subtype?: string }).subtype ?? "";
-          if (sub !== "success") {
+          // The SDK reports some hard failures (e.g. an invalid Anthropic token →
+          // 401) as subtype "success" with is_error: true — treat those as failed
+          // too, so a bad credential doesn't masquerade as a completed task.
+          const isErr = (m as { is_error?: boolean }).is_error === true;
+          if (sub !== "success" || isErr) {
             // error_during_execution / error_max_turns / error_max_budget_usd / …
-            finalize(handle, "failed", `run ended: ${sub || "unknown error"}`);
+            const detail = (m as { result?: string }).result;
+            finalize(
+              handle,
+              "failed",
+              (isErr && detail) || `run ended: ${sub || "unknown error"}`,
+            );
           } else if (!handle.done) {
             const gate = lastAssistantText.match(GATE_AT_END);
             if (handle.pendingApproval) {

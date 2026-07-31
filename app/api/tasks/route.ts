@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { agents, projectAgents, tasks, type Attachment } from "@/lib/db/schema";
+import { getCurrentUser } from "@/lib/auth";
 import { daemonStartTask } from "@/lib/daemon-client";
 import { saveAttachments } from "@/lib/uploads";
 import { newId } from "@/lib/util";
@@ -83,11 +84,15 @@ export async function POST(request: Request) {
     .where(eq(agents.id, fields.agentId))
     .get();
 
+  // Stamp the dispatching user as owner — their Anthropic token runs the session.
+  const user = await getCurrentUser();
+
   db.insert(tasks)
     .values({
       id,
       projectId: fields.projectId,
       agentId: fields.agentId,
+      userId: user?.id ?? null,
       command: fields.command,
       agentVersion: agent?.version ?? null,
       requestText: fields.requestText ?? "",

@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import { db } from "@/lib/db";
 import { agents, projects, taskEvents, tasks } from "@/lib/db/schema";
-import { PUBLIC_RUNNER_URL } from "@/lib/config";
 import { Avatar } from "@/components/AgentAvatar";
 import { TaskLiveView } from "@/components/TaskLiveView";
 import { RunDuration } from "@/components/RunDuration";
@@ -110,7 +109,6 @@ export default async function TaskPage({
 
       <TaskLiveView
         taskId={task.id}
-        runnerUrl={PUBLIC_RUNNER_URL}
         initialStatus={task.status}
         initialEvents={events}
         request={{

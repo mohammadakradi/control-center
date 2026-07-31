@@ -14,6 +14,7 @@ import { db } from "../lib/db";
 import { projects, tasks } from "../lib/db/schema";
 import { generateTitle } from "./model-router";
 import { defaultTitle } from "./session-manager";
+import { buildTaskEnv, type TaskEnv } from "./user-env";
 
 async function main(): Promise<void> {
   const rows = db.select().from(tasks).where(isNull(tasks.title)).all();
@@ -33,9 +34,18 @@ async function main(): Promise<void> {
       .get();
     const projectName = project?.name ?? "the project";
 
+    // Bill the task owner's token when they have one; this is an operator-run
+    // script, so otherwise just use the operator's own environment as-is.
+    let env: TaskEnv;
+    try {
+      env = buildTaskEnv(t.userId);
+    } catch {
+      env = { ...process.env };
+    }
+
     let title: string | null = null;
     try {
-      title = await generateTitle(t.command, t.requestText);
+      title = await generateTitle(t.command, t.requestText, env);
     } catch {
       /* fall back below */
     }

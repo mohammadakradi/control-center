@@ -52,11 +52,15 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
   `better-sqlite3` isn't shadowed by the host's macOS build — **never** bind-mount host
   `node_modules` into the container. After a dependency change, `pnpm dev:clean` drops those
   volumes so they re-seed from the rebuilt image.
-- **Auth:** the bind-mounted `~/.claude` does *not* carry a usable login on macOS — the
-  host login lives in the Keychain, not in `~/.claude/.credentials.json`, so the runner's
-  spawned Claude reports "Not logged in" inside the container. Provide credentials via a
-  repo-root `.env` (see `.env.example`): preferred is `CLAUDE_CODE_OAUTH_TOKEN` from
-  `claude setup-token` (subscription, long-lived); or `ANTHROPIC_API_KEY` for API billing.
+- **Claude auth is per user:** each signed-in user saves their own Anthropic token
+  (subscription token from `claude setup-token`, or an API key) under **Settings** in the
+  UI; it's encrypted (AES-256-GCM) into `data/secrets/<userId>.json` under the required
+  `SECRETS_MASTER_KEY` from the repo-root `.env` (see `.env.example`). The runner injects
+  the task owner's token into every SDK session via `Options.env` — a task whose owner has
+  no stored token fails with a clear error. The legacy shared `CLAUDE_CODE_OAUTH_TOKEN` /
+  `ANTHROPIC_API_KEY` in `.env` are honored only with `ALLOW_SHARED_TOKEN_FALLBACK=1`
+  (dev-only). Note: the bind-mounted `~/.claude` doesn't carry a usable login on macOS
+  anyway (host login lives in the Keychain).
 - **Git/GitHub:** the image installs `gh` so agents can open PRs (`/swe:ship`, `/fe:ship`)
   and the UI's push/pull work. macOS keychain/SSH creds don't cross into Linux, so set
   `GH_TOKEN` in `.env` (see `.env.example`): `gh` uses it for PRs, and `git` push/pull over
@@ -74,8 +78,11 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 - `app/page.tsx` — Dashboard (agent list, project list, recent tasks)
 - `app/agents/` — Agent list + detail pages
 - `app/projects/` — Project list + detail pages
-- `app/tasks/[id]/` — Task live view
-- `app/api/` — API routes (projects, tasks, agents, git, fs, diff, file)
+- `app/tasks/[id]/` — Task live view (SSE + gate actions via the authenticated
+  `/api/tasks/[id]/{stream,respond,reply,stop}` proxy routes — the browser never talks
+  to the runner directly)
+- `app/settings/` — Per-user settings (Anthropic token vault card)
+- `app/api/` — API routes (projects, tasks, agents, git, fs, diff, file, settings/token)
 - `components/` — All reusable UI components (bespoke)
 - `components/ui-cards.tsx` — Core primitives: `card`, `CardSection`, `PageHeader`,
   `EmptyState`, `Chip`, `Tile`, `Fact`
@@ -86,7 +93,11 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 - `lib/` — Shared logic: db (Drizzle + SQLite), discovery, git, ui utils
 - `lib/theme.ts` / `lib/sidebar.ts` — Pre-paint init scripts + external stores for the
   theme and sidebar state (both persisted in `localStorage`, applied to `<html>`)
-- `runner/` — Hono task-execution server (separate from Next.js)
+- `lib/secrets.ts` — Encrypted per-user Anthropic token vault (`data/secrets/`, master
+  key from `SECRETS_MASTER_KEY`; write-only API, tokens never leave the server)
+- `runner/` — Hono task-execution server (separate from Next.js; loopback-only, no CORS —
+  reached exclusively through the Next.js proxy routes; `runner/user-env.ts` builds each
+  task's subprocess env with the owner's token)
 - `public/` — Agent avatar images (`<namespace>-agent.png`)
 - Theme tokens/global styles: `app/globals.css`
 - Tests: none

@@ -1,6 +1,5 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import { db } from "../lib/db";
@@ -18,8 +17,9 @@ import {
 
 const TERMINAL: TaskStatus[] = ["done", "failed", "cancelled"];
 
+// No CORS on purpose: the browser never calls the runner. Only the Next.js server
+// does (same host), via the session-gated /api/tasks/[id]/* proxy routes.
 const app = new Hono();
-app.use("*", cors());
 
 app.get("/health", (c) => c.json({ ok: true }));
 

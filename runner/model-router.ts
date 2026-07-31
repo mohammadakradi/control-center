@@ -1,4 +1,5 @@
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { TaskEnv } from "./user-env";
 
 /** Model labels (stored on the task) → SDK model ids. Opus 4.8 stays resolvable
  *  (legacy/explicit) but auto-routing never selects it — Opus 5 replaced it. */
@@ -65,10 +66,12 @@ function textOf(m: SDKMessage): string {
   return "";
 }
 
-/** Cheap one-shot complexity classifier (runs on Sonnet 5, no tools). */
+/** Cheap one-shot complexity classifier (runs on Sonnet 5, no tools).
+ *  `env` carries the task owner's token so triage bills them, not a shared credential. */
 async function classify(
   command: string,
   requestText: string,
+  env: TaskEnv,
 ): Promise<{ tier: Tier; reason: string }> {
   const prompt = `Classify this software-engineering request for model routing. Reply with ONLY the tier on the first line — "simple", "complex" or "very complex" — then a short reason on the next line.
 
@@ -85,6 +88,7 @@ Request: ${requestText || "(none given)"}`;
       prompt,
       options: {
         model: MODELS["sonnet-5"],
+        env,
         allowedTools: [],
         systemPrompt: "You are a terse software task-complexity classifier.",
       },
@@ -117,6 +121,7 @@ Request: ${requestText || "(none given)"}`;
 export async function generateTitle(
   command: string,
   requestText: string,
+  env: TaskEnv,
 ): Promise<string | null> {
   const base = requestText.trim();
   if (!base) return null;
@@ -132,6 +137,7 @@ Request: ${base.slice(0, 1500)}`;
       prompt,
       options: {
         model: HAIKU,
+        env,
         allowedTools: [],
         systemPrompt: "You write terse, specific task titles.",
       },
@@ -172,6 +178,7 @@ export async function resolveModel(
   command: string,
   requestText: string,
   choice: ModelChoice,
+  env: TaskEnv,
 ): Promise<ResolvedModel> {
   const tiers = tiersFor(namespace);
 
@@ -182,7 +189,7 @@ export async function resolveModel(
   if (MECHANICAL.has(command))
     return pick(tiers.simple, `mechanical command :${command}`);
 
-  let { tier, reason } = await classify(command, requestText);
+  let { tier, reason } = await classify(command, requestText, env);
   if (COMPLEX_CMDS.has(command) && tier === "simple") {
     tier = "complex";
     reason = `:${command} is inherently complex (floor)`;

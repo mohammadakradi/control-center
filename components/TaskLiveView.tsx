@@ -255,7 +255,6 @@ function seedFromEvents(
 
 export function TaskLiveView({
   taskId,
-  runnerUrl,
   initialStatus,
   initialEvents = [],
   request,
@@ -263,7 +262,6 @@ export function TaskLiveView({
   agentId,
 }: {
   taskId: string;
-  runnerUrl: string;
   initialStatus: string;
   /** Persisted events, server-rendered so the transcript shows without the live daemon. */
   initialEvents?: StreamEvent[];
@@ -353,7 +351,7 @@ export function TaskLiveView({
     let stopped = false;
     const connect = () => {
       es = new EventSource(
-        `${runnerUrl}/tasks/${taskId}/stream?after=${lastId.current}`,
+        `/api/tasks/${taskId}/stream?after=${lastId.current}`,
       );
       es.onopen = () => setConnected(true);
       es.onmessage = (ev) => {
@@ -378,7 +376,7 @@ export function TaskLiveView({
       stopped = true;
       es?.close();
     };
-  }, [taskId, runnerUrl, handle, reconnectKey]);
+  }, [taskId, handle, reconnectKey]);
 
   // Autoscroll.
   useEffect(() => {
@@ -395,7 +393,7 @@ export function TaskLiveView({
         : "Approved"
       : `Rejected${fb ? `: ${fb}` : " — revise and present again"}`;
     setBubbles((prev) => [...prev, { kind: "decision", text: note, allow }]);
-    await fetch(`${runnerUrl}/tasks/${taskId}/respond`, {
+    await fetch(`/api/tasks/${taskId}/respond`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ allow, feedback: fb }),
@@ -406,7 +404,7 @@ export function TaskLiveView({
   async function stop() {
     setStopping(true);
     try {
-      await fetch(`${runnerUrl}/tasks/${taskId}/stop`, { method: "POST" });
+      await fetch(`/api/tasks/${taskId}/stop`, { method: "POST" });
       router.refresh();
     } finally {
       setStopping(false);

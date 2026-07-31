@@ -114,6 +114,10 @@ export const tasks = sqliteTable("tasks", {
   projectId: text("project_id")
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
+  // Who dispatched the task. Scopes billing/attribution (the owner's Anthropic token
+  // runs the session), not visibility — projects/agents stay shared. Nullable: tasks
+  // predating auth are unowned, and tasks outlive a deleted user for team history.
+  userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
   agentId: text("agent_id")
     .notNull()
     .references(() => agents.id, { onDelete: "cascade" }),
