@@ -9,6 +9,7 @@ import {
   secretsConfigured,
   setUserToken,
 } from "@/lib/secrets";
+import { verifyAnthropicToken } from "@/lib/token-verify";
 
 export const dynamic = "force-dynamic";
 
@@ -61,6 +62,15 @@ export async function POST(request: Request) {
   // The prefix tells us which env var the runner must set — no user toggle to get wrong.
   const token = parsed.data.token;
   const kind = token.startsWith("sk-ant-oat") ? "oauth" : "api-key";
+
+  // Prove the credential authenticates before storing it, so a bad paste fails here
+  // rather than when a dispatched task dies mid-run. A verification outage is not the
+  // user's fault — store the token and say so instead of blocking them.
+  const verified = await verifyAnthropicToken(token, kind);
+  if (!verified.ok && !verified.unreachable) {
+    return NextResponse.json({ error: verified.reason }, { status: 400 });
+  }
+
   try {
     setUserToken(user.id, token, kind);
   } catch (err) {
@@ -68,7 +78,13 @@ export async function POST(request: Request) {
       err instanceof SecretsError ? err.message : "Failed to store the token";
     return NextResponse.json({ error: message }, { status: 500 });
   }
-  return NextResponse.json({ ...getUserTokenStatus(user.id), vaultReady: true });
+  return NextResponse.json({
+    ...getUserTokenStatus(user.id),
+    vaultReady: true,
+    // Set when the token was stored without a successful check (Anthropic unreachable),
+    // so the UI can say "saved, but unverified" rather than implying it works.
+    ...(verified.ok ? {} : { warning: verified.reason }),
+  });
 }
 
 // DELETE /api/settings/token — clear the signed-in user's token.

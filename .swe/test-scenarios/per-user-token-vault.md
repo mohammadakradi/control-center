@@ -13,6 +13,25 @@ Covers pm tasks 02 + 03 (`.pm/tasks/20260729-155024-auth-and-per-user-tokens/`).
       (compose no longer publishes the port).
 - [ ] Signed out, `curl -i http://localhost:3001/api/tasks/any/stream` → **401**.
 
+## 1b — New-user onboarding (no token yet)
+- [ ] Sign up as a brand-new user. The **dashboard** and any **project page** show an amber
+      "Add your Anthropic token to dispatch tasks" banner with an **Open Settings** link.
+- [ ] Try to dispatch a task from the project page → inline error naming Settings, with a
+      working link. No task row is created and no uploads are saved (check the task list).
+- [ ] Settings shows two routes: **Use your Claude plan** (with a copy button on
+      `claude setup-token` and a link to claim the Agent SDK credit) and **Use an API key**
+      (with a **Create a key at Anthropic** button opening the Console in a new tab).
+- [ ] Paste a deliberately wrong token (e.g. `sk-ant-oat01-nonsense…`) → inline
+      "Anthropic rejected this token", and **nothing is stored** (status stays
+      "Not configured").
+- [ ] Paste a valid token → "Token verified and saved", chip flips to configured, and the
+      banner is gone from the dashboard on next load. Dispatch now works.
+- [ ] **Verification outage** (deliberately permissive path): block egress to
+      `api.anthropic.com` from the container (e.g. add a hosts entry pointing it at
+      `127.0.0.1`), then save a valid token → it is **stored** with an amber "Token saved,
+      but not verified: …" message rather than being rejected. Unblock egress and confirm
+      a dispatched task then runs on it.
+
 ## 2 — Token vault (Settings page)
 - [ ] Signed in as A, open **Settings** (new sidebar/mobile-tab entry). Card shows
       “Not configured”.
@@ -25,6 +44,17 @@ Covers pm tasks 02 + 03 (`.pm/tasks/20260729-155024-auth-and-per-user-tokens/`).
 - [ ] “Remove token” → chip returns to “Not configured”; the file is gone.
 - [ ] With `SECRETS_MASTER_KEY` removed from `.env` (and container recreated), the card
       shows the warning banner and Save is disabled; `POST /api/settings/token` → **503**.
+- [ ] **Master key missing while a token is still stored** (the branch that must not
+      disagree with the runner — do this *before* any "Remove token" step, so the envelope
+      file still exists): save a token, then remove `SECRETS_MASTER_KEY` from `.env` and
+      recreate the container. Settings must read **Not configured**, the dashboard banner
+      must reappear saying the server is missing `SECRETS_MASTER_KEY`, and dispatch must
+      be refused with the friendly "Add your Anthropic token…" 412 — **not** a created
+      task that later fails, and never an error mentioning `SECRETS_MASTER_KEY` in the
+      user-facing message. Restore the key afterwards and re-save the token.
+- [ ] **Rotated master key**: swap `SECRETS_MASTER_KEY` for a fresh
+      `openssl rand -base64 32` while a token is stored → same expectations as above
+      (status "Not configured", prompt to re-save).
 
 ## 3 — Per-user injection & fail-closed dispatch
 - [ ] As **B** (no token stored): dispatch any task → dispatch fails immediately with

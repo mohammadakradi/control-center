@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Check,
@@ -127,6 +128,9 @@ export function NewTaskForm({
   const [model, setModel] = useState("auto");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when dispatch was refused because this user has no Anthropic token — the
+  // error then carries a link to Settings instead of being a dead end.
+  const [needsToken, setNeedsToken] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
 
@@ -159,6 +163,7 @@ export function NewTaskForm({
     if (busy) return;
     setBusy(true);
     setError(null);
+    setNeedsToken(false);
     // FormData so we can attach files; the API accepts both multipart and JSON.
     const fd = new FormData();
     fd.set("projectId", projectId);
@@ -172,6 +177,7 @@ export function NewTaskForm({
     setBusy(false);
     if (!res.ok) {
       setError(body.error ?? "Failed to dispatch task");
+      setNeedsToken(Boolean(body.needsToken));
       return;
     }
     router.push(`/tasks/${body.id}`);
@@ -374,6 +380,14 @@ export function NewTaskForm({
       {error && (
         <p role="alert" className="mt-3 text-sm text-danger">
           {error}
+          {needsToken && (
+            <>
+              {" "}
+              <Link href="/settings" className="font-medium underline">
+                Open Settings
+              </Link>
+            </>
+          )}
         </p>
       )}
     </form>

@@ -94,7 +94,108 @@ update after every change.
     subprocesses unredacted. (A strict env allowlist for the child was considered and
     deferred — too easy to break the Claude CLI's runtime expectations untested.)
 
+- **2026-07-31 — Token onboarding for new users.** There is **no legitimate way to add a
+  "Sign in with Anthropic" button**: per the Agent SDK docs, "Unless previously approved,
+  Anthropic does not allow third party developers to offer claude.ai login or rate limits
+  for their products, including agents built on the Claude Agent SDK." Anthropic's
+  authentication docs list only two app-level methods (API keys, Workload Identity
+  Federation) — OAuth is first-party only. Claude Code's OAuth client is discoverable
+  (`https://claude.ai/oauth/claude-code-client-metadata`: public PKCE client, loopback
+  redirect, no secret) so it *could* be replicated, but doing so means impersonating
+  Claude Code and risks users' accounts. **Don't.** Also verified: `claude setup-token`
+  emits nothing when stdin isn't a TTY (and nothing under `script`), so the flow cannot
+  be hosted server-side either.
+  - So onboarding is: guided copy-paste of `claude setup-token` (subscription) or a link
+    to `platform.claude.com/settings/keys` (API key). Only the API-key route can have a
+    real "go to Anthropic" button.
+  - Tokens are now **verified against `GET /v1/models`** before storing (`lib/token-verify.ts`)
+    — free, consumes no tokens; OAuth tokens need `Authorization: Bearer` + the
+    `anthropic-beta: oauth-2025-04-20` header, API keys use `x-api-key`. A verification
+    *outage* stores the token with a `warning` rather than blocking the user.
+  - `canRunTasks(userId)` in `lib/secrets.ts` mirrors the runner's `buildTaskEnv` decision
+    so the web app can warn up front. **Keep the two in sync — it must never be more
+    permissive than the runner.** Used by the `TokenNudge` banner and the POST /api/tasks
+    guard (412 + `needsToken: true`, refuses before saving uploads or creating a task row).
+  - **Reads of the vault degrade; writes throw.** Both reviewers caught `canRunTasks`
+    being *more permissive* than the runner in one branch: master key missing but an
+    envelope still on disk. `getUserTokenStatus` reported `configured: true` from file
+    presence while `buildTaskEnv` threw a raw `SecretsError` — so the friendly 412 was
+    skipped, a task row + uploads were created, and the operator-facing
+    "SECRETS_MASTER_KEY is not configured" string leaked into a user-facing 502. Fixed at
+    the source: `getUserToken` now returns `null` when the master key is missing (a server
+    that can't decrypt has no usable token) and `getUserTokenStatus` always attempts the
+    decrypt, so "configured" means *usable*. `setUserToken` still throws — silently not
+    storing a token the user just pasted would be worse. Parity verified in all three
+    states (key OK / key missing / key rotated): `canRunTasks` and `buildTaskEnv` agree,
+    and the user-facing message is the actionable "Save your token under Settings" one.
+
+- **2026-07-31 — Per-task token/cost accounting** (pm task 04). Usage totals live on the
+  `tasks` row (`usage_input_tokens`, `usage_output_tokens`, `usage_cache_read_tokens`,
+  `usage_cache_creation_tokens`, `usage_cost_usd`), accumulated across continues/resumes.
+  - **The load-bearing detail (measured against 118 real `result` events, not assumed):**
+    `modelUsage` and `total_cost_usd` on an SDK `result` are **cumulative for the lifetime
+    of one SDK subprocess** (and `total_cost_usd` === Σ`modelUsage[*].costUSD` exactly),
+    while `usage` (snake_case) is **per-turn and under-reports** — it misses the
+    router/haiku/subagent models (e.g. 5 889 vs 7 120 input tokens on the same result).
+    A continue/resume spawns a **new subprocess**, so the cumulative counters **restart
+    mid-task**. So: naively summing `total_cost_usd` per result over-counts ~2×, and
+    summing `usage` under-counts. We accumulate **deltas of the cumulative `modelUsage`
+    snapshot**, treating any field going backwards as a subprocess restart
+    (`runner/usage.ts`, shared by the live path and the backfill).
+  - Writes are **atomic SQL increments** (`col = col + ?`) — the web process reads the same
+    row, and read-modify-write would clobber. Wrapped so accounting can never fail a task.
+  - History is recoverable at any time because the raw `result` messages are already in
+    `task_events`: `pnpm db:backfill-usage` (`--dry-run` / `--all`) replays them through the
+    same helper. It makes **no model calls** — free, and needs no Anthropic token.
+  - The repo now has a **test suite** (`pnpm test` → `node:test` via the existing `tsx`, no
+    new deps). Previously "n/a".
+
 ## Gotchas
+- **2026-07-31 — a task run against THIS repo kills its own runner.** `pnpm dev:runner` is
+  `tsx watch runner/server.ts`, so editing anything in the runner's import graph —
+  `lib/db/schema.ts`, `lib/secrets.ts`, `lib/db/index.ts`, `runner/*` — restarts the runner
+  and **kills the in-flight SDK session of the very task doing the editing**. Startup
+  reconciliation then marks that task `failed` ("Runner restarted while this task was
+  active"). Worse, if the edit was mid-flight the runner may not boot at all: task
+  `task_566f891c` (pm task 04) added `real("usage_cost_usd")` to `schema.ts` without adding
+  `real` to the drizzle import, the watcher restarted the runner, the session died before
+  the import was written, and the app went fully down — runner unreachable on :4319 and
+  every web route throwing `ReferenceError: real is not defined`. The DB meanwhile still
+  said `building`, so the UI couldn't tell whether the task was alive. Symptom to recognise:
+  a task stuck in a non-terminal status with `ended_at: null` and no new `task_events`, plus
+  502s from `/api/tasks/[id]/*`. **Two agents in one working tree makes this worse** — my
+  own edits to `lib/secrets.ts`/`runner/user-env.ts` in the same window were restarting the
+  runner too. When dispatching Control Center tasks *at Control Center itself*, expect
+  runner restarts, or run that work outside the live dev container.
+  - Recovery: fix the broken import, make the DB match the schema, wait for `tsx watch` to
+    boot the runner (`fetch localhost:4319/health` inside the container), and let startup
+    reconciliation settle the orphaned task.
+  - **Adding columns: prefer explicit `ALTER TABLE ADD COLUMN` over `pnpm db:push`** on this
+    DB. push has rebuilt the `tasks` table before and silently dropped the `user_id` FK;
+    additive DDL touches no data (verified after: `integrity_check ok`, both FKs intact,
+    91 tasks).
+- **2026-07-31 — review subagents share the live environment; tell them not to mutate it.**
+  During this task the operator's real vault entry was clobbered twice mid-review (once
+  emptied, once replaced with a different token that decrypted fine but wasn't theirs), and
+  a dispatch-guard check spent real subscription quota. `reviewer`/`security-auditor` are
+  "read-only" in intent but have Bash against the live repo, DB, and `data/secrets/`.
+  **Brief them explicitly:** no writes under `data/`, no DB mutations, no task dispatch,
+  throwaway ids (`zz_*`) for any vault probing, and clean up by exact filename. Verify the
+  operator's own state again after reviews finish — compare the stored token to the `.env`
+  copy, not just "a file exists".
+- **2026-07-31 — never point a wildcard `rm` at `data/secrets/`.** During testing the
+  owner's real token file was lost from `data/secrets/` between two checks and had to be
+  re-written from the `.env` copy. Verified afterwards that the code is *not* at fault:
+  `setUserToken` for two users leaves both files intact, `clearUserToken` removes exactly
+  one file, and it is the only delete call site in the repo. The most likely cause was a
+  `rm -f data/secrets/*.json` used to clean up test users. Clean up test secrets **by
+  explicit filename**, and remember `data/secrets/` has no backup — if a file is lost the
+  user must re-run `claude setup-token`. (The new `TokenNudge` banner makes this state
+  immediately visible instead of surfacing as a failed task.)
+- **2026-07-31 — `cd`-ing to a scratch dir makes later relative paths lie.** A
+  `ls data/secrets/` in a block that started with `cd $CLAUDE_JOB_DIR/tmp` reported "No
+  such file or directory" and briefly looked like data loss. Use absolute paths when
+  checking repo state inside a block that changes directory.
 - **2026-07-31 — `tasks.user_id` FK is not enforced in the real DB.** drizzle-kit `push`
   adds new referenced columns to an existing SQLite table via `ALTER TABLE ADD COLUMN`,
   which drops the `REFERENCES … ON DELETE SET NULL` clause (confirmed via

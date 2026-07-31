@@ -55,12 +55,17 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 - **Claude auth is per user:** each signed-in user saves their own Anthropic token
   (subscription token from `claude setup-token`, or an API key) under **Settings** in the
   UI; it's encrypted (AES-256-GCM) into `data/secrets/<userId>.json` under the required
-  `SECRETS_MASTER_KEY` from the repo-root `.env` (see `.env.example`). The runner injects
-  the task owner's token into every SDK session via `Options.env` — a task whose owner has
-  no stored token fails with a clear error. The legacy shared `CLAUDE_CODE_OAUTH_TOKEN` /
-  `ANTHROPIC_API_KEY` in `.env` are honored only with `ALLOW_SHARED_TOKEN_FALLBACK=1`
-  (dev-only). Note: the bind-mounted `~/.claude` doesn't carry a usable login on macOS
-  anyway (host login lives in the Keychain).
+  `SECRETS_MASTER_KEY` from the repo-root `.env` (see `.env.example`). Tokens are verified
+  against Anthropic before being stored, so a bad paste fails in the form. The runner
+  injects the task owner's token into every SDK session via `Options.env`; a user with no
+  token is told up front (banner + a 412 on dispatch) rather than getting a failed task.
+  The legacy shared `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` in `.env` are honored
+  only with `ALLOW_SHARED_TOKEN_FALLBACK=1` (dev-only). Note: the bind-mounted `~/.claude`
+  doesn't carry a usable login on macOS anyway (host login lives in the Keychain).
+  - **There is no "Sign in with Anthropic" button and there can't be** — Anthropic does
+    not allow third-party apps to offer claude.ai login (Agent SDK docs), and
+    `claude setup-token` requires a real TTY so it can't be driven server-side. Only the
+    API-key route links out to Anthropic. See `.swe/notes.md` before revisiting this.
 - **Git/GitHub:** the image installs `gh` so agents can open PRs (`/swe:ship`, `/fe:ship`)
   and the UI's push/pull work. macOS keychain/SSH creds don't cross into Linux, so set
   `GH_TOKEN` in `.env` (see `.env.example`): `gh` uses it for PRs, and `git` push/pull over

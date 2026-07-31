@@ -3,6 +3,7 @@ import { desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { agents, projectAgents, tasks, type Attachment } from "@/lib/db/schema";
 import { getCurrentUser } from "@/lib/auth";
+import { canRunTasks, secretsConfigured } from "@/lib/secrets";
 import { daemonStartTask } from "@/lib/daemon-client";
 import { saveAttachments } from "@/lib/uploads";
 import { newId } from "@/lib/util";
@@ -35,6 +36,32 @@ type TaskFields = {
 // Accepts JSON { projectId, agentId, command, requestText, model } OR multipart/form-data
 // with the same fields plus one or more `files` (documents/photos attached to the request).
 export async function POST(request: Request) {
+  // Stamp the dispatching user as owner — their Anthropic token runs the session.
+  const user = await getCurrentUser();
+  // proxy.ts already 401s unauthenticated /api/* requests, but don't make its matcher
+  // the only thing standing between an anonymous caller and an unowned task row.
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Refuse before doing any work if this user's tasks can't run: otherwise we'd save
+  // their uploads, create a task row, and immediately fail it — the user's first
+  // experience of the app being a cryptic runner error. Checked here AND in the
+  // runner (which is authoritative); this is the friendly early exit.
+  if (!canRunTasks(user.id)) {
+    // Distinguish "this user hasn't added a token" from "the server can't read any
+    // token" — same refusal, but only one of them is the user's to fix.
+    return NextResponse.json(
+      {
+        error: secretsConfigured()
+          ? "Add your Anthropic token under Settings before dispatching tasks — each user runs on their own credential."
+          : "The server is missing SECRETS_MASTER_KEY, so stored tokens can't be read. Ask whoever runs this instance to set it (see .env.example).",
+        needsToken: true,
+      },
+      { status: 412 },
+    );
+  }
+
   const id = newId("task");
   let fields: TaskFields;
   let attachments: Attachment[] = [];
@@ -84,15 +111,12 @@ export async function POST(request: Request) {
     .where(eq(agents.id, fields.agentId))
     .get();
 
-  // Stamp the dispatching user as owner — their Anthropic token runs the session.
-  const user = await getCurrentUser();
-
   db.insert(tasks)
     .values({
       id,
       projectId: fields.projectId,
       agentId: fields.agentId,
-      userId: user?.id ?? null,
+      userId: user.id,
       command: fields.command,
       agentVersion: agent?.version ?? null,
       requestText: fields.requestText ?? "",

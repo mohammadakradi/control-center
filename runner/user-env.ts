@@ -37,8 +37,9 @@ export function sensitiveEnvValues(env: TaskEnv): string[] {
  * `.env` credential and any ambient `~/.claude` login.
  *
  * Fails closed: no owner token → throw (dispatch fails with a clear error), unless
- * `ALLOW_SHARED_TOKEN_FALLBACK=1` explicitly re-enables the shared credential.
- * May also throw `SecretsError` when `SECRETS_MASTER_KEY` is missing/invalid.
+ * `ALLOW_SHARED_TOKEN_FALLBACK=1` explicitly re-enables the shared credential. A missing
+ * or wrong `SECRETS_MASTER_KEY` reads as "no token" rather than a crypto error, so this
+ * agrees with `canRunTasks` in every branch and the user gets the actionable message.
  */
 export function buildTaskEnv(userId: string | null): TaskEnv {
   const env: TaskEnv = { ...process.env };

@@ -15,6 +15,7 @@ import { syncAgents } from "@/lib/discovery/agents";
 import { Avatar } from "@/components/AgentAvatar";
 import { AgentContributors } from "@/components/AgentContributors";
 import { StatusBadge } from "@/components/StatusBadge";
+import { TokenNudge } from "@/components/TokenNudge";
 import { card, PageHeader } from "@/components/ui-cards";
 import { ACTIVE_STATUSES, timeAgo } from "@/lib/ui";
 
@@ -57,6 +58,8 @@ export default function Dashboard() {
         title="Dashboard"
         description="Overview of your agents, projects, and recent activity."
       />
+
+      <TokenNudge />
 
       {/* Stats */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

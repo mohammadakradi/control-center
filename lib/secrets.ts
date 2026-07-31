@@ -124,13 +124,11 @@ function readEnvelope(userId: string): Envelope | null {
 export function getUserTokenStatus(userId: string): TokenStatus {
   const env = readEnvelope(userId);
   if (!env) return { configured: false };
-  // A rotated/changed master key leaves an envelope that no longer decrypts — report
-  // that as "not configured" so Settings prompts for a re-save instead of showing a
-  // token that every dispatch will fail to load. (Without a key, keep presence-based
-  // status; the UI already shows the missing-master-key banner in that state.)
-  if (secretsConfigured() && getUserToken(userId) === null) {
-    return { configured: false };
-  }
+  // "Configured" must mean "actually usable", not merely "a file exists". A rotated or
+  // missing master key leaves an envelope that can't be decrypted, and reporting it as
+  // configured would make `canRunTasks` more permissive than the runner — the one thing
+  // it must never be. Report it as unconfigured so the UI prompts for a re-save.
+  if (getUserToken(userId) === null) return { configured: false };
   return { configured: true, kind: env.kind, last4: env.last4 };
 }
 
@@ -141,7 +139,11 @@ export function getUserToken(
 ): { token: string; kind: TokenKind } | null {
   const envelope = readEnvelope(userId);
   if (!envelope) return null;
-  const key = requireKey();
+  // Reads degrade rather than throw: a server missing its master key has no usable
+  // token, which is exactly what `null` means. (Writes still throw — see setUserToken —
+  // because silently not storing a token the user just pasted would be worse.)
+  const key = masterKey();
+  if (!key) return null;
   try {
     // Pin the tag length so a crafted envelope can't downgrade to a short GCM tag.
     const decipher = createDecipheriv(ALGO, key, Buffer.from(envelope.iv, "base64"), {
@@ -164,4 +166,15 @@ export function getUserToken(
 /** Remove a user's stored token (no-op if none). */
 export function clearUserToken(userId: string): void {
   rmSync(fileFor(userId), { force: true });
+}
+
+/**
+ * Can a task owned by this user actually run? Mirrors the decision the runner's
+ * `buildTaskEnv` makes, so the web app can warn (and refuse to dispatch) up front
+ * instead of letting the user discover it when the session dies. Keep the two in
+ * sync — this one must never be more permissive than the runner.
+ */
+export function canRunTasks(userId: string): boolean {
+  if (process.env.ALLOW_SHARED_TOKEN_FALLBACK === "1") return true;
+  return getUserTokenStatus(userId).configured;
 }

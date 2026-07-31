@@ -15,6 +15,7 @@ import { TaskHistory } from "@/components/TaskHistory";
 import { NewTaskForm } from "@/components/NewTaskForm";
 import { ProjectName } from "@/components/ProjectName";
 import { ProjectActions } from "@/components/ProjectActions";
+import { TokenNudge } from "@/components/TokenNudge";
 import { CardSection, Chip } from "@/components/ui-cards";
 import { ACTIVE_STATUSES } from "@/lib/ui";
 
@@ -124,7 +125,11 @@ export default async function ProjectDetail({
         <ProjectActions projectId={project.id} />
       </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-5 lg:grid-cols-2">
+      <div className="mt-6">
+        <TokenNudge />
+      </div>
+
+      <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
         {/* New task */}
         <CardSection
           title="New task"
