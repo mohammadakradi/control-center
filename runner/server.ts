@@ -14,6 +14,7 @@ import {
   stopTask,
   type StreamEvent,
 } from "./session-manager";
+import { usageSnapshot } from "./usage-snapshot";
 
 const TERMINAL: TaskStatus[] = ["done", "failed", "cancelled"];
 
@@ -22,6 +23,13 @@ const TERMINAL: TaskStatus[] = ["done", "failed", "cancelled"];
 const app = new Hono();
 
 app.get("/health", (c) => c.json({ ok: true }));
+
+// Best-effort Claude plan rate limits for one user. The SDK session lives here, so the web
+// app can't ask Anthropic directly. Never fails: an unavailable snapshot is a 200 with
+// `available: false` and a reason (see ./usage-snapshot for why that's the normal answer).
+app.get("/usage/:userId", async (c) => {
+  return c.json(await usageSnapshot(c.req.param("userId")));
+});
 
 // Start executing a task (details loaded from the shared DB).
 app.post("/tasks", async (c) => {

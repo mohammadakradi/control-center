@@ -171,6 +171,30 @@ update after every change.
   from the usage or onboarding changes. CLAUDE.md's old "baseline: ✅" was stale. Use
   `pnpm test` + `pnpm lint` + `npx tsc --noEmit` as the gate until someone fixes the export
   (suspect a React/Next version mismatch in the `/_global-error` boundary, not app code).
+- **2026-08-01 — Claude *plan* rate limits are not readable in this app (pm task 05).**
+  The SDK's experimental usage API reports plan windows only for a logged-in **profile**;
+  a token injected via `Options.env` counts as "missing profile scope". Measured with the
+  operator's real subscription token: `accountInfo()` → `{tokenSource:
+  "CLAUDE_CODE_OAUTH_TOKEN", apiProvider: "firstParty"}` yet `subscription_type: null` and
+  `rate_limits_available: false`; the container has no `~/.claude/.credentials.json` (macOS
+  Keychain login doesn't cross the bind mount). **So this is a consequence of task 02's
+  design, not a bug** — per-user env tokens are what make limits unreadable. Getting them
+  would mean writing per-user credentials to disk, reversing that design, and it collides
+  with Anthropic's third-party-auth restrictions. Task 05 therefore shipped as a *combined*
+  endpoint: real per-user spend (which works) plus a plan-limits block that honestly reports
+  `available: false` and will populate by itself if a future SDK scopes env tokens.
+  - The probe spawns a short-lived session (~1.7s) and makes **no model call** — verified
+    `session.total_cost_usd === 0`. Cached 60s when available, 10 min when not, and
+    de-duplicated per user, so page loads don't spawn subprocesses.
+  - The SDK method name is explicitly temporary ("will change when the API is stabilized"),
+    so it's feature-detected from a small **allowlist** of names — never a prefix scan, which
+    could call an arbitrary method.
+  - **90 of 91 tasks here are unowned** (`user_id IS NULL`) because they predate
+    `tasks.userId`, so a purely per-user figure reads $0 against $459.61 of real history.
+    Hence the `unattributed` bucket in the response. If you want that history to show as
+    yours, `UPDATE tasks SET user_id = '<id>' WHERE user_id IS NULL` is correct **only**
+    while this instance has a single account — it's a billing-attribution claim, so don't
+    run it blind on a multi-user install.
 - **2026-07-31 — usage accounting is banked at `result` boundaries only.** A subprocess
   killed mid-turn (runner restart, container stop) never emits a `result`, so its spend is
   unattributable and the task shows $0 despite burning tokens — `task_566f891c` is the

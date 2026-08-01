@@ -8,6 +8,21 @@ async function runnerError(res: Response, fallback: string): Promise<string> {
   return body?.error ?? `${fallback} (${res.status}). Is the runner on ${RUNNER_URL}?`;
 }
 
+/** Ask the runner for a user's Claude plan-limit snapshot. Returns null when the runner is
+ *  unreachable or answers oddly — the caller degrades to "limits unavailable" rather than
+ *  failing the whole usage response, since the spend half doesn't need the runner at all. */
+export async function daemonUsageSnapshot(userId: string): Promise<unknown | null> {
+  try {
+    const res = await fetch(`${RUNNER_URL}/usage/${encodeURIComponent(userId)}`, {
+      signal: AbortSignal.timeout(20_000),
+      cache: "no-store",
+    });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Forward a task action (respond/reply/stop) to the runner, passing the JSON body
  *  through. Returns the runner's status + body for the route handler to relay. */
 export async function daemonTaskAction(

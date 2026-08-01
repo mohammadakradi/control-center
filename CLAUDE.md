@@ -116,6 +116,17 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 - `runner/` — Hono task-execution server (separate from Next.js; loopback-only, no CORS —
   reached exclusively through the Next.js proxy routes; `runner/user-env.ts` builds each
   task's subprocess env with the owner's token)
+- `app/api/usage/` — Per-user usage: real spend from `lib/usage-summary.ts` plus a
+  best-effort Claude plan-limits block. **Plan limits are normally `available: false`** —
+  the SDK only reports them for a logged-in profile, and this app injects tokens via
+  `Options.env`; see `runner/usage-snapshot.ts`
+- `lib/usage-summary.ts` — Per-user spend aggregated from `tasks.usage*`, scoped to the
+  caller (transcripts are shared; spend isn't), plus an `unattributed` bucket for tasks
+  predating `tasks.userId`
+- `runner/usage-snapshot.ts` — Best-effort plan-limit probe under the user's token. Spawns a
+  short-lived session (~1.7s, no model call, nothing billed), caches per user, and degrades
+  to `available: false` on any surprise — the SDK method behind it is experimental and will
+  be renamed
 - `runner/usage.ts` — Token/cost accounting from SDK `result` messages. Those counters are
   cumulative **per subprocess** and restart on a continue/resume, so usage is accumulated
   as deltas onto `tasks.usage*`; shared by the live runner and `runner/backfill-usage.ts`

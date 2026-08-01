@@ -17,7 +17,7 @@
     "db:backfill-titles": "tsx runner/backfill-titles.ts",
     "db:backfill-usage": "tsx runner/backfill-usage.ts",
     "lint": "eslint",
-    "test": "tsx --test runner/*.test.ts"
+    "test": "tsx --test runner/*.test.ts lib/*.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.187",
