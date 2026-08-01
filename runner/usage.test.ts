@@ -501,3 +501,47 @@ test("a genuine subprocess restart is still detected and banked in full", () => 
   assert.equal(second.delta.outputTokens, 200);
   assert.ok(Math.abs(second.delta.costUsd - 0.5) < 1e-9);
 });
+
+test("a field recovering after a restart does not re-bank the other fields", () => {
+  // Regression: `restart` used to be one flag shared by all five fields. A field frozen
+  // during a genuine restart keeps a stale high baseline, so when its reading later
+  // recovered to a valid but still-lower number it re-triggered that flag a turn late and
+  // re-banked every other field's history. Measured before the fix: out=280 / cacheRead=140
+  // / cost=0.35 against a true 180 / 90 / 0.25.
+  const turn = (input: unknown, output: number, cacheRead: number, costUSD: number) => ({
+    type: "result",
+    modelUsage: {
+      "claude-opus-5": {
+        inputTokens: input,
+        outputTokens: output,
+        cacheReadInputTokens: cacheRead,
+        cacheCreationInputTokens: 0,
+        costUSD,
+      },
+    },
+    total_cost_usd: costUSD,
+  });
+
+  // Where the previous (larger) subprocess left off.
+  let seen: UsageTotals = {
+    inputTokens: 5000,
+    outputTokens: 3000,
+    cacheReadTokens: 2000,
+    cacheCreationTokens: 0,
+    costUsd: 5,
+  };
+  let banked: UsageTotals = { ...ZERO_USAGE };
+  const bank = (m: unknown) => {
+    const { delta, next } = usageDelta(seen, m);
+    banked = addUsage(banked, delta);
+    seen = next;
+  };
+
+  bank(turn(Number.NaN, 100, 50, 0.1)); // real restart; inputTokens unusable this turn
+  bank(turn(150, 180, 90, 0.25)); //      same subprocess continues; inputTokens recovers
+
+  assert.equal(banked.outputTokens, 180, "must not re-bank turn 1's output");
+  assert.equal(banked.cacheReadTokens, 90, "must not re-bank turn 1's cache reads");
+  assert.ok(Math.abs(banked.costUsd - 0.25) < 1e-9, `cost was ${banked.costUsd}, want 0.25`);
+  assert.equal(banked.inputTokens, 150, "the recovered field banks its own snapshot");
+});

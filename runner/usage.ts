@@ -189,13 +189,18 @@ function synthesizeCumulative(seen: UsageTotals, m: unknown): Snapshot {
  * How much *new* usage this `result` message represents, given the last cumulative
  * snapshot seen from the same subprocess.
  *
- * Decided **per field**, not for the message as a whole. A field whose reading was
- * unusable reads as 0, and treating that 0 as "the counter went backwards" would classify
- * the whole message as a fresh subprocess — re-banking every *other* field's full
- * cumulative value instead of its increment, and leaving the zero in the snapshot so the
- * next turn over-counts too. (Measured: one bad field on turn 2 of 3 banked $2.70 against
- * $1.70 of real spend.) So restart is judged only on fields we actually read, and an
- * unusable field carries its last good value forward and banks nothing.
+ * Every decision here is **per field**, with no message-wide state. Two measured bugs came
+ * from sharing one "this is a fresh subprocess" flag across all five fields:
+ *   1. A field whose reading is unusable reads as 0, which looked like its counter went
+ *      backwards, so the whole message was treated as a restart and every *other* field
+ *      re-banked its full cumulative value — $2.70 banked against $1.70 of real spend.
+ *   2. Gating that flag on "not unusable" only narrowed it: a field frozen during a real
+ *      restart keeps a stale high baseline, so when its reading later recovers to a valid
+ *      but still-lower number it re-triggered the shared flag a turn or more after the
+ *      fact, re-banking every other field's history a second time.
+ * A field going backwards is now that field's own business: it banks its own snapshot in
+ * full and leaves the others measuring increments. A genuine restart still works, because
+ * on a real subprocess switch every counter drops and each notices independently.
  *
  * @returns `delta` — usage to add to the task row; `next` — the snapshot to pass in next
  *          time. Non-result messages yield a zero delta and an unchanged snapshot.
@@ -217,16 +222,15 @@ export function usageDelta(
   // dropped reading among several good ones still leaves a usable sum, and a plain decrease
   // with every reading intact is a genuine subprocess restart.
   const unusable = (f: Field) => suspect.has(f) && wentBackwards(f);
-  const restart = FIELDS.some((f) => !unusable(f) && wentBackwards(f));
 
   const delta: UsageTotals = { ...ZERO_USAGE };
   const next: UsageTotals = { ...ZERO_USAGE };
   for (const f of FIELDS) {
     if (unusable(f)) {
-      next[f] = seen[f]; // keep the last good baseline; bank nothing for this field
-    } else if (restart) {
+      next[f] = seen[f]; // no usable reading: keep the last good baseline, bank nothing
+    } else if (wentBackwards(f)) {
       next[f] = cum[f];
-      delta[f] = cum[f]; // fresh subprocess: the whole snapshot is new usage
+      delta[f] = cum[f]; // this counter restarted: its whole snapshot is new usage
     } else {
       next[f] = cum[f];
       delta[f] = Math.max(0, cum[f] - seen[f]);
