@@ -18,6 +18,14 @@ import {
 } from "./approval-tool";
 import { generateTitle, resolveModel, type ModelChoice } from "./model-router";
 import { buildTaskEnv, sensitiveEnvValues, type TaskEnv } from "./user-env";
+import {
+  isZeroUsage,
+  LAUNCH_LOG,
+  usageDelta,
+  usageIncrement,
+  ZERO_USAGE,
+  type UsageTotals,
+} from "./usage";
 
 export type StreamEvent = {
   id?: number;
@@ -367,6 +375,10 @@ function runTask(
   let producedReport = false;
   // How many times we've nudged the agent to continue after it paused mid-workflow.
   let autoContinues = 0;
+  // Cumulative token/cost counters last seen from THIS subprocess. Starts at zero for
+  // every launch, because a continue/resume gets a fresh subprocess whose counters
+  // restart while the task row keeps accumulating (see ./usage).
+  let seenUsage: UsageTotals = { ...ZERO_USAGE };
 
   const onGate = (gate: GateKind, summary: string): Promise<GateDecision> => {
     if (gate === "report") producedReport = true;
@@ -428,12 +440,14 @@ function runTask(
       },
     });
   }
+  // Built from LAUNCH_LOG so `usageFromEvents` can still find subprocess boundaries when
+  // replaying history — rewording these freely would silently break usage backfill.
   record(handle, "log", {
     message: resume
       ? changeMessage
-        ? `Continuing with requested changes${canResume ? ` (resuming session ${task.sessionId!.slice(0, 8)})` : " (fresh session)"}`
-        : `Continuing task${canResume ? ` (resuming session ${task.sessionId!.slice(0, 8)})` : " (fresh session — inspecting working tree)"}`
-      : `Dispatched: ${prompt}`,
+        ? `${LAUNCH_LOG.continuing} with requested changes${canResume ? ` (resuming session ${task.sessionId!.slice(0, 8)})` : " (fresh session)"}`
+        : `${LAUNCH_LOG.continuing} task${canResume ? ` (resuming session ${task.sessionId!.slice(0, 8)})` : " (fresh session — inspecting working tree)"}`
+      : `${LAUNCH_LOG.dispatched} ${prompt}`,
   });
 
   // Resolve the model (triage for "auto"), start the session, consume the output stream.
@@ -502,6 +516,29 @@ function runTask(
         // we must decide here whether the task is complete. (Without this, commands
         // that finish without printing [[DONE]] — e.g. onboard — hang in "running".)
         if (m.type === "result") {
+          // Bank what this turn consumed BEFORE deciding the task's fate: a failed or
+          // cancelled run still spent real tokens, and its result message carries them.
+          // The counters are cumulative per subprocess, so we add the delta — which is
+          // what makes a continue/resume accumulate onto the task's earlier runs
+          // instead of overwriting them. Accounting must never break a run.
+          try {
+            const { delta, next } = usageDelta(seenUsage, m);
+            if (!isZeroUsage(delta)) {
+              db.update(tasks)
+                .set(usageIncrement(delta))
+                .where(eq(tasks.id, taskId))
+                .run();
+            }
+            // Advance the snapshot only once the write has landed: if it threw, this
+            // turn's usage stays folded into the next delta, so a transient DB error
+            // self-heals instead of silently losing the spend.
+            seenUsage = next;
+          } catch (err) {
+            record(handle, "log", {
+              message: `usage accounting skipped: ${(err as Error).message}`,
+            });
+          }
+
           const sub = (m as { subtype?: string }).subtype ?? "";
           // The SDK reports some hard failures (e.g. an invalid Anthropic token →
           // 401) as subtype "success" with is_error: true — treat those as failed

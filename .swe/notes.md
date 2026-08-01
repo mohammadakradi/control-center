@@ -146,11 +146,37 @@ update after every change.
     row, and read-modify-write would clobber. Wrapped so accounting can never fail a task.
   - History is recoverable at any time because the raw `result` messages are already in
     `task_events`: `pnpm db:backfill-usage` (`--dry-run` / `--all`) replays them through the
-    same helper. It makes **no model calls** — free, and needs no Anthropic token.
-  - The repo now has a **test suite** (`pnpm test` → `node:test` via the existing `tsx`, no
-    new deps). Previously "n/a".
+    same helper. It makes **no model calls** — free, and needs no Anthropic token. First run
+    recovered **$459.61** across 80 tasks; `--all` re-run changed 0 rows (deterministic).
+  - **Known gap: a turn that is killed never reports its usage.** Usage only exists on
+    `result` messages, and a session killed mid-turn (runner restart, container stop, crash)
+    never emits one — so those tokens are invisible to both the live path and the backfill.
+    Task 04's own session is the proof: 143 assistant messages of real work, **0** result
+    events, so its row reads $0. Assistant messages *do* each carry `message.usage`
+    (tokens, no cost), so a follow-up could recover killed-turn tokens — but it would need a
+    per-model price table to derive cost, so it was left out of scope.
+  - Of 91 historical tasks: 80 got totals, 6 have no `result` event at all, and 5 have a
+    result that reports `modelUsage: {}` with zero cost (died before any API call). Those 11
+    keep their zeros — "no usage recorded" is not the same as "free".
+  - The repo now has a **test suite** (`pnpm test` → 29 specs on `node:test` via the existing
+    `tsx`, no new deps). Previously "n/a". The DB spec builds a temp database from the real
+    schema with `drizzle-kit push` + `PLATFORM_DB`; it asserts the connection path before
+    writing so a broken override can never hit `data/platform.db`.
 
 ## Gotchas
+- **2026-07-31 — `pnpm build` is broken on `main`, independently of any feature work.**
+  It compiles and typechecks, then fails exporting Next's internal `/_global-error` page:
+  `TypeError: Cannot read properties of null (reading 'useContext')`. Verified by stashing
+  all uncommitted work and building a clean tree — same failure — so it is NOT a regression
+  from the usage or onboarding changes. CLAUDE.md's old "baseline: ✅" was stale. Use
+  `pnpm test` + `pnpm lint` + `npx tsc --noEmit` as the gate until someone fixes the export
+  (suspect a React/Next version mismatch in the `/_global-error` boundary, not app code).
+- **2026-07-31 — usage accounting is banked at `result` boundaries only.** A subprocess
+  killed mid-turn (runner restart, container stop) never emits a `result`, so its spend is
+  unattributable and the task shows $0 despite burning tokens — `task_566f891c` is the
+  worked case (1 371 events, 0 result messages). Backfilling can't recover it either, since
+  it replays the same events. Accruing per-turn from assistant messages would close the gap
+  but overlaps `modelUsage` and needs its own de-duplication; deliberately out of scope.
 - **2026-07-31 — a task run against THIS repo kills its own runner.** `pnpm dev:runner` is
   `tsx watch runner/server.ts`, so editing anything in the runner's import graph —
   `lib/db/schema.ts`, `lib/secrets.ts`, `lib/db/index.ts`, `runner/*` — restarts the runner

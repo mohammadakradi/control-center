@@ -39,10 +39,23 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 - Native dev (no Docker): `pnpm dev:local`  (Next.js + runner directly on the host)
 - Next.js only: `pnpm dev:web`  ·  Runner only: `pnpm dev:runner`
 - Container-only entrypoint: `pnpm dev:container`  (= `dev:local` but binds Next to `0.0.0.0`)
-- Build: `pnpm build`  (baseline: ✅)
+- Build: `pnpm build`  (baseline: ❌ **pre-existing failure**, unrelated to app code —
+  compiles and typechecks fine, then dies prerendering Next's own `/_global-error` page with
+  `TypeError: Cannot read properties of null (reading 'useContext')`. Confirmed 2026-07-31 to
+  reproduce on a clean tree with no uncommitted work, so don't treat it as a regression from
+  your change. The honest gate is `pnpm test` + `pnpm lint` + `npx tsc --noEmit`.)
 - Lint: `pnpm lint`  (baseline: ✅ — no warnings)
-- Test: n/a — no test suite exists
-- DB migration: `pnpm db:push`
+- Test: `pnpm test`  (baseline: ✅ 29 tests — Node's built-in runner via `tsx`, no extra
+  deps; specs live next to the code as `runner/*.test.ts`, fixtures in
+  `runner/__fixtures__/`. The DB spec builds a throwaway SQLite file from the real schema
+  via `drizzle-kit push` and the `PLATFORM_DB` override — never `data/platform.db`.)
+- Typecheck: `npx tsc --noEmit`
+- DB migration: `pnpm db:push`  — **check what it plans first:** it has rebuilt the `tasks`
+  table (`__new_tasks` + copy + drop) rather than adding columns, which historically dropped
+  the `user_id` foreign key. Back up the DB (`VACUUM INTO`) before running it.
+- Backfills (idempotent, safe to re-run): `pnpm db:backfill-titles` ·
+  `pnpm db:backfill-usage` (`--dry-run` / `--all`; recomputes token+cost totals from the
+  `result` messages already stored in `task_events` — no model calls, nothing billed)
 
 ### Docker dev notes
 - The app is host-coupled (drives Claude against absolute host project paths, reuses
@@ -103,9 +116,12 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 - `runner/` — Hono task-execution server (separate from Next.js; loopback-only, no CORS —
   reached exclusively through the Next.js proxy routes; `runner/user-env.ts` builds each
   task's subprocess env with the owner's token)
+- `runner/usage.ts` — Token/cost accounting from SDK `result` messages. Those counters are
+  cumulative **per subprocess** and restart on a continue/resume, so usage is accumulated
+  as deltas onto `tasks.usage*`; shared by the live runner and `runner/backfill-usage.ts`
 - `public/` — Agent avatar images (`<namespace>-agent.png`)
 - Theme tokens/global styles: `app/globals.css`
-- Tests: none
+- Tests: `runner/*.test.ts` (`pnpm test`)
 
 ## Code graph (graphify)
 A queryable code knowledge graph lives at `graphify-out/graph.json`. To understand the
