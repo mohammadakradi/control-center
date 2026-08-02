@@ -21,9 +21,10 @@ services:
       target: dev
     working_dir: /app
     # Loopback-only: reachable from the browser on this host, not from the LAN.
+    # The runner (:4319) is NOT published — the browser reaches it only through the
+    # session-gated /api/tasks/[id]/* proxy routes served by Next.js.
     ports:
       - "127.0.0.1:3001:3001" # Next.js dashboard
-      - "127.0.0.1:4319:4319" # runner daemon
     environment:
       NODE_ENV: development
       NEXT_TELEMETRY_DISABLED: "1"
@@ -37,13 +38,12 @@ services:
       GIT_CONFIG_VALUE_0: ""
       GIT_CONFIG_KEY_1: credential.https://github.com.helper
       GIT_CONFIG_VALUE_1: "!gh auth git-credential"
-    # Auth for the Claude the runner spawns. On macOS the host login lives in the
-    # Keychain (not in ~/.claude/.credentials.json), so the bind-mounted ~/.claude
-    # carries no usable credentials into Linux. Supply one via a repo-root .env (see
-    # .env.example) — env_file paths are relative to THIS compose file, hence ../../.
-    #   - CLAUDE_CODE_OAUTH_TOKEN: run `claude setup-token` once; uses your
-    #     subscription, long-lived, no plaintext creds on disk. Preferred.
-    #   - ANTHROPIC_API_KEY: bills an API key instead.
+    # Claude auth is PER USER: each signed-in user saves their own token in
+    # Settings, encrypted under SECRETS_MASTER_KEY (required — set it in the
+    # repo-root .env; see .env.example). The runner injects the task owner's token
+    # into each session's env. The legacy shared CLAUDE_CODE_OAUTH_TOKEN /
+    # ANTHROPIC_API_KEY are honored only with ALLOW_SHARED_TOKEN_FALLBACK=1
+    # (dev-only). env_file paths are relative to THIS compose file, hence ../../.
     env_file:
       - path: ../../.env
         required: false

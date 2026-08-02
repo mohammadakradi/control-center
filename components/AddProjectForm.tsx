@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
 
 export function AddProjectForm() {
+  const inputId = useId();
   const router = useRouter();
   const [path, setPath] = useState("");
   const [busy, setBusy] = useState(false);
@@ -50,30 +52,29 @@ export function AddProjectForm() {
 
   return (
     <form onSubmit={submit} className="space-y-2">
+      <label htmlFor={inputId} className="block text-xs font-medium text-fg-subtle">
+        Project folder
+      </label>
       <div className="flex flex-col gap-2 sm:flex-row">
         <input
+          id={inputId}
           value={path}
           onChange={(e) => setPath(e.target.value)}
           placeholder="/Users/moh/Dev/my-project"
-          className="flex-1 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 font-mono text-sm outline-none focus:border-sky-600"
+          className="min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-3 py-2 font-mono text-sm text-fg outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-ring/40"
         />
-        <button
-          type="button"
-          onClick={browse}
-          disabled={picking}
-          className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
-        >
+        <Button type="button" onClick={browse} loading={picking}>
           {picking ? "Opening Finder…" : "Browse…"}
-        </button>
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
-        >
+        </Button>
+        <Button type="submit" variant="primary" loading={busy}>
           {busy ? "Adding…" : "Add project"}
-        </button>
+        </Button>
       </div>
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && (
+        <p role="alert" className="text-sm text-danger">
+          {error}
+        </p>
+      )}
     </form>
   );
 }

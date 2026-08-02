@@ -28,7 +28,7 @@ export function AtAGlance({
   return (
     <CardSection
       title="At a glance"
-      right={<Activity className="size-4 text-neutral-500" />}
+      right={<Activity className="size-4 text-fg-faint" />}
     >
       <div className="grid grid-cols-2 gap-3">
         <Tile value={String(total)} label="Tasks run" />
@@ -41,7 +41,7 @@ export function AtAGlance({
       <ul className="mt-4 flex flex-col">
         {isWorkspace ? (
           <Fact icon={<Boxes className="size-3.5" />} tag={`${memberCount}`}>
-            Workspace of <b className="text-neutral-200">{memberCount}</b> member
+            Workspace of <b className="text-fg">{memberCount}</b> member
             repos
           </Fact>
         ) : (
@@ -54,7 +54,7 @@ export function AtAGlance({
               {branchInfo.tracking ? (
                 <>
                   Tracking{" "}
-                  <b className="break-all text-neutral-200">
+                  <b className="break-all text-fg">
                     {branchInfo.tracking}
                   </b>
                 </>
@@ -71,7 +71,7 @@ export function AtAGlance({
         >
           {changedFiles ? (
             <>
-              <b className="text-neutral-200">{changedFiles}</b> file
+              <b className="text-fg">{changedFiles}</b> file
               {changedFiles === 1 ? "" : "s"} changed
               {isWorkspace ? " across repos" : ""}
             </>
@@ -84,7 +84,7 @@ export function AtAGlance({
           tag={inProgress ? "running" : undefined}
           tagTone="warn"
         >
-          <b className="text-neutral-200">{inProgress}</b> task
+          <b className="text-fg">{inProgress}</b> task
           {inProgress === 1 ? "" : "s"} in progress
         </Fact>
       </ul>

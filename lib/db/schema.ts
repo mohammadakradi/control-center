@@ -1,5 +1,37 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  integer,
+  real,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
+
+/** A registered account. */
+export const users = sqliteTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    email: text("email").notNull(),
+    passwordHash: text("password_hash").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => [uniqueIndex("users_email_unq").on(t.email)],
+);
+
+/** A signed-in session, keyed by a hash of the opaque cookie token (never the raw token). */
+export const sessions = sqliteTable("sessions", {
+  id: text("id").primaryKey(), // sha256 hex of the raw session token
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(unixepoch())`),
+});
 
 /** A discovered Claude Code agent (a plugin). */
 export const agents = sqliteTable("agents", {
@@ -88,6 +120,10 @@ export const tasks = sqliteTable("tasks", {
   projectId: text("project_id")
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
+  // Who dispatched the task. Scopes billing/attribution (the owner's Anthropic token
+  // runs the session), not visibility — projects/agents stay shared. Nullable: tasks
+  // predating auth are unowned, and tasks outlive a deleted user for team history.
+  userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
   agentId: text("agent_id")
     .notNull()
     .references(() => agents.id, { onDelete: "cascade" }),
@@ -114,6 +150,15 @@ export const tasks = sqliteTable("tasks", {
   sessionId: text("session_id"), // SDK session_id, for resume fallback
   branch: text("branch"),
   error: text("error"),
+  // What this task cost to run, accumulated over every SDK turn it took — including
+  // continues/resumes, which each spawn a fresh subprocess whose own counters restart
+  // (see runner/usage.ts for how the deltas are derived). Totals cover every model the
+  // run touched: the main agent, its subagents, and the router/title calls.
+  usageInputTokens: integer("usage_input_tokens").notNull().default(0),
+  usageOutputTokens: integer("usage_output_tokens").notNull().default(0),
+  usageCacheReadTokens: integer("usage_cache_read_tokens").notNull().default(0),
+  usageCacheCreationTokens: integer("usage_cache_creation_tokens").notNull().default(0),
+  usageCostUsd: real("usage_cost_usd").notNull().default(0),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),
@@ -146,3 +191,5 @@ export type Agent = typeof agents.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskEvent = typeof taskEvents.$inferSelect;
+export type User = typeof users.$inferSelect;
+export type Session = typeof sessions.$inferSelect;

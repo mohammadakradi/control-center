@@ -4,13 +4,10 @@ import { resolve } from "node:path";
 /** Port the runner daemon listens on. */
 export const RUNNER_PORT = Number(process.env.RUNNER_PORT ?? 4319);
 
-/** Base URL the Next.js app + browser use to reach the daemon. */
+/** Base URL the Next.js server uses to reach the daemon. Server-side only — the
+ *  browser goes through the authenticated /api/tasks/[id]/* proxy routes. */
 export const RUNNER_URL =
   process.env.RUNNER_URL ?? `http://localhost:${RUNNER_PORT}`;
-
-/** Exposed to the browser so the live task view can hit the daemon directly. */
-export const PUBLIC_RUNNER_URL =
-  process.env.NEXT_PUBLIC_RUNNER_URL ?? RUNNER_URL;
 
 /** Local data dir (sqlite + uploads). Both the Next app and the runner run with cwd = repo root. */
 export const DATA_DIR = resolve(process.cwd(), "data");

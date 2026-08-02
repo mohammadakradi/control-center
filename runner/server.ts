@@ -1,6 +1,5 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import { db } from "../lib/db";
@@ -15,13 +14,22 @@ import {
   stopTask,
   type StreamEvent,
 } from "./session-manager";
+import { usageSnapshot } from "./usage-snapshot";
 
 const TERMINAL: TaskStatus[] = ["done", "failed", "cancelled"];
 
+// No CORS on purpose: the browser never calls the runner. Only the Next.js server
+// does (same host), via the session-gated /api/tasks/[id]/* proxy routes.
 const app = new Hono();
-app.use("*", cors());
 
 app.get("/health", (c) => c.json({ ok: true }));
+
+// Best-effort Claude plan rate limits for one user. The SDK session lives here, so the web
+// app can't ask Anthropic directly. Never fails: an unavailable snapshot is a 200 with
+// `available: false` and a reason (see ./usage-snapshot for why that's the normal answer).
+app.get("/usage/:userId", async (c) => {
+  return c.json(await usageSnapshot(c.req.param("userId")));
+});
 
 // Start executing a task (details loaded from the shared DB).
 app.post("/tasks", async (c) => {

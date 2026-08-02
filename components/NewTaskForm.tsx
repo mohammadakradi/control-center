@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Check,
@@ -9,7 +10,6 @@ import {
   Code2,
   CornerDownLeft,
   Command,
-  Loader2,
   type LucideIcon,
   Palette,
   Play,
@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { Avatar } from "@/components/AgentAvatar";
 import { AttachmentPicker, mergeFiles } from "@/components/AttachmentPicker";
+import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 
 type Cmd = {
@@ -127,6 +128,9 @@ export function NewTaskForm({
   const [model, setModel] = useState("auto");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when dispatch was refused because this user has no Anthropic token — the
+  // error then carries a link to Settings instead of being a dead end.
+  const [needsToken, setNeedsToken] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
 
@@ -142,7 +146,7 @@ export function NewTaskForm({
 
   if (agents.length === 0) {
     return (
-      <p className="text-sm text-neutral-400">
+      <p className="text-sm text-fg-subtle">
         No agents discovered. Install a Claude Code plugin first.
       </p>
     );
@@ -159,6 +163,7 @@ export function NewTaskForm({
     if (busy) return;
     setBusy(true);
     setError(null);
+    setNeedsToken(false);
     // FormData so we can attach files; the API accepts both multipart and JSON.
     const fd = new FormData();
     fd.set("projectId", projectId);
@@ -172,6 +177,7 @@ export function NewTaskForm({
     setBusy(false);
     if (!res.ok) {
       setError(body.error ?? "Failed to dispatch task");
+      setNeedsToken(Boolean(body.needsToken));
       return;
     }
     router.push(`/tasks/${body.id}`);
@@ -191,37 +197,37 @@ export function NewTaskForm({
               type="button"
               onClick={() => selectAgent(a)}
               aria-pressed={selected}
-              className={`group relative rounded-xl border p-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40 ${
+              className={`group relative rounded-xl border p-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
                 selected
-                  ? "border-sky-500 bg-sky-500/10"
-                  : "border-neutral-800 bg-neutral-900/60 hover:border-neutral-700"
+                  ? "border-accent bg-info-soft"
+                  : "border-line bg-surface-2 hover:border-line-strong"
               }`}
             >
               <div className="mb-2 flex items-center justify-between">
                 <span
-                  className={`rounded-full ${selected ? "ring-2 ring-sky-500/60" : ""}`}
+                  className={`rounded-full ${selected ? "ring-2 ring-ring/60" : ""}`}
                 >
                   <Avatar namespace={a.namespace} size={36} />
                 </span>
-                {selected && <Check className="size-4 text-sky-400" />}
+                {selected && <Check className="size-4 text-accent" />}
               </div>
-              <div className="flex items-center gap-1.5 font-mono text-xs text-neutral-500">
+              <div className="flex items-center gap-1.5 font-mono text-xs text-fg-faint">
                 /{a.namespace}
                 {a.version && (
-                  <span className="text-neutral-600">v{a.version}</span>
+                  <span className="text-fg-ghost">v{a.version}</span>
                 )}
               </div>
-              <div className="flex items-center gap-1.5 text-sm font-medium text-neutral-100">
+              <div className="flex items-center gap-1.5 text-sm font-medium text-fg-strong">
                 {meta?.icon && (
                   <meta.icon
-                    className={`size-4 shrink-0 ${selected ? "text-sky-400" : "text-neutral-400"}`}
+                    className={`size-4 shrink-0 ${selected ? "text-accent" : "text-fg-subtle"}`}
                   />
                 )}
                 <span className="truncate">
                   {meta?.name ?? a.name ?? `/${a.namespace}`}
                 </span>
               </div>
-              <div className="mt-1 line-clamp-2 text-xs leading-snug text-neutral-500">
+              <div className="mt-1 line-clamp-2 text-xs leading-snug text-fg-faint">
                 {meta?.tagline ?? a.description ?? ""}
               </div>
             </button>
@@ -240,10 +246,10 @@ export function NewTaskForm({
               type="button"
               onClick={() => setCommand(c.name)}
               aria-pressed={selected}
-              className={`rounded-lg border px-3 py-1.5 font-mono text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40 ${
+              className={`rounded-lg border px-3 py-1.5 font-mono text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
                 selected
-                  ? "border-sky-500 bg-sky-500 text-white"
-                  : "border-neutral-700 bg-neutral-900 text-neutral-400 hover:border-neutral-600 hover:text-neutral-200"
+                  ? "border-accent bg-accent text-accent-contrast"
+                  : "border-line-strong bg-surface-2 text-fg-subtle hover:bg-surface-3 hover:text-fg"
               }`}
             >
               {c.name}
@@ -251,12 +257,12 @@ export function NewTaskForm({
           );
         })}
       </div>
-      <p className="mb-6 min-h-10 max-w-2xl text-sm leading-snug text-neutral-400">
+      <p className="mb-6 min-h-10 max-w-2xl text-sm leading-snug text-fg-subtle">
         {cmd?.description ?? " "}
       </p>
 
       {needsOnboard && (
-        <div className="mb-6 -mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+        <div className="mb-6 -mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-warn-line bg-warn-soft px-4 py-3 text-sm text-warn">
           <span className="min-w-0 flex-1">
             <span className="font-mono">/{agent?.namespace}</span> hasn&apos;t
             been onboarded on this project yet. Run{" "}
@@ -266,7 +272,7 @@ export function NewTaskForm({
           <button
             type="button"
             onClick={() => setCommand("onboard")}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-500/25"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-warn-line bg-warn-soft px-3 py-1.5 text-xs font-medium text-warn hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
           >
             <Sparkles className="size-3.5" />
             Onboard /{agent?.namespace}
@@ -292,12 +298,12 @@ export function NewTaskForm({
           setFiles(merged);
           if (err) setError(err);
         }}
-        className={`rounded-xl border bg-neutral-950 focus-within:border-sky-500 focus-within:ring-2 focus-within:ring-sky-500/20 ${
-          dragging ? "border-sky-500 ring-2 ring-sky-500/20" : "border-neutral-700"
+        className={`rounded-xl border bg-sunken focus-within:border-accent focus-within:ring-2 focus-within:ring-ring/25 ${
+          dragging ? "border-accent ring-2 ring-ring/25" : "border-line-strong"
         }`}
       >
         <div className="relative">
-          <span className="absolute top-3.5 left-4 font-mono text-sm text-sky-400/80">
+          <span className="absolute top-3.5 left-4 font-mono text-sm text-accent">
             ❯
           </span>
           <textarea
@@ -312,17 +318,17 @@ export function NewTaskForm({
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter")
                 submit(e as unknown as React.FormEvent);
             }}
-            className="min-h-24 w-full resize-y bg-transparent py-3 pr-4 pl-9 text-sm leading-relaxed text-neutral-100 outline-none placeholder:text-neutral-600"
+            className="min-h-24 w-full resize-y bg-transparent py-3 pr-4 pl-9 text-sm leading-relaxed text-fg-strong outline-none placeholder:text-fg-faint"
           />
         </div>
 
         {/* Footer: attachments on the left, model selector on the right. */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-neutral-800 px-3 py-2">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-3 py-2">
           <div className="min-w-0 flex-1">
             <AttachmentPicker files={files} setFiles={setFiles} />
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            <span className="text-xs text-neutral-500">Model</span>
+            <span className="text-xs text-fg-faint">Model</span>
             <Select
               ariaLabel="Model"
               value={model}
@@ -334,29 +340,26 @@ export function NewTaskForm({
         </div>
       </div>
       {model === "auto" && (
-        <p className="mt-2 text-xs text-neutral-500">{autoHint(agent?.namespace)}</p>
+        <p className="mt-2 text-xs text-fg-faint">{autoHint(agent?.namespace)}</p>
       )}
 
       {/* Run row */}
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <button
+          <Button
             type="submit"
-            disabled={busy}
-            className="inline-flex items-center gap-2 rounded-lg border border-blue-700 bg-linear-to-b from-sky-500 to-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/25 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
+            variant="primary"
+            loading={busy}
+            icon={<Play className="size-4" />}
+            className="font-semibold"
           >
-            {busy ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Play className="size-4" />
-            )}
             {busy ? "Dispatching…" : "Run task"}
-          </button>
-          <span className="inline-flex items-center gap-1.5 text-xs text-neutral-500">
-            <kbd className="inline-flex size-5 items-center justify-center rounded border border-neutral-700 bg-neutral-900">
+          </Button>
+          <span className="inline-flex items-center gap-1.5 text-xs text-fg-faint">
+            <kbd className="inline-flex size-5 items-center justify-center rounded border border-line-strong bg-surface-2">
               <Command className="size-3" />
             </kbd>
-            <kbd className="inline-flex size-5 items-center justify-center rounded border border-neutral-700 bg-neutral-900">
+            <kbd className="inline-flex size-5 items-center justify-center rounded border border-line-strong bg-surface-2">
               <CornerDownLeft className="size-3" />
             </kbd>
             to run
@@ -365,20 +368,35 @@ export function NewTaskForm({
 
         {/* Live resolved command — keeps the slash-command model visible. */}
         {resolved && (
-          <code className="rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-1 font-mono text-xs text-neutral-400">
+          <code
+            aria-live="polite"
+            className="rounded-md border border-line bg-sunken px-2.5 py-1 font-mono text-xs text-fg-subtle"
+          >
             {resolved}
           </code>
         )}
       </div>
 
-      {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+      {error && (
+        <p role="alert" className="mt-3 text-sm text-danger">
+          {error}
+          {needsToken && (
+            <>
+              {" "}
+              <Link href="/settings" className="font-medium underline">
+                Open Settings
+              </Link>
+            </>
+          )}
+        </p>
+      )}
     </form>
   );
 }
 
 function Eyebrow({ children }: { children: ReactNode }) {
   return (
-    <div className="mb-2 text-xs font-medium tracking-wider text-neutral-500 uppercase">
+    <div className="mb-2 text-xs font-medium tracking-wider text-fg-faint uppercase">
       {children}
     </div>
   );

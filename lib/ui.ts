@@ -12,22 +12,24 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
   cancelled: "Cancelled",
 };
 
+/** Semantic tone classes for a task status. Theme-aware via the tone tokens in
+ *  `app/globals.css` — do not reintroduce raw palette shades here. */
 export function statusColor(status: string): string {
   switch (status) {
     case "done":
-      return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
+      return "bg-ok-soft text-ok border-ok-line";
     case "failed":
-      return "bg-red-500/15 text-red-300 border-red-500/30";
+      return "bg-danger-soft text-danger border-danger-line";
     case "cancelled":
-      return "bg-neutral-500/15 text-neutral-300 border-neutral-500/30";
+      return "bg-muted-soft text-muted border-muted-line";
     case "running":
     case "building":
     case "committing":
     case "awaiting_proposal":
     case "awaiting_report":
-      return "bg-amber-500/15 text-amber-300 border-amber-500/30";
+      return "bg-warn-soft text-warn border-warn-line";
     default:
-      return "bg-sky-500/15 text-sky-300 border-sky-500/30";
+      return "bg-info-soft text-info border-info-line";
   }
 }
 
