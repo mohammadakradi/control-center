@@ -21,6 +21,13 @@ planning decision. Keep entries short and accurate.
   shared, `tasks.userId` scopes billing/attribution only; per-task usage extracted from
   SDK `result` messages already persisted in `taskEvents`; subscription limits via the
   SDK's experimental `get_usage` API — best-effort, hidden when unavailable (API keys).
+- 2026-08-02 — planned moving Usage out of Settings into its own "Usage" nav item
+  (`.pm/tasks/20260802-083437-usage-own-menu/`, 1 frontend task). Verdict: PARTIAL — the
+  nav/page move is a real gap (BUILD); the requested percent-used plot (like Claude's own
+  usage-limits screenshot) already exists as `components/PlanLimits.tsx`'s `WindowBar()` and
+  just needs to move with the page, not be rebuilt — it usually renders nothing because plan
+  limits report unavailable for this app's env-injected tokens, a known prior limitation, not
+  a gap to fix.
 
 ## Constraints & conventions
 <!-- stacks present, who owns what, non-obvious rules to respect when planning -->
@@ -38,8 +45,9 @@ planning decision. Keep entries short and accurate.
 - Package manager: pnpm. Dev runs via Docker Compose (`infra/docker/docker-compose.yml`,
   web :3001 + runner :4319) or natively via `pnpm dev:local`.
 - DB: Drizzle ORM + better-sqlite3 (`lib/db/`, migrations via `pnpm db:push`).
-- No test suite exists in the repo — plans should account for verification via
-  build/lint/manual check rather than assuming automated test coverage.
+- A test suite now exists: `pnpm test` (Node's built-in runner via `tsx`, 29 tests as of
+  2026-08-02), specs live next to code as `runner/*.test.ts`. Backend/runner tasks should
+  account for it; there's still no frontend test runner.
 - Code graph (`graphify-out/`) is installed and built — query it with the
   `PATH="$PATH:$HOME/.local/bin"` prefix per call (see CLAUDE.md). Note: broad queries
   truncate at ~2000 tokens; narrow the query or raise `--budget`.
