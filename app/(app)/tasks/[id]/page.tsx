@@ -15,8 +15,10 @@ import { agents, projects, taskEvents, tasks } from "@/lib/db/schema";
 import { Avatar } from "@/components/AgentAvatar";
 import { TaskLiveView } from "@/components/TaskLiveView";
 import { RunDuration } from "@/components/RunDuration";
+import { UsageBreakdown } from "@/components/UsageDisplay";
 import { Chip } from "@/components/ui-cards";
 import { ACTIVE_STATUSES, MODEL_DISPLAY, timeAgo } from "@/lib/ui";
+import { taskUsage } from "@/lib/usage-format";
 
 export const dynamic = "force-dynamic";
 
@@ -104,6 +106,9 @@ export default async function TaskPage({
               {project.path}
             </p>
           )}
+          {/* A snapshot at page load — usage is banked only at turn boundaries, so an
+              active run trails reality. TaskLiveView refreshes the page when it ends. */}
+          <UsageBreakdown usage={taskUsage(task)} className="mt-2.5" />
         </div>
       </div>
 

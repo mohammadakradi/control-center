@@ -327,6 +327,10 @@ export function TaskLiveView({
     if (e.type === "end") {
       setStatus((e.payload as { status?: string })?.status ?? "done");
       setGate(null);
+      // Re-render the server component around us so the run's final token/cost totals
+      // replace the snapshot taken at page load. Transcript state is seeded once (see
+      // `seed` above), so a refresh can't disturb what's already on screen.
+      router.refresh();
       return;
     }
     if (e.type === "gate") {
@@ -343,7 +347,7 @@ export function TaskLiveView({
     }
     const b = eventToBubble(e);
     if (b) setBubbles((prev) => [...prev, b]);
-  }, []);
+  }, [router]);
 
   // SSE connection (reconnects while the task is active).
   useEffect(() => {

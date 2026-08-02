@@ -25,8 +25,20 @@ Do **not** write `dark:` variants and do **not** use raw palette shades (`neutra
 
 The sidebar's collapsed **visuals** are pure CSS via the `rail:` custom variant (`w-60 rail:w-16`, `rail:hidden`), so width is correct on first paint; React reads the state only for ARIA attributes.
 
-## No test suite
-Zero test files exist. Don't invent a test setup. If asked to add tests, first align with the user on the testing framework.
+## There IS a test suite now (superseded "no test suite", 2026-08-01)
+`pnpm test` runs Node's built-in runner via `tsx` over `runner/*.test.ts` **and** `lib/*.test.ts` — no extra deps. Pure UI logic belongs there (`lib/usage-format.test.ts` is the frontend-side example). There's still no DOM/component test tooling, so rendering and interaction are verified by hand; don't invent a React testing setup without agreeing it with the user first.
+
+## Usage display: zeros are not "free", and plan limits normally don't render
+- A task row's `usage*` columns read 0 both for tasks that predate usage tracking and for runs whose subprocess was killed before reporting. `hasUsage()` in `lib/usage-format.ts` is the single gate: **render nothing rather than `$0.00`.** Sub-cent spend shows as `<$0.01` for the same reason.
+- `formatCost` pins `toLocaleString("en-US", …)`. These values render in server *and* client components, so an unpinned locale is a hydration mismatch waiting to happen.
+- `PlanLimits` renders **nothing** unless `/api/usage` reports `rateLimits.available` — which on this app is essentially never (env-injected tokens have no profile scope; see `.swe/notes.md`). That's the designed state, not a bug: no error, no skeleton, no empty card. To see it, stub the state locally.
+- Most of this instance's history is unowned (`user_id IS NULL`), so per-user spend reads ~$0 next to hundreds of dollars of real history. The `unattributed` footnote on the usage card exists so the page doesn't look broken.
+
+## Interleaving `{expr}` with prose drops the spaces between them
+`{n} task{n === 1 ? "" : "s"} predates …` rendered as **"90 taskspredates"** — JSX dropped the leading space of the text node after the expression. Build sentences that mix counts and words as a **single template string** (`{`${n} tasks predates …`}`), or the missing space only shows up in the browser. Found by curling the real page, not by reading the JSX.
+
+## Verifying rendered pages without a browser
+There's no Playwright/Puppeteer here. To check real markup: mint a session row directly (`sessions.id = sha256(token)`, see `lib/auth.ts`), `curl -H "Cookie: session=<token>" http://localhost:3001/…`, inspect the HTML, then delete the session row. Client-only branches still render, because App Router SSRs client components — temporarily seeding a `useState` initial value is enough to see them.
 
 ## Component library: bespoke only
 No shadcn/ui, Radix, or MUI. All components are handbuilt. Reuse `Chip`, `Tile`, `Fact`, `card`, `CardSection`, `PageHeader`, `EmptyState` (from `ui-cards.tsx`), `StatusBadge`, and the `components/ui/` primitives before writing new ones.
@@ -59,6 +71,9 @@ The base, **searchable** select/combobox is `components/ui/select.tsx` (the firs
 
 ## React lint: no `setState` inside `useEffect` bodies
 This Next 16 / React build errors on `react-hooks/set-state-in-effect` — calling a state setter synchronously in an effect body is a hard error (not a warning). Do resets in event handlers (e.g. an `openMenu()` helper) and **derive** values at render time (clamp an index with `Math.min` instead of correcting it in an effect). Effects may only do DOM/external sync (focus, scrollIntoView), never `setState`.
+
+## The task detail page currently 500s — the live DB is corrupt (2026-08-01)
+`/tasks/<id>` returns 500 for **every** task on this instance: reading `task_events` throws `SQLITE_CORRUPT: database disk image is malformed` (even `PRAGMA integrity_check` throws). Verified against a clean tree, so it predates the usage work. `data/platform.db.corrupt.old` shows this has happened before. Every other route is fine — the rest of the schema reads normally. Recovery (`.recover` into a fresh file, or restoring `data/backup/`) is the operator's call, not something to run blind.
 
 ## RunDuration uses `createdAt`, not `startedAt`
 The prop is `createdAt: number` (Unix ms), `endedAt: number | null`, `active: boolean`. The `active` flag controls whether the timer ticks.

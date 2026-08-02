@@ -53,7 +53,10 @@ interactive element a keyboard affordance by default.
 
 ### Semantic tones
 Each tone `t` ∈ `ok · danger · warn · info · violet · muted` exposes three utilities:
-`bg-{t}-soft` (background), `text-{t}` (text/icon), `border-{t}-line` (border).
+`bg-{t}-soft` (background), `text-{t}` (text/icon), `border-{t}-line` (border). A solid
+`bg-{t}` fill is also generated from the same `--color-{t}` token — use it only for small
+non-text fills (status dots in `TaskLiveView`, the utilization bars in `PlanLimits`), never
+as a surface behind text, since the tone colours are tuned for text-on-soft contrast.
 
 | Tone | Used for | Light text/bg | Dark text/bg |
 |---|---|---|---|
@@ -140,6 +143,9 @@ keeps the width correct on first paint instead of flashing after hydration.
 | `TaskLiveView` | `components/TaskLiveView.tsx` | `taskId: string`, `runnerUrl: string`, `initialStatus: string`, `projectId: string`, `agentId: string` | SSE-based live task transcript |
 | `ExpandableRequest` | `components/ExpandableRequest.tsx` | `text: string` | Collapsible markdown task request (160-char preview); disclosure button wired with `aria-expanded`/`aria-controls` |
 | `RunDuration` | `components/RunDuration.tsx` | `createdAt: number`, `endedAt: number \| null`, `active: boolean` | Live-ticking elapsed time chip; ticks every second while active |
+| `UsageBreakdown` / `UsageCost` | `components/UsageDisplay.tsx` | `usage: TaskUsage`, `className?` | Token/cost display at two densities: a labelled `<dl>` (task detail, user totals) and a bare mono cost for dense list rows. Each renders `null` rather than a misleading zero — `UsageBreakdown` when nothing at all was recorded (`hasUsage()`), `UsageCost` when there's no cost to show (a run can bank tokens without a billable turn). Feed them via `taskUsage(row)` from `lib/usage-format.ts`. |
+| `UsageSummaryCard` | `components/UsageSummaryCard.tsx` | `spend: SpendSummary` | The signed-in user's spend: four `Tile`s, a token `UsageBreakdown`, top-5 costliest runs, and the `unattributed` footnote. Server component (`spendForUser()` is a direct query). |
+| `PlanLimits` | `components/PlanLimits.tsx` | — | Claude plan rate-limit windows as utilization bars. Client component; fetches `/api/usage` and **renders nothing at all** (no card, no skeleton, no error) unless the SDK reports limits as available — which on this app it normally doesn't. |
 | `AttachmentPicker` | `components/AttachmentPicker.tsx` | `files: File[]`, `onAdd: (files: File[]) => void`, `onRemove: (idx: number) => void` | File attach bar (Paperclip + chips); shared by `NewTaskForm` and `TaskLiveView` change-request box |
 | `Markdown` | `components/Markdown.tsx` | `children: string`, `onFileClick?: (path: string) => void` | `react-markdown` with GFM + remark-breaks; normalizes agent bullet glyphs; clickable `.fe/.swe` test-scenario / `.pm/tasks` file paths |
 
@@ -156,9 +162,11 @@ keeps the width correct on first paint instead of flashing after hydration.
   `aria-hidden`; async errors render in `role="alert"`; git command output is a live region.
 
 ## Known inconsistencies / debt
-- **No test suite exists (zero test files).** The theme/sidebar logic in `lib/theme.ts` and
-  `lib/sidebar.ts` is pure and unit-testable — tests were consciously deferred by the user
-  when that code landed (2026-07-29), not overlooked.
+- **There is now a test suite** (`pnpm test` → `node:test` via `tsx`, specs in `runner/*.test.ts`
+  and `lib/*.test.ts`) — pure UI logic can and should be tested there, e.g.
+  `lib/usage-format.test.ts`. Nothing renders components yet (no DOM test tooling), so
+  markup and interaction are still verified by hand. The theme/sidebar logic in `lib/theme.ts`
+  and `lib/sidebar.ts` remains untested — deferred by the user when it landed (2026-07-29).
 - `AgentAvatar`'s initials fallback uses one colour for every namespace, so agents without a
   photo are visually indistinguishable in a contributor stack.
 - Keyboard navigation is reasoned about but not formally tested end-to-end (no a11y test

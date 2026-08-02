@@ -2,8 +2,10 @@ import Link from "next/link";
 import type { InferSelectModel } from "drizzle-orm";
 import type { tasks } from "@/lib/db/schema";
 import { StatusBadge } from "./StatusBadge";
+import { UsageCost } from "./UsageDisplay";
 import { CardSection } from "./ui-cards";
 import { timeAgo } from "@/lib/ui";
+import { taskUsage } from "@/lib/usage-format";
 
 type Task = InferSelectModel<typeof tasks>;
 
@@ -56,6 +58,12 @@ export function TaskHistory({
                     <span className="text-fg-ghost">no description</span>
                   )}
                 </span>
+                {/* Cost and timestamp both step aside below `sm` — the row is already
+                    carrying the command, title, and status at 375px. */}
+                <UsageCost
+                  usage={taskUsage(t)}
+                  className="hidden shrink-0 sm:block"
+                />
                 <span className="hidden shrink-0 text-xs text-fg-faint sm:block">
                   {timeAgo(t.createdAt)}
                 </span>
