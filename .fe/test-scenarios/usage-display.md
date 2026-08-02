@@ -6,6 +6,11 @@
 - **Settings** (`/settings`) — a per-user spend card, plus a Claude plan-limits panel that
   only appears if the SDK can actually read plan limits
 
+> **Superseded (2026-08-02):** sections 3 and 4 below have moved to their own page — usage now
+> lives at **`/usage`**, not under Settings, and the spend card is headed "Your spend". See
+> `.fe/test-scenarios/usage-nav-page.md`. The *content* checks below still apply; only the
+> location changed. Sections 1, 2 and 5 are unaffected.
+
 Run the app with `pnpm dev` (Docker) and open http://localhost:3001, signed in.
 
 > **Blocker for section 1 on the current machine:** `/tasks/<id>` returns 500 for every task
@@ -33,8 +38,8 @@ Run the app with `pnpm dev` (Docker) and open http://localhost:3001, signed in.
 2. Rows with no recorded cost show **nothing** in that slot; the row layout doesn't shift.
 3. Click a row — it still navigates to the task; the cost is not interactive.
 
-## 3. Settings — your usage (`/settings`)
-1. Below the Anthropic-token card there's a **Usage** card headed `N tasks dispatched by you`.
+## 3. Your usage (now `/usage`, was `/settings`)
+1. A **Your spend** card headed `N tasks dispatched by you`.
 2. With spend recorded: four tiles — **Total spend**, **Last 30 days**, **Tokens**,
    **Billed tasks** — then the token breakdown line, then **Most expensive runs** (up to 5
    rows: title, relative time, cost). Each row links to its task.
@@ -47,7 +52,7 @@ Run the app with `pnpm dev` (Docker) and open http://localhost:3001, signed in.
    above."* — check the wording has normal spacing (an earlier build rendered
    "90 taskspredates").
 
-## 4. Settings — Claude plan limits
+## 4. Claude plan limits (now `/usage`, was `/settings`)
 1. **Expected on this deployment: the card does not exist.** No "unavailable" message, no
    empty card, no error, no loading skeleton — the section is simply absent. This is correct:
    plan limits aren't readable with a token injected via the environment (`.swe/notes.md`).

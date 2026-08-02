@@ -28,7 +28,9 @@ export function UsageSummaryCard({ spend }: { spend: SpendSummary }) {
 
   return (
     <CardSection
-      title="Usage"
+      // Not "Usage": this sits under the /usage page's own <h1>Usage</h1>, and a duplicate
+      // heading is dead weight when navigating by headings.
+      title="Your spend"
       right={
         <span className="text-xs text-fg-faint">
           {`${plural(spend.taskCount)} dispatched by you`}

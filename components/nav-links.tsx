@@ -1,6 +1,7 @@
 import {
   Boxes,
   FolderGit2,
+  Gauge,
   LayoutDashboard,
   Settings,
   type LucideIcon,
@@ -12,6 +13,7 @@ export const NAV_LINKS: NavLink[] = [
   { href: "/", label: "Dashboard", Icon: LayoutDashboard },
   { href: "/agents", label: "Agents", Icon: Boxes },
   { href: "/projects", label: "Projects", Icon: FolderGit2 },
+  { href: "/usage", label: "Usage", Icon: Gauge },
   { href: "/settings", label: "Settings", Icon: Settings },
 ];
 

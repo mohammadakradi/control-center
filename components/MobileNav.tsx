@@ -44,12 +44,15 @@ export function MobileTabBar() {
             key={href}
             href={href}
             aria-current={active ? "page" : undefined}
-            className={`flex flex-1 flex-col items-center gap-1 py-2.5 text-xs font-medium transition-colors ${
+            className={`flex min-w-0 flex-1 flex-col items-center gap-1 px-1 py-2.5 text-xs font-medium transition-colors ${
               active ? "text-accent" : "text-fg-faint hover:text-fg-muted"
             }`}
           >
-            <Icon className="size-5" aria-hidden="true" />
-            {label}
+            <Icon className="size-5 shrink-0" aria-hidden="true" />
+            {/* Five tabs at 320px leave ~64px each — a hair over "Dashboard". Truncating
+                keeps the bar inside the viewport instead of scrolling it sideways; the
+                full label is still the link's accessible name. */}
+            <span className="max-w-full truncate">{label}</span>
           </Link>
         );
       })}

@@ -28,10 +28,34 @@ The sidebar's collapsed **visuals** are pure CSS via the `rail:` custom variant 
 ## There IS a test suite now (superseded "no test suite", 2026-08-01)
 `pnpm test` runs Node's built-in runner via `tsx` over `runner/*.test.ts` **and** `lib/*.test.ts` — no extra deps. Pure UI logic belongs there (`lib/usage-format.test.ts` is the frontend-side example). There's still no DOM/component test tooling, so rendering and interaction are verified by hand; don't invent a React testing setup without agreeing it with the user first.
 
+## Usage lives at `/usage`, not under Settings (2026-08-02)
+`UsageSummaryCard` + `PlanLimits` moved out of `/settings` onto their own top-level
+`app/(app)/usage/page.tsx` (nav entry in `NAV_LINKS`, `Gauge` icon). Settings is the token
+vault only. The card's own heading is **"Your spend"**, not "Usage" — it sits under the
+page's `<h1>Usage</h1>` and a duplicate heading is noise when navigating by headings.
+
+**lucide-react here is v1** (`^1.21.0`): `BarChart3` no longer exists (it's `ChartColumn`),
+and several other v0 names were renamed. Grep `node_modules/lucide-react/dist/lucide-react.d.ts`
+for `declare const <Name>` before importing an icon from memory.
+
+## `drizzle.config.ts` hardcodes the LIVE db — always pass `--url` explicitly
+`npx drizzle-kit push` with `PLATFORM_DB=…` in the env **ignores it** and targets
+`./data/platform.db`, because the config file hardcodes that path and nothing reads the env
+var. To build a throwaway DB, pass the flags the tests use:
+`npx drizzle-kit push --dialect=sqlite --schema=./lib/db/schema.ts --url=/tmp/x.db --force`.
+(`PLATFORM_DB` *is* honored by `lib/db/index.ts` at runtime — it's only the drizzle-kit CLI
+that doesn't see it.)
+
+## Verifying a page without touching the live DB
+Better than seeding a session into `data/platform.db` (which has corrupted twice — see the
+root memory): run a second instance against a throwaway file —
+`PLATFORM_DB=/tmp/x.db npx next dev --port 3099`, `POST /api/auth/signup` for a cookie, then
+curl the pages. Fully isolated, and you can seed tasks/spend freely to see populated states.
+
 ## Usage display: zeros are not "free", and plan limits normally don't render
 - A task row's `usage*` columns read 0 both for tasks that predate usage tracking and for runs whose subprocess was killed before reporting. `hasUsage()` in `lib/usage-format.ts` is the single gate: **render nothing rather than `$0.00`.** Sub-cent spend shows as `<$0.01` for the same reason.
 - `formatCost` pins `toLocaleString("en-US", …)`. These values render in server *and* client components, so an unpinned locale is a hydration mismatch waiting to happen.
-- `PlanLimits` renders **nothing** unless `/api/usage` reports `rateLimits.available` — which on this app is essentially never (env-injected tokens have no profile scope; see `.swe/notes.md`). That's the designed state, not a bug: no error, no skeleton, no empty card. To see it, stub the state locally.
+- `PlanLimits` renders **nothing** unless `/api/usage` reports `rateLimits.available` — which on this app is essentially never (env-injected tokens have no profile scope; see `.swe/notes.md`). That's the designed state, not a bug: no error, no skeleton, no empty card. To see it, stub the state locally. Consequence for `/usage`: with no spend recorded the page is just the header + an empty state, because the *only* other card is one that normally doesn't render.
 - Most of this instance's history is unowned (`user_id IS NULL`), so per-user spend reads ~$0 next to hundreds of dollars of real history. The `unattributed` footnote on the usage card exists so the page doesn't look broken.
 
 ## Interleaving `{expr}` with prose drops the spaces between them
