@@ -100,6 +100,8 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
   `/api/tasks/[id]/{stream,respond,reply,stop}` proxy routes — the browser never talks
   to the runner directly)
 - `app/settings/` — Per-user settings (Anthropic token vault card)
+- `app/usage/` — Per-user usage page: spend summary + Claude plan-limit bars. A top-level
+  nav entry, not a Settings sub-section (moved out of Settings 2026-08-02)
 - `app/api/` — API routes (projects, tasks, agents, git, fs, diff, file, settings/token)
 - `components/` — All reusable UI components (bespoke)
 - `components/ui-cards.tsx` — Core primitives: `card`, `CardSection`, `PageHeader`,

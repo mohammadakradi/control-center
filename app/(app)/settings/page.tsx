@@ -1,11 +1,8 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { getUserTokenStatus, secretsConfigured } from "@/lib/secrets";
-import { spendForUser } from "@/lib/usage-summary";
 import { PageHeader } from "@/components/ui-cards";
 import { TokenSettings } from "@/components/TokenSettings";
-import { UsageSummaryCard } from "@/components/UsageSummaryCard";
-import { PlanLimits } from "@/components/PlanLimits";
 
 export const dynamic = "force-dynamic";
 
@@ -23,9 +20,6 @@ export default async function SettingsPage() {
         initialStatus={getUserTokenStatus(user.id)}
         vaultReady={secretsConfigured()}
       />
-      <UsageSummaryCard spend={spendForUser(user.id)} />
-      {/* Renders nothing unless the SDK can actually read plan limits — usually it can't. */}
-      <PlanLimits />
     </div>
   );
 }
