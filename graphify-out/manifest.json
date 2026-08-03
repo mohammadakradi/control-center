@@ -300,8 +300,8 @@
     "semantic_hash": "21dac7107619fd53c67d3cb5ab5169c5"
   },
   "components/UsageSummaryCard.tsx": {
-    "mtime": 1785681098.643371,
-    "ast_hash": "214d1f31d47f4195b309383e07a6f181",
+    "mtime": 1785780855.2985907,
+    "ast_hash": "06a934a0d295fd38b9322a346339d140",
     "semantic_hash": ""
   },
   "components/WorkspaceSourceControl.tsx": {
@@ -430,23 +430,23 @@
     "semantic_hash": "25ae7fe37979f87afed72a6ead4cc21e"
   },
   "lib/usage-format.test.ts": {
-    "mtime": 1785658885.3637068,
-    "ast_hash": "1541ab69d72b12ce9e6a9f108e9c5550",
-    "semantic_hash": "1541ab69d72b12ce9e6a9f108e9c5550"
+    "mtime": 1785777937.1287682,
+    "ast_hash": "4da4552fdd819c4f3575eef3cda238d4",
+    "semantic_hash": ""
   },
   "lib/usage-format.ts": {
-    "mtime": 1785658885.3662336,
-    "ast_hash": "d6e9438557bd89bc7fd8b70b29041f3f",
-    "semantic_hash": "d6e9438557bd89bc7fd8b70b29041f3f"
+    "mtime": 1785780655.9349544,
+    "ast_hash": "1ec058db12f3f41be866b7dd365d0ea6",
+    "semantic_hash": ""
   },
   "lib/usage-summary.test.ts": {
-    "mtime": 1785776364.0683794,
-    "ast_hash": "cac75e51c6a628d6dd1aa49acd3ecfd3",
+    "mtime": 1785778750.1066875,
+    "ast_hash": "6184f9d1ceb9ca5d3b9882974226c75e",
     "semantic_hash": ""
   },
   "lib/usage-summary.ts": {
-    "mtime": 1785776231.7731693,
-    "ast_hash": "9f2f6e2188b8887110557f0d27532222",
+    "mtime": 1785778504.6351547,
+    "ast_hash": "0c28af72fc2a751881f73c2b0a7de486",
     "semantic_hash": ""
   },
   "lib/util.ts": {
@@ -555,18 +555,18 @@
     "semantic_hash": "02fc19ad21338c2ab820a70136310db4"
   },
   "app/(app)/usage/page.tsx": {
-    "mtime": 1785681098.6401043,
-    "ast_hash": "ab16b75151c130418d023b025053c726",
+    "mtime": 1785778053.576951,
+    "ast_hash": "a15902029856d48a1a07412ca5e0c771",
     "semantic_hash": ""
   },
   ".fe/design-system.md": {
-    "mtime": 1785681098.6210115,
-    "ast_hash": "f1a7f675054d7a0d58e987d899654665",
+    "mtime": 1785779543.4959118,
+    "ast_hash": "8afba53e01d641070c61ff510aeeb5a2",
     "semantic_hash": ""
   },
   ".fe/notes.md": {
-    "mtime": 1785681098.621566,
-    "ast_hash": "ec6dd02eb162ef1a63b66d602c06932a",
+    "mtime": 1785781199.6771116,
+    "ast_hash": "301f1280a588447143eb464939ab804c",
     "semantic_hash": ""
   },
   ".fe/test-scenarios/project-detail-overflow.md": {
@@ -762,6 +762,26 @@
   ".pm/tasks/20260803-141928-usage-project-date-filter/index.md": {
     "mtime": 1785770267.9233031,
     "ast_hash": "cfefe061f44e9ddafea2147fe2f23062",
+    "semantic_hash": ""
+  },
+  "components/ProjectSpendCard.tsx": {
+    "mtime": 1785780736.0518363,
+    "ast_hash": "5bc657b2679e65ff54a88ab3bc4f84e2",
+    "semantic_hash": ""
+  },
+  "components/SpendRangeNav.tsx": {
+    "mtime": 1785777995.3945248,
+    "ast_hash": "1a6800abfd22aacdec7d0a82472d8438",
+    "semantic_hash": ""
+  },
+  ".fe/test-scenarios/usage-range-project-breakdown.md": {
+    "mtime": 1785781158.9511514,
+    "ast_hash": "6d56c8d797ecd05473bcd4df0ce66e70",
+    "semantic_hash": ""
+  },
+  ".swe/test-scenarios/usage-range-and-projects.md": {
+    "mtime": 1785781045.2915227,
+    "ast_hash": "15e81caef4e569bcd103a04dbfd1073b",
     "semantic_hash": ""
   }
 }

@@ -62,12 +62,6 @@ export type SpendSummary = {
   taskCount: number;
   /** Tasks that actually recorded spend — the rest never reached a billable turn. */
   billedTaskCount: number;
-  /**
-   * @deprecated Superseded by `range: "30d"` — kept only for `UsageSummaryCard`, which the
-   * paired frontend task (02-frontend-usage-project-date-filter) reworks; remove with it.
-   * Always the fixed 30-day figure, regardless of the requested range.
-   */
-  last30DaysCostUsd: number;
   /** Most expensive runs, for "where did the money go". */
   topTasks: TaskSpend[];
   /** Spend per project within the range, most expensive first. */
@@ -83,7 +77,6 @@ export type SpendSummary = {
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const THIRTY_DAYS_MS = 30 * DAY_MS;
 
 /** The oldest `createdAt` a range admits, or null when it admits everything. */
 function rangeStart(range: SpendRange): Date | null {
@@ -112,12 +105,6 @@ export function spendForUser(
     })
     .from(tasks)
     .where(scoped)
-    .get();
-
-  const recent = db
-    .select({ cost: sql<number>`COALESCE(SUM(${tasks.usageCostUsd}), 0)` })
-    .from(tasks)
-    .where(and(mine, gte(tasks.createdAt, new Date(Date.now() - THIRTY_DAYS_MS))))
     .get();
 
   // LEFT join, not inner: the projects FK is unenforced in the real DB (see .swe/notes.md),
@@ -181,7 +168,6 @@ export function spendForUser(
     cacheCreationTokens: totals?.cacheCreation ?? 0,
     taskCount: totals?.taskCount ?? 0,
     billedTaskCount: totals?.billedTaskCount ?? 0,
-    last30DaysCostUsd: recent?.cost ?? 0,
     topTasks: top,
     byProject,
     unattributed: {

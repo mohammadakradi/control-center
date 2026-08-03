@@ -34,6 +34,20 @@ The sidebar's collapsed **visuals** are pure CSS via the `rail:` custom variant 
 vault only. The card's own heading is **"Your spend"**, not "Usage" — it sits under the
 page's `<h1>Usage</h1>` and a duplicate heading is noise when navigating by headings.
 
+## Filter state that drives a server component belongs in the URL (2026-08-03)
+`/usage`'s range filter (`SpendRangeNav`, 7d/30d/all) is **three `<Link>`s**, not the
+`role="radiogroup"` buttons `ThemeToggle` uses. The theme lives in `localStorage` and can only
+be read on the client; a filter that changes server-rendered data is just navigation. Links
+keep both spend cards server components (no fetch, no loading flash, zero client JS), make the
+range bookmarkable and back-button-able, and match how `Sidebar`/`MobileNav` already mark an
+active link (`aria-current="page"`). `role="radio"` on something that navigates also lies to a
+screen reader — and a real radiogroup would owe you roving-tabindex arrow keys. Reach for the
+radiogroup shape only when the state genuinely can't leave the client.
+
+The page parses `?range=` leniently (`parseRange(...) ?? "all"`) while `/api/usage` 400s on the
+same input — a page with a good default shouldn't error on a stale bookmark; an API should.
+Next 16 note: `searchParams` is a **`Promise`**, so the page has to `await` it.
+
 **lucide-react here is v1** (`^1.21.0`): `BarChart3` no longer exists (it's `ChartColumn`),
 and several other v0 names were renamed. Grep `node_modules/lucide-react/dist/lucide-react.d.ts`
 for `declare const <Name>` before importing an icon from memory.
@@ -56,7 +70,8 @@ curl the pages. Fully isolated, and you can seed tasks/spend freely to see popul
 - A task row's `usage*` columns read 0 both for tasks that predate usage tracking and for runs whose subprocess was killed before reporting. `hasUsage()` in `lib/usage-format.ts` is the single gate: **render nothing rather than `$0.00`.** Sub-cent spend shows as `<$0.01` for the same reason.
 - `formatCost` pins `toLocaleString("en-US", …)`. These values render in server *and* client components, so an unpinned locale is a hydration mismatch waiting to happen.
 - `PlanLimits` renders **nothing** unless `/api/usage` reports `rateLimits.available` — which on this app is essentially never (env-injected tokens have no profile scope; see `.swe/notes.md`). That's the designed state, not a bug: no error, no skeleton, no empty card. To see it, stub the state locally. Consequence for `/usage`: with no spend recorded the page is just the header + an empty state, because the *only* other card is one that normally doesn't render.
-- Most of this instance's history is unowned (`user_id IS NULL`), so per-user spend reads ~$0 next to hundreds of dollars of real history. The `unattributed` footnote on the usage card exists so the page doesn't look broken.
+- Most of this instance's history is unowned (`user_id IS NULL`), so per-user spend reads ~$0 next to hundreds of dollars of real history. The `unattributed` footnote on the usage card exists so the page doesn't look broken. That bucket is **all-time by design** and doesn't follow the range filter, so the footnote says ", all time," out loud whenever a window is selected — otherwise it reads as "a further $459 in the last 7 days".
+- With a range filter in play, "no spend" has two different meanings and they need different copy: *nothing ever* ("No usage recorded yet") vs *nothing in this window* ("No spend in the last 7 days… try a wider range"). `isFiltered()` + `NO_SPEND_IN_RANGE_HINT` in `lib/usage-format.ts` keep the two usage cards saying the same thing.
 
 ## Interleaving `{expr}` with prose drops the spaces between them
 `{n} task{n === 1 ? "" : "s"} predates …` rendered as **"90 taskspredates"** — JSX dropped the leading space of the text node after the expression. Build sentences that mix counts and words as a **single template string** (`{`${n} tasks predates …`}`), or the missing space only shows up in the browser. Found by curling the real page, not by reading the JSX.

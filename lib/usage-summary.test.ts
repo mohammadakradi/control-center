@@ -125,11 +125,6 @@ test("counts every owned task, but bills only the ones that spent", () => {
   assert.equal(s.billedTaskCount, 4, "the $0 task is owned but not billed");
 });
 
-test("the 30-day window excludes older tasks", () => {
-  const s = spendForUser("u_me");
-  assert.ok(Math.abs(s.last30DaysCostUsd - 25.75) < 1e-9, `got ${s.last30DaysCostUsd}`);
-});
-
 test("top tasks are ordered by cost, omit free ones, and carry project identity", () => {
   const s = spendForUser("u_me");
   assert.deepEqual(
@@ -177,10 +172,6 @@ test("a 7-day range narrows further", () => {
     s.topTasks.map((t) => t.id),
     ["t_mine_p2", "t_cheap"],
   );
-});
-
-test("the deprecated 30-day figure stays fixed regardless of the requested range", () => {
-  assert.ok(Math.abs(spendForUser("u_me", { range: "7d" }).last30DaysCostUsd - 25.75) < 1e-9);
 });
 
 test("byProject splits the user's spend per project, most expensive first", () => {
@@ -252,7 +243,6 @@ test("a user with no tasks gets zeros, not nulls or NaN", () => {
   assert.equal(s.inputTokens, 0);
   assert.equal(s.taskCount, 0);
   assert.equal(s.billedTaskCount, 0);
-  assert.equal(s.last30DaysCostUsd, 0);
   assert.deepEqual(s.topTasks, []);
   assert.deepEqual(s.byProject, []);
 });

@@ -22,9 +22,10 @@ return project identity on each top task plus a per-project spend breakdown · 2
      the four token counters, `taskCount`, and `billedTaskCount` — sorted by `costUsd`
      descending. The sum of `byProject[*].costUsd` equals `spend.totalCostUsd`.
 3. `curl -s -H "Cookie: $COOKIE" "http://localhost:3001/api/usage?range=30d" | python3 -m json.tool`
-   - **Expected:** `spend.range` is `"30d"`; `totalCostUsd` ≤ the all-time figure and equals
-     `last30DaysCostUsd` from step 1. Tasks older than 30 days are gone from `topTasks`
-     and from the `byProject` totals.
+   - **Expected:** `spend.range` is `"30d"`; `totalCostUsd` ≤ the all-time figure from step 1.
+     Tasks older than 30 days are gone from `topTasks` and from the `byProject` totals.
+     (The old `last30DaysCostUsd` field this step used to compare against was removed by the
+     paired frontend task — `range: "30d"` supersedes it.)
 4. `curl -s -H "Cookie: $COOKIE" "http://localhost:3001/api/usage?range=7d" | python3 -m json.tool`
    - **Expected:** `spend.range` is `"7d"`; figures shrink again (or hit 0 if you've been
      idle a week). `unattributed` is identical across all three calls — it is all-time by
