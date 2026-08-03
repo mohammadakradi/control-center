@@ -163,7 +163,28 @@ update after every change.
     schema with `drizzle-kit push` + `PLATFORM_DB`; it asserts the connection path before
     writing so a broken override can never hit `data/platform.db`.
 
+- **2026-08-03 — usage data layer: date range + per-project breakdown** (pm task
+  01-backend-usage-project-date-filter). `spendForUser(userId, { range, topN })` — options
+  object replaced the positional `topN`. Decisions:
+  - `range: "7d" | "30d" | "all"`, default **"all"** so existing callers (the SSR usage
+    page) keep their behavior until the paired frontend task passes an explicit range. One
+    shared `createdAt >= start` predicate scopes totals, `topTasks`, and the new
+    `byProject`; `unattributed` stays all-time by design.
+  - `last30DaysCostUsd` is **deprecated but kept** — `UsageSummaryCard` still renders it;
+    the paired frontend task (02) removes both together. It stays the fixed 30-day figure
+    regardless of the requested range.
+  - Project joins are **LEFT joins**: `tasks.project_id` is NOT NULL with a cascade FK on
+    paper, but FK enforcement in the real DB is unreliable (see the drizzle-push gotcha), so
+    an orphaned task must not vanish from a billing figure — `projectName` is nullable.
+  - `?range=` is parsed by the exported `parseRange()` allowlist: absent/empty → "all",
+    anything else off-list → `null`, which the route turns into a 400. Auth is checked
+    before range validation.
+
 ## Gotchas
+- **2026-08-03 — host-side `pnpm test` fails with an esbuild platform error** — the host
+  `node_modules` currently carries `@esbuild/linux-arm64` (tsx can't transform anything).
+  Run the gates through the dev container instead: `docker exec platform pnpm test` (and
+  same for lint / `npx tsc --noEmit`).
 - **2026-07-31 — `pnpm build` is broken on `main`, independently of any feature work.**
   It compiles and typechecks, then fails exporting Next's internal `/_global-error` page:
   `TypeError: Cannot read properties of null (reading 'useContext')`. Verified by stashing

@@ -10,6 +10,8 @@ import {
   formatResetsIn,
   formatTokens,
   hasUsage,
+  rangeLabel,
+  SPEND_RANGES,
   taskUsage,
   totalTokens,
   windowLabel,
@@ -120,6 +122,26 @@ test("formatResetsIn degrades instead of showing a negative countdown", () => {
   assert.equal(formatResetsIn(new Date(now - 60_000).toISOString(), now), "any moment");
   assert.equal(formatResetsIn(null, now), null);
   assert.equal(formatResetsIn("not a date", now), null);
+});
+
+test("rangeLabel names every range the control can select", () => {
+  assert.equal(rangeLabel("7d"), "Last 7 days");
+  assert.equal(rangeLabel("30d"), "Last 30 days");
+  assert.equal(rangeLabel("all"), "All time");
+});
+
+test("SPEND_RANGES covers every range exactly once, in display order", () => {
+  // The control renders this array directly, so a duplicate or a missing entry is a
+  // missing segment — and `rangeLabel` silently falling back to "All time".
+  assert.deepEqual(
+    SPEND_RANGES.map((r) => r.value),
+    ["7d", "30d", "all"],
+  );
+  for (const r of SPEND_RANGES) {
+    assert.equal(rangeLabel(r.value), r.label);
+    // Three segments share one row at 375px; the short form is what keeps them there.
+    assert.ok(r.short.length <= r.label.length, `${r.value} short form is not shorter`);
+  }
 });
 
 test("windowLabel names the known windows and humanizes the rest", () => {

@@ -1,9 +1,17 @@
 import Link from "next/link";
-import { Coins } from "lucide-react";
+import { Coins, FolderGit2 } from "lucide-react";
 import type { SpendSummary } from "@/lib/usage-summary";
 import { CardSection, EmptyState, Tile } from "@/components/ui-cards";
 import { UsageBreakdown } from "@/components/UsageDisplay";
-import { formatCost, formatTokens, totalTokens } from "@/lib/usage-format";
+import {
+  formatCost,
+  formatTokens,
+  hasUsage,
+  isFiltered,
+  NO_SPEND_IN_RANGE_HINT,
+  rangeLabel,
+  totalTokens,
+} from "@/lib/usage-format";
 import { timeAgo } from "@/lib/ui";
 
 /**
@@ -22,6 +30,9 @@ export function UsageSummaryCard({ spend }: { spend: SpendSummary }) {
     costUsd: spend.totalCostUsd,
   });
   const billed = spend.billedTaskCount;
+  // `hasUsage` reads the same five fields off a ProjectSpend as off a task's usage.
+  const projectCount = spend.byProject.filter(hasUsage).length;
+  const filtered = isFiltered(spend.range);
   // Built as strings rather than inline JSX: interleaving `{expr}` with prose drops the
   // spaces between them ("90 taskspredates"), which the rendered page duly showed.
   const plural = (n: number) => `${n} task${n === 1 ? "" : "s"}`;
@@ -33,28 +44,47 @@ export function UsageSummaryCard({ spend }: { spend: SpendSummary }) {
       title="Your spend"
       right={
         <span className="text-xs text-fg-faint">
-          {`${plural(spend.taskCount)} dispatched by you`}
+          {/* Every figure below is range-scoped, so an unqualified "142 tasks dispatched
+              by you" would be a straight-up wrong count while a window is selected. */}
+          {filtered
+            ? `${plural(spend.taskCount)} in the ${rangeLabel(spend.range).toLowerCase()}`
+            : `${plural(spend.taskCount)} dispatched by you`}
         </span>
       }
     >
       {billed === 0 ? (
+        // "Nothing yet" and "nothing *in this window*" are different facts, and only one
+        // of them is fixed by dispatching a task.
         <EmptyState
           icon={<Coins className="size-6" />}
-          title="No usage recorded yet"
-          hint="Dispatch a task and its token and cost totals will appear here once the first turn completes."
+          title={
+            filtered
+              ? `No spend in the ${rangeLabel(spend.range).toLowerCase()}`
+              : "No usage recorded yet"
+          }
+          hint={
+            filtered
+              ? NO_SPEND_IN_RANGE_HINT
+              : "Dispatch a task and its token and cost totals will appear here once the first turn completes."
+          }
         />
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <Tile value={formatCost(spend.totalCostUsd)} label="Total spend" />
+            {/* The window this total covers is the tile's label, so the number is never
+                shown without saying what it counts. */}
             <Tile
-              value={formatCost(spend.last30DaysCostUsd)}
-              label="Last 30 days"
+              value={formatCost(spend.totalCostUsd)}
+              label={filtered ? rangeLabel(spend.range) : "Total spend"}
             />
             <Tile value={formatTokens(tokens)} label="Tokens" />
             <Tile
               value={`${billed}`}
               label={`Billed task${billed === 1 ? "" : "s"}`}
+            />
+            <Tile
+              value={`${projectCount}`}
+              label={`Project${projectCount === 1 ? "" : "s"}`}
             />
           </div>
 
@@ -87,6 +117,15 @@ export function UsageSummaryCard({ spend }: { spend: SpendSummary }) {
                           <span className="font-mono text-accent">/{t.command}</span>
                         )}
                       </span>
+                      {/* Same treatment as the dashboard and agent-detail task rows. Plain
+                          text, not a link to the project: this row is already a link, and
+                          nesting one inside another is invalid HTML. */}
+                      <span className="inline-flex min-w-0 shrink items-center gap-1.5 text-xs text-fg-faint">
+                        <FolderGit2 className="size-3.5 shrink-0" aria-hidden="true" />
+                        <span className="truncate">
+                          {t.projectName ?? "Unknown project"}
+                        </span>
+                      </span>
                       <span className="shrink-0 text-xs text-fg-faint">
                         {timeAgo(new Date(t.createdAt))}
                       </span>
@@ -107,9 +146,12 @@ export function UsageSummaryCard({ spend }: { spend: SpendSummary }) {
           Aggregate only, and unowned by definition — it discloses nothing about anyone. */}
       {spend.unattributed.taskCount > 0 && (
         <p className="mt-4 border-t border-line pt-3 text-xs text-fg-faint">
+          {/* This bucket is all-time by design — unowned tasks are a scoping artefact, not
+              a window. Said out loud when a range is selected, so the figure isn't read as
+              "a further $459 in the last 7 days". */}
           {`A further ${formatCost(spend.unattributed.costUsd)} across ${plural(
             spend.unattributed.taskCount,
-          )} predates per-user attribution and isn't counted above.`}
+          )}${filtered ? ", all time," : ""} predates per-user attribution and isn't counted above.`}
         </p>
       )}
     </CardSection>

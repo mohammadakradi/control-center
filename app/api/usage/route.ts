@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { spendForUser } from "@/lib/usage-summary";
+import { parseRange, spendForUser } from "@/lib/usage-summary";
 import { daemonUsageSnapshot } from "@/lib/daemon-client";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/usage — the signed-in user's own usage.
+// GET /api/usage?range=7d|30d|all — the signed-in user's own usage.
 //
 // Two halves with very different reliability, deliberately kept distinct rather than merged
 // into one optimistic blob:
@@ -16,11 +16,21 @@ export const dynamic = "force-dynamic";
 //
 // Scoped to the caller: task transcripts are shared across the team by design, but spend is
 // closer to billing, so it isn't.
-export async function GET() {
+export async function GET(request: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const spend = spendForUser(user.id);
+  // Absent means all-time (the historical shape); anything off the allowlist is a 400
+  // rather than being quietly reinterpreted.
+  const range = parseRange(new URL(request.url).searchParams.get("range"));
+  if (range === null) {
+    return NextResponse.json(
+      { error: "Invalid range — use 7d, 30d, or all." },
+      { status: 400 },
+    );
+  }
+
+  const spend = spendForUser(user.id, { range });
   const snapshot = await daemonUsageSnapshot(user.id);
 
   return NextResponse.json({

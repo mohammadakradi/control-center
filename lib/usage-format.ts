@@ -6,6 +6,10 @@
  * renders disagree and React reports a hydration mismatch.
  */
 
+// Type-only: erased at build time, so naming the range union here doesn't drag
+// `usage-summary` — and with it the database — into anything that renders on the client.
+import type { SpendRange } from "./usage-summary";
+
 /** The five usage quantities, named as the rest of the app names them. */
 export type TaskUsage = {
   inputTokens: number;
@@ -112,6 +116,41 @@ export function formatResetsIn(isoDate: string | null, now: number): string | nu
   const rest = hours % 24;
   return rest ? `${days}d ${rest}h` : `${days}d`;
 }
+
+/**
+ * The spend windows the Usage page offers, in the order they're shown.
+ *
+ * One source of truth for both halves of the feature: the range control renders `short`
+ * (three segments have to fit a 375px viewport), while the figures they scope are labelled
+ * with `label`. Keeping them in one array means a new window can't be added to the control
+ * without also naming the total it produces.
+ */
+export const SPEND_RANGES = [
+  { value: "7d", short: "7 days", label: "Last 7 days" },
+  { value: "30d", short: "30 days", label: "Last 30 days" },
+  { value: "all", short: "All time", label: "All time" },
+] as const satisfies ReadonlyArray<{
+  value: SpendRange;
+  short: string;
+  label: string;
+}>;
+
+/** How a range's totals are described, e.g. the label under the spend tile. */
+export function rangeLabel(range: SpendRange): string {
+  return SPEND_RANGES.find((r) => r.value === range)?.label ?? "All time";
+}
+
+/** Whether figures are narrowed to a window rather than covering everything. */
+export function isFiltered(range: SpendRange): boolean {
+  return range !== "all";
+}
+
+/**
+ * "You have spend, just not in this window." Shared so the two usage cards can't drift
+ * into telling the user two different things about the same empty result.
+ */
+export const NO_SPEND_IN_RANGE_HINT =
+  "Nothing you dispatched in this window reached a billable turn. Try a wider range.";
 
 /**
  * Human label for a rate-limit window key. The SDK already ships six keys and will grow,
