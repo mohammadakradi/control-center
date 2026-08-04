@@ -2,9 +2,13 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { DATA_DIR } from "../config";
 import * as schema from "./schema";
 
-const DB_PATH = process.env.PLATFORM_DB ?? resolve(process.cwd(), "data/platform.db");
+// `PLATFORM_DB` points at one file (the test suite builds a throwaway DB with it);
+// `PLATFORM_DATA_DIR`, via DATA_DIR, moves the whole data directory, which is how an installed
+// app keeps its database outside the app folder that updates replace.
+const DB_PATH = process.env.PLATFORM_DB ?? resolve(DATA_DIR, "platform.db");
 
 declare global {
   var __platformSqlite: Database.Database | undefined;

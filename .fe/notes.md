@@ -116,3 +116,53 @@ This Next 16 / React build errors on `react-hooks/set-state-in-effect` — calli
 
 ## RunDuration uses `createdAt`, not `startedAt`
 The prop is `createdAt: number` (Unix ms), `endedAt: number | null`, `active: boolean`. The `active` flag controls whether the timer ticks.
+
+## No native OS dialogs — the app runs in a Linux container (2026-08-04)
+The Add-project **Browse…** button used to POST `/api/fs/pick`, which ran macOS
+`osascript -e 'choose folder'`. In the normal dev path (`pnpm dev` → Docker) `process.platform`
+is `linux`, so it always returned 400 *"The native folder picker is only available on macOS"* —
+the visible bug. There is no fix that keeps a native dialog: the container has no macOS GUI and
+can't reach the host's. `osascript`, `open`, and anything else GUI-bound are off the table for
+this app; build the affordance in-app instead.
+
+Replacement: `components/FolderPicker.tsx` (modal folder browser) + `app/api/fs/list` +
+`lib/fs-browse.ts`. Browsing is **jailed** to `PROJECT_ROOTS` (compose sets it to the host's
+paths — now `$HOME:/Users:/Volumes`, first entry = where it opens, the rest are switchable
+roots; the container's own `homedir()` is `/home/node`, so a default would land there instead).
+**The mount, not the jail, is the real limit** — widening the roots to a path that isn't
+bind-mounted just shows an *empty folder*, and a project there can't run because the runner
+can't see it either. That's also why `/` isn't a root: inside the container it's the container's
+filesystem, not the Mac's, so it would advertise host paths that don't exist.
+
+Two consequences worth remembering: (1) `parent` is offered whenever the parent is itself inside
+*some* root, so multiple roots let you walk up (`~/you` → `/Users`) while a single root stays a
+ceiling; (2) with no env var the roots are home **plus** the parents of registered projects —
+not one as a fallback for the other, because `/home/node` always exists in the container and a
+fallback would therefore never fire.
+Jail checks compare `realpathSync` on both sides — a raw string prefix check breaks on macOS
+where `/tmp` and `/var/folders/…` are symlinks. Typed paths bypass the picker entirely and are
+still unrestricted, which is the escape hatch for symlinked or dot-dir folders (both skipped by
+the listing on purpose).
+
+## A new route directory needs a dev-server restart (2026-08-04)
+Adding `app/api/fs/list/route.ts` 404'd in the browser for as long as the dev server kept
+running, while `.next/server/app-paths-manifest.json` still listed only the route I had just
+deleted. File watching over the macOS bind mount misses newly *created directories*, and
+`touch`ing files inside the container does not wake it. Restart (`pnpm stop && pnpm dev`).
+Debugging note: `curl`ing an `/api/*` route unauthenticated proves nothing — `proxy.ts:31`
+answers 401 before Next routes the request, so the route can 404 and you'd never know.
+
+## `app/apple-icon.png` is poison in this Next build (2026-08-04)
+Adding the static `app/apple-icon.png` metadata-image convention made **every** page 500 with
+`ReferenceError: require is not defined` — `/signin` included, because the failure is in the
+root layout's metadata resolution, not in the icon route. Removing the file fixed it instantly.
+`app/icon.svg` (favicon) and `app/manifest.ts` are both fine; it's specifically the raster
+`apple-icon` convention. Declare the touch icon by path instead:
+`metadata.icons = { apple: "/icons/apple-touch-icon-180.png" }`, with the PNG in `public/`.
+Another entry for the AGENTS.md "this is not the Next.js you know" list.
+
+## App icons come from one SVG — never hand-edit the PNGs
+`pnpm icons` (`infra/icons/generate.mjs`) composes `app/icon.svg` over the brand's dark radial
+background and rasterizes 192/512/maskable-512/apple-180 through macOS QuickLook (`qlmanage`) —
+there is no ImageMagick or librsvg on the host or in the container, and `sips` can't read SVG.
+Change the mark in `app/icon.svg`, re-run, commit the PNGs.

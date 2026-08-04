@@ -51,3 +51,6 @@ USER node
 EXPOSE 3001 4319
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["pnpm", "dev:container"]
+
+# There is deliberately no `release` stage. Releases install natively (Node 22+, no Docker) —
+# see infra/release/. Docker is the *development* runtime only.
