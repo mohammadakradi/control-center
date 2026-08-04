@@ -4,6 +4,7 @@ import { cache } from "react";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { sessions, users, type User } from "@/lib/db/schema";
+import { LOCAL_USER_ID as LOCAL_ID, LOCAL_USER_EMAIL } from "./identity";
 
 export const SESSION_COOKIE = "session";
 const SESSION_DURATION_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
@@ -85,7 +86,7 @@ export async function destroySession(): Promise<void> {
  *
  * Seeded by `drizzle/0001_local_workspace.sql` with a password hash that can never match.
  */
-export const LOCAL_USER_ID = "user_local";
+export { LOCAL_USER_ID } from "./identity";
 
 /** The identity for the current request: the signed-in user, or the local workspace.
  *  Never null, so callers can't accidentally treat "not signed in" as "no data".
@@ -98,7 +99,7 @@ export const getCurrentUser = cache(async (): Promise<User> => {
 
 /** True when this request is the open workspace rather than a signed-in account. */
 export function isLocalWorkspace(user: Pick<User, "id">): boolean {
-  return user.id === LOCAL_USER_ID;
+  return user.id === LOCAL_ID;
 }
 
 /** The signed-in user, or null when browsing anonymously — for UI that must tell them apart
@@ -111,13 +112,13 @@ export const getSignedInUser = cache(async (): Promise<User | null> => {
 /** Fetch the local identity, creating it if a migration hasn't yet (belt and braces: the app
  *  must never fail to have an owner just because migrations were skipped). */
 function localUser(): User {
-  const existing = db.select().from(users).where(eq(users.id, LOCAL_USER_ID)).get();
+  const existing = db.select().from(users).where(eq(users.id, LOCAL_ID)).get();
   if (existing) return existing;
   db.insert(users)
-    .values({ id: LOCAL_USER_ID, email: "local@device", passwordHash: "!" })
+    .values({ id: LOCAL_ID, email: LOCAL_USER_EMAIL, passwordHash: "!" })
     .onConflictDoNothing()
     .run();
-  return db.select().from(users).where(eq(users.id, LOCAL_USER_ID)).get()!;
+  return db.select().from(users).where(eq(users.id, LOCAL_ID)).get()!;
 }
 
 /** Strips the password hash before a user ever reaches a response body. */

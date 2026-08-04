@@ -155,14 +155,35 @@ wait_for_http() {
   return 1
 }
 
+# The installed web app, if Chrome has one. Installing from Chrome creates a real Mac app
+# bundle carrying our own icon, so launching *that* puts Control Center in the Dock under its
+# own logo — a plain `--app=` window is just another Chrome window wearing Chrome's icon.
+installed_app_bundle() {
+  for dir in "$HOME/Applications/Chrome Apps.localized" "$HOME/Applications/Chrome Apps" \
+    "$HOME/Applications" "/Applications/Chrome Apps.localized" "/Applications"; do
+    [ -d "$dir" ] || continue
+    for candidate in "$dir/Control Center.app" "$dir/Agent Platform.app"; do
+      [ -d "$candidate" ] && printf '%s' "$candidate" && return 0
+    done
+  done
+  return 1
+}
+
 open_window() {
   [ "${CC_NO_OPEN:-}" = 1 ] && return 0 # for scripted starts, CI, and smoke tests
   arg="--app=$URL"
   case "$(uname -s)" in
     Darwin)
+      if bundle=$(installed_app_bundle); then
+        open -a "$bundle" 2>/dev/null && {
+          info "Opened $(basename "$bundle" .app) (its own Dock icon)"
+          return 0
+        }
+      fi
       for app in "Google Chrome" Chromium "Microsoft Edge" "Brave Browser"; do
         if open -na "$app" --args "$arg" 2>/dev/null; then
           info "Opened $URL in $app"
+          hint_install_app
           return 0
         fi
       done
@@ -179,6 +200,20 @@ open_window() {
       command -v xdg-open >/dev/null 2>&1 && xdg-open "$URL" >/dev/null 2>&1 &
       ;;
   esac
+}
+
+# Shown once per install, after a plain browser window: how to turn this into a real app.
+hint_install_app() {
+  marker="$CC_HOME/.install-hint-shown"
+  [ -f "$marker" ] && return 0
+  cat <<'EOF'
+
+  Tip: make this a real app with its own Dock icon —
+    in the window that just opened, open the ⋮ menu → Cast, save and share → Install…
+  Control Center then appears in the Dock, Launchpad and ⌘Tab, and this command will
+  launch it directly from now on.
+EOF
+  touch "$marker" 2>/dev/null || :
 }
 
 # ── update ──────────────────────────────────────────────────────────────────────────────
@@ -309,6 +344,10 @@ Usage: control-center <command>
   start [--no-update]  Check for a new release, update if there is one, start, open the window
   stop                 Stop the app (your data stays in $DATA_DIR)
   restart              Stop, then start without checking for updates
+  export [--include-tokens] [--out FILE]
+                       Package this install's data into a portable archive
+  import ARCHIVE [--claim-as-local] [--force]
+                       Load an archive from another install (stops the app first)
   update               Check for and apply a new release now
   status               Whether it's running, on which version and port
   logs [-f]            Tail the web + runner logs
@@ -335,6 +374,25 @@ case "${1:-start}" in
   restart)
     stop_all
     CC_SKIP_UPDATE_CHECK=1 cmd_start
+    ;;
+  export)
+    shift 2>/dev/null || :
+    need_node
+    need_install
+    (cd "$APP_DIR" && PLATFORM_DATA_DIR="$DATA_DIR" ./node_modules/.bin/tsx runner/export.ts "$@")
+    ;;
+  import)
+    shift 2>/dev/null || :
+    need_node
+    need_install
+    # A running app holds the database open; swapping the file under it is how you get a
+    # half-written one. Stop first, import, and leave it stopped for the operator to restart.
+    if running; then
+      info "Stopping the app first…"
+      stop_all
+    fi
+    (cd "$APP_DIR" && PLATFORM_DATA_DIR="$DATA_DIR" ./node_modules/.bin/tsx runner/import.ts "$@") &&
+      info "Start it again with: control-center start"
     ;;
   update)
     need_node
