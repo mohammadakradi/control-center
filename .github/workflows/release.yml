@@ -93,17 +93,33 @@ jobs:
           sha256sum control-center-*.tar.gz install.sh > SHA256SUMS
           cat SHA256SUMS
 
-      # Sanity check on what's about to be published: the tarball must not carry local state.
-      # pack.sh uses an allowlist, so this should be impossible — which is exactly why it's
-      # worth asserting before the artefact becomes public and permanent.
-      - name: Assert the tarball carries no local state
+      # Sanity check on what's about to be published, in both directions.
+      - name: Assert the tarball is what we think it is
         working-directory: dist
         run: |
-          if tar -tzf control-center-*.tar.gz | grep -E '(^|/)(data|\.env|\.git)(/|$)'; then
+          list=$(tar -tzf control-center-*.tar.gz)
+
+          # No local state. Anchored to the archive's TOP LEVEL: the unanchored version of this
+          # matched `app/api/data/` — an API route directory — and blocked a release over
+          # nothing. A guard that cries wolf gets deleted, so precision matters as much as reach.
+          if printf '%s\n' "$list" | grep -E '^[^/]+/(data|\.env|\.git)(/|$)'; then
             echo "::error::the release tarball contains local state — aborting."
             exit 1
           fi
-          echo "clean"
+
+          # And the things an install cannot work without. Absence is the failure mode that hides:
+          # `infra/native/` once fell out of the allowlist, and the only symptom would have been
+          # the Mac app quietly degrading to a browser window on somebody's next update.
+          for required in \
+            package.json pnpm-lock.yaml drizzle/ runner/import.ts runner/migrate.ts \
+            infra/native/ControlCenter.swift infra/release/install.sh \
+            infra/release/make-app-bundle.sh public/icons/app.icns; do
+            printf '%s\n' "$list" | grep -q "^[^/]*/$required" || {
+              echo "::error::the release tarball is missing $required"
+              exit 1
+            }
+          done
+          echo "clean, and carries what it needs"
 
       # Install instructions first, then GitHub's generated changelog. Composed by hand
       # because `--notes-file` and `--generate-notes` are mutually exclusive in gh.
