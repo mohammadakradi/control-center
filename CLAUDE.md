@@ -49,6 +49,13 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
   `TypeError: Cannot read properties of null (reading 'useContext')`. Confirmed 2026-07-31 to
   reproduce on a clean tree with no uncommitted work, so don't treat it as a regression from
   your change. The honest gate is `pnpm test` + `pnpm lint` + `npx tsc --noEmit`.)
+- **Host commands that need esbuild hop into the container automatically.** `pnpm dev` installs
+  `node_modules` *inside* the Linux container and the named volume means the host sees that
+  same Linux build, so `tsx` and `drizzle-kit` die on macOS with "You installed esbuild for
+  another platform". `infra/dev/run-script.sh` wraps `db:*` and `cc:*`: it tries the host, falls
+  back to the running container, and otherwise names the two fixes. Test/lint/typecheck are not
+  wrapped — run those with `docker exec platform …`. Caveat: arguments pass through untouched,
+  so a path argument must exist inside the container too (the repo and `~/Dev` are mounted).
 - Lint: `pnpm lint`  (baseline: ✅ — no warnings)
 - Test: `pnpm test`  (baseline: ✅ 29 tests — Node's built-in runner via `tsx`, no extra
   deps; specs live next to the code as `runner/*.test.ts`, fixtures in
