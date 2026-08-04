@@ -325,6 +325,25 @@ cmd_start() {
 
   mkdir -p "$DATA_DIR" "$LOG_DIR" "$RUN_DIR"
 
+  # A restore queued from the UI (Settings → Restore from a backup). It's applied here, with the
+  # server down, because the process serving that page holds the database open — swapping it
+  # underneath would leave a half-written one. The archive was already validated on upload.
+  pending="$DATA_DIR/pending-import.tar.gz"
+  if [ -f "$pending" ]; then
+    info "Applying the queued restore…"
+    if (cd "$APP_DIR" && PLATFORM_DATA_DIR="$DATA_DIR" \
+      ./node_modules/.bin/tsx runner/import.ts "$pending" --force); then
+      mkdir -p "$DATA_DIR/backup"
+      mv "$pending" "$DATA_DIR/backup/applied-import-$(date +%Y%m%d-%H%M%S).tar.gz"
+    else
+      # Keep the archive: the operator may want to retry or inspect it. But don't loop on it
+      # every launch — move it aside and say where it went.
+      mv "$pending" "$DATA_DIR/failed-import.tar.gz"
+      warn "The queued restore failed; it's been moved to $DATA_DIR/failed-import.tar.gz"
+      warn "Starting with your existing data instead."
+    fi
+  fi
+
   # Migrate before anything serves a request, so an updated app can never read an older
   # schema. No-op when there's nothing pending; snapshots into data/backup/ when there is;
   # exits non-zero rather than starting against a database it doesn't understand.

@@ -251,6 +251,32 @@ export function checkCompatibility(
   return { ok: true };
 }
 
+/**
+ * Export, restore and uninstall all act on the WHOLE install — every workspace's tasks and
+ * transcripts. That's what a backup means, and it's fine on a one-person machine. On a shared
+ * one it would let anyone who merely opened the app walk off with, or delete, another account's
+ * history — so the UI only offers these while there's at most one real account. Past that they
+ * stay operator actions at the command line, which needs filesystem access anyway.
+ *
+ * `accounts` excludes the local workspace.
+ */
+export function installWideDataOpAllowed(
+  accounts: number,
+  action: "export" | "restore" | "uninstall",
+): { ok: true } | { ok: false; reason: string } {
+  if (accounts <= 1) return { ok: true };
+  const cli = { export: "control-center export", restore: "control-center import <archive>", uninstall: "control-center uninstall" }[action];
+  const what = {
+    export: "an export covers all of them — including their tasks and transcripts",
+    restore: "a restore would replace all of their data",
+    uninstall: "uninstalling would remove all of their data",
+  }[action];
+  return {
+    ok: false,
+    reason: `This install has ${accounts} accounts, and ${what}. Run it from the command line instead: ${cli}`,
+  };
+}
+
 /** Copy the attachments directory, if the archive has one. Returns the file count. */
 export function restoreUploads(from: string, to: string): number {
   if (!existsSync(from)) return 0;

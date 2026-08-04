@@ -166,6 +166,29 @@ work moves between them.
 - The CLI's `import` stops the app first — swapping the database under a live process is how you
   get a half-written one.
 
+## Data operations from the UI (Settings → Data)
+Export, restore and uninstall are in the UI as well as the CLI, with three things to keep in mind:
+- **They act on the whole install**, every workspace — that's what a backup is. So
+  `installWideDataOpAllowed()` refuses all three once there's more than one account: on a shared
+  install they'd let anyone who merely opened the app take, or delete, someone else's history.
+  Past one account they stay CLI-only, which needs filesystem access anyway.
+- **Restore is queued, not applied.** The page is served by the process holding the database open,
+  so replacing it inline would produce a half-written one. The upload is *validated* immediately
+  (a bad archive fails while someone is watching) and staged at `data/pending-import.tar.gz`;
+  `control-center start` applies it with the server down, then moves it to `data/backup/`. A
+  failed restore is moved to `data/failed-import.tar.gz` rather than retried on every launch.
+- **UI exports never include tokens.** `--include-tokens` stays a deliberate CLI choice, because
+  it turns the archive into a credential.
+- Uninstall spawns a **detached** `control-center uninstall`: the first thing it does is stop the
+  server answering that very request.
+
+## The app owns the server's lifetime
+The native app starts the server when it opens and stops it when the window closes — but only the
+one it started. If something was already listening it attaches instead, so a server you started
+from a terminal survives quitting the window. `applicationWillTerminate` runs `control-center
+stop` **synchronously**: macOS gives a terminating app a short grace period, and a detached stop
+would lose that race and leave the server running.
+
 ## Releases, installing, and updating
 Two separate things, easy to confuse: **this section** is how someone *gets* the software; the
 next one is how the running dashboard behaves like a desktop app. A user needs both.
