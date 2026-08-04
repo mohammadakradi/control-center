@@ -14,12 +14,12 @@ export function MobileTopBar({ userEmail }: { userEmail?: string }) {
     <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-line bg-canvas/80 px-4 backdrop-blur md:hidden">
       <Link
         href="/"
-        aria-label="Control Center — dashboard"
+        aria-label="Agent Control Center — dashboard"
         className="flex items-center gap-2 font-semibold tracking-tight text-fg-strong"
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/logo.svg" alt="" width={22} height={22} aria-hidden="true" />
-        Control Center
+        Agent Control Center
       </Link>
       <div className="flex items-center gap-1">
         <ThemeToggleIcon />

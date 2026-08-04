@@ -1,4 +1,4 @@
-// Control Center — a native macOS window around the local dashboard.
+// Agent Control Center — a native macOS window around the local dashboard.
 //
 // Why this exists: launching Chrome with `--app=` gives you a Chrome window, so macOS shows
 // Chrome in the Dock and ⌘Tab. The Dock entry follows whichever process owns the window, so the
@@ -49,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             backing: .buffered,
             defer: false
         )
-        window.title = "Control Center"
+        window.title = "Agent Control Center"
         window.titlebarAppearsTransparent = true
         window.contentView = webView
         window.minSize = NSSize(width: 720, height: 480)
@@ -59,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-        showStatus("Starting Control Center…")
+        showStatus("Starting Agent Control Center…")
         // Adopt a server that's already up rather than starting a second one; only start (and
         // therefore own) one if nothing answers.
         if isServerUp() {
@@ -151,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 if self.waited.truncatingRemainder(dividingBy: 10) == 0 {
                     self.showStatus(
                         self.ownsServer
-                            ? "Starting Control Center…<br><small>a fresh install compiles on first run</small>"
+                            ? "Starting Agent Control Center…<br><small>a fresh install compiles on first run</small>"
                             : "Waiting for \(appURL.absoluteString)…"
                     )
                 }
@@ -219,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     ) {
         // Usually the server going away mid-session; go back to polling for it.
         waited = 0
-        showStatus("Reconnecting to Control Center…")
+        showStatus("Reconnecting to Agent Control Center…")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.waitForServer() }
     }
 
@@ -233,10 +233,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About Control Center", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About Agent Control Center", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide Control Center", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        appMenu.addItem(withTitle: "Quit Control Center", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Hide Agent Control Center", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Quit Agent Control Center", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
 

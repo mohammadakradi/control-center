@@ -49,7 +49,7 @@ export async function POST(request: Request) {
     const root = roots.length === 1 ? resolve(peek, roots[0]) : peek;
     if (!existsSync(resolve(root, "manifest.json"))) {
       return NextResponse.json(
-        { error: "No manifest.json inside — is this a Control Center export?" },
+        { error: "No manifest.json inside — is this an Agent Control Center export?" },
         { status: 400 },
       );
     }

@@ -162,7 +162,7 @@ installed_app_bundle() {
   for dir in "$HOME/Applications/Chrome Apps.localized" "$HOME/Applications/Chrome Apps" \
     "$HOME/Applications" "/Applications/Chrome Apps.localized" "/Applications"; do
     [ -d "$dir" ] || continue
-    for candidate in "$dir/Control Center.app" "$dir/Agent Platform.app"; do
+    for candidate in "$dir/Agent Control Center.app" "$dir/Control Center.app"; do
       [ -d "$candidate" ] && printf '%s' "$candidate" && return 0
     done
   done
@@ -373,7 +373,7 @@ Usage: control-center <command>
   start [--no-update]  Check for a new release, update if there is one, start, open the window
   stop                 Stop the app (your data stays in $DATA_DIR)
   restart              Stop, then start without checking for updates
-  install-app [DIR]    (Re)create "Control Center.app" so you can launch it from Launchpad
+  install-app [DIR]    (Re)create "Agent Control Center.app" so you can launch it from Launchpad
                        or Applications instead of this command
   export [--include-tokens] [--out FILE]
                        Package this install's data into a portable archive
@@ -418,13 +418,19 @@ case "${1:-start}" in
     # Quit the Mac app if it's open, otherwise removing its bundle leaves a zombie in the Dock.
     if [ "$(uname -s)" = Darwin ]; then
       # By bundle id, not by name: macOS ships its own "Control Center", so
-      # `tell application "Control Center"` targets Apple's and comes back with
-      # "User canceled (-128)" while ours keeps running.
-      osascript -e 'tell application id "dev.controlcenter.app" to quit' >/dev/null 2>&1 || :
-      pkill -f "Control Center.app/Contents/MacOS/ControlCenterApp" >/dev/null 2>&1 || :
+      # `tell application "Control Center"` targeted Apple's and came back with
+      # "User canceled (-128)" while ours kept running. Both ids: the app was renamed, and an
+      # install from before the rename still has the old one.
+      for id in dev.agentcontrolcenter.app dev.controlcenter.app; do
+        osascript -e "tell application id \"$id\" to quit" >/dev/null 2>&1 || :
+      done
+      pkill -f "Contents/MacOS/AgentControlCenter" >/dev/null 2>&1 || :
+      pkill -f "Contents/MacOS/ControlCenterApp" >/dev/null 2>&1 || :
       for dir in /Applications "$HOME/Applications" "$HOME/Applications/Chrome Apps.localized"; do
-        bundle="$dir/Control Center.app"
-        [ -d "$bundle" ] && rm -rf "$bundle" && info "Removed $bundle"
+        for name in "Agent Control Center" "Control Center"; do
+          bundle="$dir/$name.app"
+          [ -d "$bundle" ] && rm -rf "$bundle" && info "Removed $bundle"
+        done
       done
     fi
     rm -f "$HOME/.local/bin/control-center" && info "Removed the control-center command"

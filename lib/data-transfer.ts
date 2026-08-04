@@ -224,7 +224,7 @@ export function writeManifest(path: string, manifest: ExportManifest): void {
 export function readManifest(path: string): ExportManifest {
   const raw = JSON.parse(readFileSync(path, "utf8")) as ExportManifest;
   if (raw?.app !== "control-center") {
-    throw new Error("this doesn't look like a Control Center export (bad manifest)");
+    throw new Error("this doesn't look like an Agent Control Center export (bad manifest)");
   }
   return raw;
 }
@@ -244,7 +244,7 @@ export function checkCompatibility(
     return {
       ok: false,
       reason:
-        `this archive comes from Control Center ${manifest.version}, which has migrations this ` +
+        `this archive comes from ${manifest.version}, which has migrations this ` +
         `install doesn't know (${unknown.join(", ")}). Update first, then import.`,
     };
   }

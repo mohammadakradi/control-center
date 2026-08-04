@@ -262,7 +262,17 @@ there is intentionally no published image and no `release` stage in the Dockerfi
   `CC_REPO` (track a fork).
 
 ## The Mac app (native window) and the PWA
-`Control Center.app` in `/Applications` is the front door: double-click it, no terminal. The
+**Naming:** the product is **Agent Control Center**. It was renamed from "Control Center" because
+macOS ships a system service by that name — which made `tell application "Control Center"` target
+Apple's (answering `User canceled (-128)` while ours kept running) and put two hits in Spotlight.
+Renamed: the bundle (`Agent Control Center.app`), its id (`dev.agentcontrolcenter.app`), its
+executable (`AgentControlCenter`), and every user-visible string. **Not** renamed, deliberately:
+the `control-center` CLI (published release notes tell people to run it, and a terminal command
+has no collision to worry about) and `~/.control-center` (renaming it would orphan existing data).
+`make-app-bundle.sh` deletes a pre-rename bundle it recognises by the old id, so an update doesn't
+leave two apps behind; `uninstall` quits and removes both names and both ids.
+
+`Agent Control Center.app` in `/Applications` is the front door: double-click it, no terminal. The
 bundle is built by `infra/release/make-app-bundle.sh` — on first install, after **every** update,
 and on demand via `control-center install-app`. It comes in two forms:
 - **native** (whenever `swiftc` exists — Xcode Command Line Tools): `infra/native/ControlCenter.swift`

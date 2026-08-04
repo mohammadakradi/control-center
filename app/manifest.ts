@@ -16,8 +16,8 @@ import type { MetadataRoute } from "next";
 export default function manifest(): MetadataRoute.Manifest {
   return {
     id: "/",
-    name: "Agent Platform — Control Center",
-    short_name: "Agent Platform",
+    name: "Agent Control Center",
+    short_name: "Agent Control",
     description: "Manage and dispatch your Claude Code agents",
     start_url: "/",
     scope: "/",

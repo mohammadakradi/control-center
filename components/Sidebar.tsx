@@ -37,12 +37,12 @@ export function Sidebar({ userEmail }: { userEmail?: string }) {
       <div className="flex h-16 items-center gap-2.5 px-4 rail:justify-center rail:px-0">
         <Link
           href="/"
-          aria-label="Control Center — dashboard"
+          aria-label="Agent Control Center — dashboard"
           className="flex items-center gap-2.5 rounded-lg font-semibold tracking-tight text-fg-strong"
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/logo.svg" alt="" width={26} height={26} aria-hidden="true" />
-          <span className="rail:hidden">Control Center</span>
+          <span className="rail:hidden">Agent Control Center</span>
         </Link>
       </div>
 
