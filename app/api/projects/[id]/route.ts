@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { agents, projectAgents, projects, tasks } from "@/lib/db/schema";
+import { getCurrentUser } from "@/lib/auth";
+import { ownedBy } from "@/lib/task-access";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +12,9 @@ type Ctx = { params: Promise<{ id: string }> };
 // GET /api/projects/:id — project detail with linked agents and task history.
 export async function GET(_req: Request, { params }: Ctx) {
   const { id } = await params;
+  // Only this owner's runs — sign-in is optional, so the alternative is showing a visitor
+  // everyone's history.
+  const user = await getCurrentUser();
   const project = db.select().from(projects).where(eq(projects.id, id)).get();
   if (!project)
     return NextResponse.json({ error: "not found" }, { status: 404 });
@@ -25,7 +30,7 @@ export async function GET(_req: Request, { params }: Ctx) {
   const taskList = db
     .select()
     .from(tasks)
-    .where(eq(tasks.projectId, id))
+    .where(and(eq(tasks.projectId, id), ownedBy(user.id)))
     .orderBy(desc(tasks.createdAt))
     .all();
 

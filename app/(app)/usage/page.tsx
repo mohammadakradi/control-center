@@ -1,4 +1,3 @@
-import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { parseRange, spendForUser } from "@/lib/usage-summary";
 import { PageHeader } from "@/components/ui-cards";
@@ -15,8 +14,9 @@ export default async function UsagePage({
   // Async in Next 16 — see node_modules/next/dist/docs/.../file-conventions/page.md.
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
+  // Sign-in is optional: without one this is the local workspace, which has its own token
+  // and its own spend.
   const user = await getCurrentUser();
-  if (!user) redirect("/signin");
 
   // A hand-edited or stale `?range=` falls back to the default rather than erroring: this
   // is a page with a perfectly good default view, not the API, which does reject it. A

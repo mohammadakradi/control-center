@@ -4,6 +4,7 @@ import { cache } from "react";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { sessions, users, type User } from "@/lib/db/schema";
+import { LOCAL_USER_ID as LOCAL_ID, LOCAL_USER_EMAIL } from "./identity";
 
 export const SESSION_COOKIE = "session";
 const SESSION_DURATION_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
@@ -75,11 +76,50 @@ export async function destroySession(): Promise<void> {
   cookieStore.delete(SESSION_COOKIE);
 }
 
-/** The signed-in user for the current request, or null. Deduped per-request via `cache()`. */
-export const getCurrentUser = cache(async (): Promise<User | null> => {
+/**
+ * The reserved identity that owns everything done without signing in.
+ *
+ * Sign-in is optional: the app works out of the box, and creating an account is how you keep
+ * your token and tasks private from other people using the same install. Everything that used
+ * to require a session now runs as this identity instead, so there is always an owner —
+ * "no account" is a *different* workspace, not an absent one.
+ *
+ * Seeded by `drizzle/0001_local_workspace.sql` with a password hash that can never match.
+ */
+export { LOCAL_USER_ID } from "./identity";
+
+/** The identity for the current request: the signed-in user, or the local workspace.
+ *  Never null, so callers can't accidentally treat "not signed in" as "no data".
+ *  Deduped per-request via `cache()`. */
+export const getCurrentUser = cache(async (): Promise<User> => {
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  const user = token ? verifySessionToken(token) : null;
+  return user ?? localUser();
+});
+
+/** True when this request is the open workspace rather than a signed-in account. */
+export function isLocalWorkspace(user: Pick<User, "id">): boolean {
+  return user.id === LOCAL_ID;
+}
+
+/** The signed-in user, or null when browsing anonymously — for UI that must tell them apart
+ *  (the sidebar, Settings) rather than just needing an owner. */
+export const getSignedInUser = cache(async (): Promise<User | null> => {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   return token ? verifySessionToken(token) : null;
 });
+
+/** Fetch the local identity, creating it if a migration hasn't yet (belt and braces: the app
+ *  must never fail to have an owner just because migrations were skipped). */
+function localUser(): User {
+  const existing = db.select().from(users).where(eq(users.id, LOCAL_ID)).get();
+  if (existing) return existing;
+  db.insert(users)
+    .values({ id: LOCAL_ID, email: LOCAL_USER_EMAIL, passwordHash: "!" })
+    .onConflictDoNothing()
+    .run();
+  return db.select().from(users).where(eq(users.id, LOCAL_ID)).get()!;
+}
 
 /** Strips the password hash before a user ever reaches a response body. */
 export function toPublicUser(user: User) {

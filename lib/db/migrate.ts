@@ -101,6 +101,53 @@ function snapshot(db: BetterSqlite3.Database, dbPath: string): string {
   return dest;
 }
 
+/**
+ * Data invariants, enforced on every run rather than once in the migration chain.
+ *
+ * Adoption (case 3 above) records existing migrations as applied without executing them, which
+ * is right for schema changes — the tables are already there — and *wrong* for migrations that
+ * move data. `0001_local_workspace.sql` seeds the local identity and gives orphaned tasks an
+ * owner; on an adopted database it was marked done without ever running, leaving no local
+ * identity and 90 tasks belonging to nobody.
+ *
+ * So the data rules live here instead, written to be idempotent and safe to re-run forever.
+ * Returns a description of anything it changed, for the caller to log.
+ */
+export function ensureDataInvariants(db: BetterSqlite3.Database): string[] {
+  const done: string[] = [];
+
+  // The owner of everything done without signing in. '!' can never match a password.
+  const seeded = db
+    .prepare(
+      `INSERT OR IGNORE INTO users (id, email, password_hash, created_at)
+       VALUES ('user_local', 'local@device', '!', unixepoch())`,
+    )
+    .run();
+  if (seeded.changes > 0) done.push("created the local workspace identity");
+
+  // Tasks from before sign-in existed have no owner. With visibility now per-owner they'd
+  // belong to nobody and vanish from the UI, so when there is exactly one real account they
+  // become its history — private behind that sign-in, not visible to anyone who opens the app.
+  const accounts = db
+    .prepare("SELECT COUNT(*) FROM users WHERE id != 'user_local'")
+    .pluck()
+    .get() as number;
+  if (accounts === 1) {
+    const claimed = db
+      .prepare(
+        `UPDATE tasks
+         SET user_id = (SELECT id FROM users WHERE id != 'user_local' LIMIT 1)
+         WHERE user_id IS NULL`,
+      )
+      .run();
+    if (claimed.changes > 0) {
+      done.push(`gave ${claimed.changes} ownerless task(s) to the only account`);
+    }
+  }
+
+  return done;
+}
+
 /** What the ORM needs but the database doesn't have. Empty means the two agree. */
 export function schemaGaps(db: BetterSqlite3.Database): string[] {
   const gaps: string[] = [];
@@ -206,6 +253,7 @@ export function migrateDatabase(
     outcome.applied = pending.map((m) => m.tag);
     for (const tag of outcome.applied) log(`Applied ${tag}`);
 
+
     const gaps = schemaGaps(db);
     if (gaps.length > 0) {
       throw new Error(
@@ -219,6 +267,10 @@ export function migrateDatabase(
             : "\nThis usually means a migration is missing from drizzle/ — run `pnpm db:generate`."),
       );
     }
+
+    // Only once the shape is known good: data rules that adoption would otherwise skip,
+    // because it records migrations as applied without running them.
+    for (const change of ensureDataInvariants(db)) log(change);
 
     return outcome;
   } finally {

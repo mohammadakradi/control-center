@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { dirname } from "node:path";
 import { db } from "@/lib/db";
 import { projects } from "@/lib/db/schema";
-import { getCurrentUser } from "@/lib/auth";
 import { FsBrowseError, listDirectories } from "@/lib/fs-browse";
 
 export const dynamic = "force-dynamic";
@@ -13,8 +12,6 @@ export const dynamic = "force-dynamic";
 // Signed-in only: it exposes a slice of the server's filesystem. Browsing is jailed to the
 // roots in `lib/fs-browse.ts` (PROJECT_ROOTS, default ~/Dev).
 export async function GET(req: Request) {
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const path = new URL(req.url).searchParams.get("path");
   const registered = db.select({ path: projects.path }).from(projects).all();

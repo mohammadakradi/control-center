@@ -1,6 +1,5 @@
-import { eq } from "drizzle-orm";
-import { db } from "@/lib/db";
-import { tasks } from "@/lib/db/schema";
+import { getCurrentUser } from "@/lib/auth";
+import { findOwnedTask } from "@/lib/task-access";
 import { RUNNER_URL } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
@@ -13,10 +12,13 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  // The runner streams for any id it's asked about; validate existence here so a
-  // signed-in user probing random ids gets a 404 instead of an empty stream.
-  const task = db.select({ id: tasks.id }).from(tasks).where(eq(tasks.id, id)).get();
-  if (!task) return Response.json({ error: "not found" }, { status: 404 });
+  // The runner streams for any id it's asked about, so this is where a transcript is kept
+  // private: only the owner (a signed-in account, or the local workspace) gets the stream.
+  // 404 rather than 403, so probing ids reveals nothing.
+  const user = await getCurrentUser();
+  if (!findOwnedTask(id, user.id)) {
+    return Response.json({ error: "not found" }, { status: 404 });
+  }
 
   const after = new URL(req.url).searchParams.get("after") ?? "0";
   let upstream: Response;

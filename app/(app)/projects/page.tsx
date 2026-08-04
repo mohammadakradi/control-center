@@ -5,11 +5,14 @@ import { db } from "@/lib/db";
 import { agents, projects, tasks } from "@/lib/db/schema";
 import { AddProjectForm } from "@/components/AddProjectForm";
 import { AgentContributors } from "@/components/AgentContributors";
+import { getCurrentUser } from "@/lib/auth";
+import { ownedBy } from "@/lib/task-access";
 import { EmptyState, PageHeader } from "@/components/ui-cards";
 
 export const dynamic = "force-dynamic";
 
-export default function ProjectsPage() {
+export default async function ProjectsPage() {
+  const user = await getCurrentUser();
   const list = db
     .select()
     .from(projects)
@@ -21,6 +24,7 @@ export default function ProjectsPage() {
     .selectDistinct({ projectId: tasks.projectId, namespace: agents.namespace })
     .from(tasks)
     .innerJoin(agents, eq(tasks.agentId, agents.id))
+    .where(ownedBy(user.id))
     .all();
   const contributors = new Map<string, string[]>();
   for (const r of contribRows) {

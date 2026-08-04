@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { tasks, type Attachment } from "@/lib/db/schema";
+import { getCurrentUser } from "@/lib/auth";
+import { findOwnedTask } from "@/lib/task-access";
 import { daemonContinueTask } from "@/lib/daemon-client";
 import { saveAttachments } from "@/lib/uploads";
 
@@ -16,7 +18,8 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const task = db.select().from(tasks).where(eq(tasks.id, id)).get();
+  const user = await getCurrentUser();
+  const task = findOwnedTask(id, user.id);
   if (!task) return NextResponse.json({ error: "not found" }, { status: 404 });
   if (!["failed", "cancelled", "done"].includes(task.status)) {
     return NextResponse.json(

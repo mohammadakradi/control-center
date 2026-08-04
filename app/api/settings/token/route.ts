@@ -30,7 +30,6 @@ const TokenSchema = z.object({
 // GET /api/settings/token — { configured, kind?, last4? } for the signed-in user.
 export async function GET() {
   const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   return NextResponse.json({
     ...getUserTokenStatus(user.id),
     vaultReady: secretsConfigured(),
@@ -40,7 +39,6 @@ export async function GET() {
 // POST /api/settings/token — set or replace the signed-in user's token.
 export async function POST(request: Request) {
   const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (!rateLimit(`token:${clientIp(request)}`, 10, 60_000)) {
     return NextResponse.json({ error: "Too many attempts, try again later" }, { status: 429 });
   }
@@ -90,7 +88,6 @@ export async function POST(request: Request) {
 // DELETE /api/settings/token — clear the signed-in user's token.
 export async function DELETE() {
   const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   clearUserToken(user.id);
   return NextResponse.json({ configured: false, vaultReady: secretsConfigured() });
 }

@@ -169,6 +169,46 @@ test("a pending migration applies to an adopted database without touching its ro
   db.close();
 });
 
+test("data rules are applied even when the migration carrying them was only recorded", () => {
+  // The trap this exists for: adopting a pre-migrations database records every migration as
+  // applied *without running it*. That's right for schema changes and wrong for ones that move
+  // data — the local identity and the re-homing of ownerless tasks were both silently skipped
+  // on a real database. They're enforced after every migrate now, idempotently.
+  const { dbPath } = workspace();
+  legacyDatabase(dbPath); // has one account and rows, no drizzle bookkeeping
+  const db0 = new BetterSqlite3(dbPath);
+  db0.prepare("INSERT INTO agents (id, name, namespace, source_path, plugin_id) VALUES (?,?,?,?,?)")
+    .run("agent_legacy", "A", "swe", "/tmp", "p");
+  db0.prepare("INSERT INTO tasks (id, project_id, agent_id, command, request_text, status) VALUES (?,?,?,?,?,?)")
+    .run("task_orphan", "proj_legacy", "agent_legacy", "task", "x", "done");
+  db0.close();
+
+  const outcome = migrateDatabase({ dbPath, migrationsFolder });
+  assert.equal(outcome.adopted, true);
+  assert.deepEqual(outcome.applied, [], "adoption records migrations rather than running them");
+
+  const db = new BetterSqlite3(dbPath);
+  assert.ok(
+    db.prepare("SELECT 1 FROM users WHERE id = 'user_local'").pluck().get(),
+    "the local identity must exist even though 0001 never executed",
+  );
+  assert.equal(
+    db.prepare("SELECT user_id FROM tasks WHERE id = 'task_orphan'").pluck().get(),
+    "user_legacy",
+    "the ownerless task must belong to the only account, not to nobody",
+  );
+
+  // Idempotent: running again changes nothing and doesn't re-home anything.
+  db.close();
+  migrateDatabase({ dbPath, migrationsFolder });
+  const again = new BetterSqlite3(dbPath);
+  assert.equal(
+    again.prepare("SELECT COUNT(*) FROM users WHERE id = 'user_local'").pluck().get(),
+    1,
+  );
+  again.close();
+});
+
 test("a database missing a column the schema needs is refused, not silently started", () => {
   const { dbPath } = workspace();
   // A database that predates migrations *and* predates a column — the case where adopting

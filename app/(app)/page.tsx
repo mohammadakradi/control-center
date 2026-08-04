@@ -17,14 +17,24 @@ import { AgentContributors } from "@/components/AgentContributors";
 import { StatusBadge } from "@/components/StatusBadge";
 import { TokenNudge } from "@/components/TokenNudge";
 import { card, PageHeader } from "@/components/ui-cards";
+import { getCurrentUser } from "@/lib/auth";
+import { ownedBy } from "@/lib/task-access";
 import { ACTIVE_STATUSES, timeAgo } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
 
-export default function Dashboard() {
+export default async function Dashboard() {
+  // Sign-in is optional; without one this is the local workspace. Either way the dashboard
+  // shows only the caller's own runs.
+  const user = await getCurrentUser();
   const agentList = syncAgents();
   const projectList = db.select().from(projects).all();
-  const allTasks = db.select().from(tasks).orderBy(desc(tasks.createdAt)).all();
+  const allTasks = db
+    .select()
+    .from(tasks)
+    .where(ownedBy(user.id))
+    .orderBy(desc(tasks.createdAt))
+    .all();
   const recent = allTasks.slice(0, 8);
 
   const inProgress = allTasks.filter((t) => ACTIVE_STATUSES.has(t.status)).length;

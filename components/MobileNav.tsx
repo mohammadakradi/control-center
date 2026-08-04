@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { LogIn } from "lucide-react";
 import { ThemeToggleIcon } from "@/components/ThemeToggle";
 import { NAV_LINKS, isActive } from "@/components/nav-links";
 import { SignOutButton } from "@/components/SignOutButton";
@@ -22,7 +23,17 @@ export function MobileTopBar({ userEmail }: { userEmail?: string }) {
       </Link>
       <div className="flex items-center gap-1">
         <ThemeToggleIcon />
-        {userEmail && <SignOutButton iconOnly className="p-2" />}
+        {userEmail ? (
+          <SignOutButton iconOnly className="p-2" />
+        ) : (
+          <Link
+            href="/signin"
+            aria-label="Sign in"
+            className="rounded-lg p-2 text-fg-subtle transition-colors hover:bg-hover hover:text-fg-strong"
+          >
+            <LogIn className="size-4" aria-hidden="true" />
+          </Link>
+        )}
       </div>
     </header>
   );

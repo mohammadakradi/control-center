@@ -1,6 +1,6 @@
 {
   "name": "platform",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "scripts": {
     "app": "docker compose -f infra/docker/docker-compose.yml up -d --build && node infra/launch/open-app.mjs",
@@ -19,6 +19,8 @@
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx runner/migrate.ts",
+    "cc:export": "tsx runner/export.ts",
+    "cc:import": "tsx runner/import.ts",
     "db:backfill-titles": "tsx runner/backfill-titles.ts",
     "db:backfill-usage": "tsx runner/backfill-usage.ts",
     "lint": "eslint",

@@ -3,46 +3,35 @@ import type { NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
 
 // Next.js 16 renamed `middleware.ts` to `proxy.ts` (functionality unchanged).
-const PUBLIC_PAGES = new Set(["/signin", "/signup"]);
-
-// Reachable signed out: Chrome fetches the manifest to decide whether the app is installable,
-// and a redirect to /signin turns it into HTML, which makes the app un-installable. It carries
-// no user data. The icons it points at are `.png`s under /icons/, already skipped by the
-// matcher below — this route is listed because it has no file extension.
-const PUBLIC_METADATA = new Set(["/manifest.webmanifest"]);
+//
+// Sign-in is OPTIONAL. Nothing here gates access any more: a visitor without a session is the
+// local workspace (see `getCurrentUser`), which owns its own tasks and its own Anthropic token.
+// Signing in switches to a private workspace instead of unlocking the app.
+//
+// What's left for this proxy is the one thing it still owes: keeping a signed-in visitor off the
+// sign-in pages. Per-owner data separation is enforced where the data is read, not here — a
+// middleware that waved requests through while pages queried unscoped rows would look like
+// security and provide none.
+const AUTH_PAGES = new Set(["/signin", "/signup"]);
 
 export default function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  if (!AUTH_PAGES.has(pathname)) return NextResponse.next();
+
   const token = request.cookies.get(SESSION_COOKIE)?.value;
-  // Fail closed: an uncaught throw here would propagate out of the middleware,
-  // and Next serves the request anyway on a middleware exception — so a DB
-  // hiccup while checking the session must not silently bypass auth.
-  let user;
+  // Fail closed the harmless way: if the session lookup throws (a DB hiccup), treat the visitor
+  // as signed out and let them see the sign-in page.
+  let signedIn = false;
   try {
-    user = token ? verifySessionToken(token) : null;
+    signedIn = token ? verifySessionToken(token) !== null : false;
   } catch {
-    user = null;
+    signedIn = false;
   }
 
-  // The auth API itself (signin/signup/signout) must stay reachable while signed out.
-  if (pathname.startsWith("/api/auth/")) return NextResponse.next();
-  if (PUBLIC_METADATA.has(pathname)) return NextResponse.next();
-
-  if (PUBLIC_PAGES.has(pathname)) {
-    // A signed-in visitor landing on /signin or /signup belongs at the dashboard instead.
-    return user ? NextResponse.redirect(new URL("/", request.url)) : NextResponse.next();
-  }
-
-  if (!user) {
-    if (pathname.startsWith("/api/")) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    return NextResponse.redirect(new URL("/signin", request.url));
-  }
-
-  return NextResponse.next();
+  // Already signed in? The sign-in and sign-up pages have nothing to offer.
+  return signedIn ? NextResponse.redirect(new URL("/", request.url)) : NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)"],
+  matcher: ["/signin", "/signup"],
 };

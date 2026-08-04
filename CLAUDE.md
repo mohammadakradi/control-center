@@ -123,6 +123,42 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 - Files: `Dockerfile` (multi-stage dev image), `infra/docker/docker-compose.yml`,
   `.dockerignore`.
 
+## Sign-in, workspaces, and who owns what
+Signing in is **optional**. Opening the app with no session makes you the *local workspace*
+(`user_local`, seeded by `drizzle/0001_local_workspace.sql` with a password hash that can never
+match). Creating an account starts a private workspace instead of unlocking the app.
+- **`lib/task-access.ts` is the only thing separating owners.** `proxy.ts` no longer gates
+  anything, so every task read goes through `ownedBy` (lists) or `findOwnedTask` (one row).
+  Both treat "not yours" and "doesn't exist" identically so callers can only 404 — probing ids
+  must not reveal that someone else's task exists. If you add a task query, scope it here.
+- **Projects and agents are deliberately shared**: a project is a folder on the device, an agent
+  is an installed plugin. Tasks, transcripts and Anthropic tokens are the private part.
+- `getCurrentUser()` never returns null now (it falls back to the local workspace);
+  `getSignedInUser()` is the one that can, for UI that must tell the two apart.
+- **This is app-level separation, not OS-level.** Anyone with filesystem access can read
+  `~/.control-center/.env` and the vault. Separate macOS accounts get separate installs and are
+  genuinely isolated; two people sharing one login are not.
+
+## Moving data between installs (export / import)
+`pnpm cc:export` → a `.tar.gz` you can `control-center import` on another machine. The dev
+checkout and an installed app are separate databases with separate master keys, so this is how
+work moves between them.
+- **The database is rebuilt table by table, not copied.** Slower than `VACUUM INTO`, but a byte
+  copy dies on the first corrupt page and this repo's own database has had a corrupt
+  `task_events`. Unreadable rows are skipped, counted, and reported in the manifest — never
+  silently dropped. (On the live database it recovered all 59,305 transcript rows.)
+- **Sessions never travel** (live login cookies). **Tokens only with `--include-tokens`**, which
+  decrypts them into the archive so the destination can re-encrypt under its own key — that
+  makes the file a credential; it's written 0600 and warned about loudly.
+- Usage data needs no special handling: it lives in `tasks.usage*` and is recomputable from the
+  `result` messages in `task_events`, both of which travel.
+- Import refuses an archive whose migrations this install doesn't know (newer app), snapshots
+  the destination before replacing it, and needs `--force` if the destination already has tasks.
+  `--claim-as-local` re-homes everything to the local workspace so it's visible without signing
+  in; the default keeps original owners.
+- The CLI's `import` stops the app first — swapping the database under a live process is how you
+  get a half-written one.
+
 ## Releases, installing, and updating
 Two separate things, easy to confuse: **this section** is how someone *gets* the software; the
 next one is how the running dashboard behaves like a desktop app. A user needs both.
@@ -200,9 +236,13 @@ Separately from how the software is installed, the *running* dashboard installs 
 a standalone app — own window, own Dock/Launchpad icon, `⌘Tab`-able — while still being the
 same server on `localhost:3001`. This part is Chrome's "install", and it needs the app running.
 - **Install:** open http://localhost:3001 in Chrome → install button in the address bar (or
-  ⋮ → Cast, save, and share → Install page as app). `pnpm app` is the no-install path: it opens
-  a Chrome window with `--app=` (`infra/launch/open-app.mjs`, falls back Chromium → Edge → Brave
-  → default browser, and cross-platform).
+  ⋮ → Cast, save, and share → Install page as app). That creates a real Mac app bundle under
+  `~/Applications/Chrome Apps/` carrying the app's own icon — which is what puts Control Center
+  in the Dock under its own logo. A bare `--app=` window is a Chrome window wearing Chrome's
+  icon, so `control-center start` looks for that bundle and launches it in preference, nudging
+  you once if it isn't there. `pnpm app` is the no-install path: it opens a Chrome window with
+  `--app=` (`infra/launch/open-app.mjs`, falls back Chromium → Edge → Brave → default browser,
+  and cross-platform).
 - **Manifest:** `app/manifest.ts` → `/manifest.webmanifest`. Chromium's install criteria are
   `name`/`short_name`, a 192px **and** a 512px icon, `start_url`, `display`, and
   `prefer_related_applications` unset — over HTTPS or localhost.
