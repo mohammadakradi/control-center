@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { desc, eq } from "drizzle-orm";
+import { getCurrentUser } from "@/lib/auth";
+import { ownedBy } from "@/lib/task-access";
+import { and, desc, eq } from "drizzle-orm";
 import {
   ArrowLeft,
   Boxes,
@@ -31,6 +33,9 @@ export default async function AgentDetail({
   params: Promise<{ id: string }>;
 }) {
   const { id: rawId } = await params;
+  // Only this owner's runs — sign-in is optional, so the alternative is showing a visitor
+  // everyone's history.
+  const user = await getCurrentUser();
   // Agent ids contain "@" (e.g. swe@swe-agent-local); the link encodes it, so
   // decode here in case the route param arrives still percent-encoded.
   const id = safeDecode(rawId);
@@ -49,7 +54,7 @@ export default async function AgentDetail({
     .select({ task: tasks, project: projects })
     .from(tasks)
     .innerJoin(projects, eq(tasks.projectId, projects.id))
-    .where(eq(tasks.agentId, id))
+    .where(and(eq(tasks.agentId, id), ownedBy(user.id)))
     .orderBy(desc(tasks.createdAt))
     .all();
 

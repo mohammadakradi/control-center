@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { agents, projectAgents, tasks, type Attachment } from "@/lib/db/schema";
 import { getCurrentUser } from "@/lib/auth";
+import { ownedBy } from "@/lib/task-access";
 import { canRunTasks, secretsConfigured } from "@/lib/secrets";
 import { daemonStartTask } from "@/lib/daemon-client";
 import { saveAttachments } from "@/lib/uploads";
@@ -10,17 +11,16 @@ import { newId } from "@/lib/util";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/tasks?projectId=... — list tasks (optionally for one project).
+// GET /api/tasks?projectId=... — the caller's own tasks (optionally for one project).
+// Scoped to the owner: with sign-in optional, an unscoped list would hand a visitor every
+// task on the install.
 export async function GET(request: Request) {
+  const user = await getCurrentUser();
   const projectId = new URL(request.url).searchParams.get("projectId");
-  const rows = projectId
-    ? db
-        .select()
-        .from(tasks)
-        .where(eq(tasks.projectId, projectId))
-        .orderBy(desc(tasks.createdAt))
-        .all()
-    : db.select().from(tasks).orderBy(desc(tasks.createdAt)).all();
+  const where = projectId
+    ? and(ownedBy(user.id), eq(tasks.projectId, projectId))
+    : ownedBy(user.id);
+  const rows = db.select().from(tasks).where(where).orderBy(desc(tasks.createdAt)).all();
   return NextResponse.json(rows);
 }
 
@@ -36,13 +36,9 @@ type TaskFields = {
 // Accepts JSON { projectId, agentId, command, requestText, model } OR multipart/form-data
 // with the same fields plus one or more `files` (documents/photos attached to the request).
 export async function POST(request: Request) {
-  // Stamp the dispatching user as owner — their Anthropic token runs the session.
+  // Stamp the owner — their Anthropic token runs the session, and only they will see the
+  // task. Without a session that's the local workspace, which owns its own token.
   const user = await getCurrentUser();
-  // proxy.ts already 401s unauthenticated /api/* requests, but don't make its matcher
-  // the only thing standing between an anonymous caller and an unowned task row.
-  if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
 
   // Refuse before doing any work if this user's tasks can't run: otherwise we'd save
   // their uploads, create a task row, and immediately fail it — the user's first

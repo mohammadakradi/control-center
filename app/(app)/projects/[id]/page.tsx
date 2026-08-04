@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { desc, eq } from "drizzle-orm";
+import { getCurrentUser } from "@/lib/auth";
+import { ownedBy } from "@/lib/task-access";
+import { and, desc, eq } from "drizzle-orm";
 import { ArrowLeft, Boxes, FolderGit2, GitBranch, Users } from "lucide-react";
 import { db } from "@/lib/db";
 import { tasks } from "@/lib/db/schema";
@@ -27,6 +29,9 @@ export default async function ProjectDetail({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+  // Only this owner's runs — sign-in is optional, so the alternative is showing a visitor
+  // everyone's history.
+  const user = await getCurrentUser();
   // Re-derive onboarded/git/workspace from disk so the page reflects reality
   // even after a task (e.g. onboard) changed the working tree.
   const project = refreshProject(id);
@@ -44,7 +49,7 @@ export default async function ProjectDetail({
   const history = db
     .select()
     .from(tasks)
-    .where(eq(tasks.projectId, id))
+    .where(and(eq(tasks.projectId, id), ownedBy(user.id)))
     .orderBy(desc(tasks.createdAt))
     .all();
 

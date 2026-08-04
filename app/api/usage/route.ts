@@ -18,7 +18,6 @@ export const dynamic = "force-dynamic";
 // closer to billing, so it isn't.
 export async function GET(request: Request) {
   const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   // Absent means all-time (the historical shape); anything off the allowlist is a 400
   // rather than being quietly reinterpreted.

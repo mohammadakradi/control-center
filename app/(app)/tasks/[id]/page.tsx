@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { getCurrentUser } from "@/lib/auth";
+import { findOwnedTask } from "@/lib/task-access";
 import { asc, eq } from "drizzle-orm";
 import {
   ArrowLeft,
@@ -11,7 +13,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { db } from "@/lib/db";
-import { agents, projects, taskEvents, tasks } from "@/lib/db/schema";
+import { agents, projects, taskEvents } from "@/lib/db/schema";
 import { Avatar } from "@/components/AgentAvatar";
 import { TaskLiveView } from "@/components/TaskLiveView";
 import { RunDuration } from "@/components/RunDuration";
@@ -28,7 +30,8 @@ export default async function TaskPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const task = db.select().from(tasks).where(eq(tasks.id, id)).get();
+  const user = await getCurrentUser();
+  const task = findOwnedTask(id, user.id);
   if (!task) notFound();
   const project = db
     .select()

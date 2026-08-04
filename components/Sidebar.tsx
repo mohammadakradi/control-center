@@ -3,7 +3,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSyncExternalStore } from "react";
-import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import {
+  LogIn,
+  PanelLeftClose,
+  PanelLeftOpen,
+} from "lucide-react";
 import {
   getServerSidebarCollapsed,
   getSidebarCollapsed,
@@ -82,20 +86,46 @@ export function Sidebar({ userEmail }: { userEmail?: string }) {
 
       {/* Footer */}
       <div className="space-y-2 border-t border-line p-3 rail:px-2">
-        {userEmail && (
+        {userEmail ? (
+          <>
+            <div className="rail:hidden">
+              <p
+                title={userEmail}
+                className="truncate px-2 text-xs text-fg-faint"
+              >
+                {userEmail}
+              </p>
+              <SignOutButton className="w-full px-3 py-2 text-sm" />
+            </div>
+            <div className="hidden justify-center rail:flex">
+              <SignOutButton iconOnly className="p-2" />
+            </div>
+          </>
+        ) : (
+          /* Signing in is optional — it starts a private workspace rather than unlocking
+             anything, so this is an offer, not a demand. */
           <div className="rail:hidden">
-            <p
-              title={userEmail}
-              className="truncate px-2 text-xs text-fg-faint"
+            <p className="px-2 text-xs text-fg-faint">Local workspace</p>
+            <Link
+              href="/signin"
+              className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-fg-subtle transition-colors hover:bg-hover hover:text-fg-strong"
+              title="Sign in to keep your tasks and token private from others using this device"
             >
-              {userEmail}
-            </p>
-            <SignOutButton className="w-full px-3 py-2 text-sm" />
+              <LogIn className="size-4" aria-hidden="true" />
+              Sign in
+            </Link>
           </div>
         )}
-        {userEmail && (
+        {!userEmail && (
           <div className="hidden justify-center rail:flex">
-            <SignOutButton iconOnly className="p-2" />
+            <Link
+              href="/signin"
+              aria-label="Sign in"
+              title="Sign in to keep your data private"
+              className="rounded-lg p-2 text-fg-subtle transition-colors hover:bg-hover hover:text-fg-strong"
+            >
+              <LogIn className="size-4" aria-hidden="true" />
+            </Link>
           </div>
         )}
 
