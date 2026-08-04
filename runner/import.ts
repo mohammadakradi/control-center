@@ -60,7 +60,7 @@ try {
   const roots = readdirSync(work);
   const root = roots.length === 1 ? resolve(work, roots[0]) : work;
   const manifestPath = resolve(root, "manifest.json");
-  if (!existsSync(manifestPath)) fail("the archive has no manifest.json — is it a Control Center export?");
+  if (!existsSync(manifestPath)) fail("the archive has no manifest.json — is it an Agent Control Center export?");
 
   const manifest = readManifest(manifestPath);
   const compat = checkCompatibility(manifest, readMigrations(migrationsFolder).map((m) => m.tag));
@@ -68,7 +68,7 @@ try {
 
   const rows = manifest.tables.reduce((n, t) => n + t.copied, 0);
   console.log(
-    `Archive: Control Center ${manifest.version}, exported ${manifest.exportedAt}\n` +
+    `Archive: ${manifest.version}, exported ${manifest.exportedAt}\n` +
       `  ${rows} row(s) across ${manifest.tables.length} table(s), ${manifest.uploads} attachment(s)` +
       `${manifest.includesTokens ? ", including tokens" : ""}`,
   );

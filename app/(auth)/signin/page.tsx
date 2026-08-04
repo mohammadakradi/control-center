@@ -42,7 +42,7 @@ export default function SignInPage() {
   return (
     <div className={card}>
       <h1 className="text-lg font-semibold tracking-tight text-fg-strong">Sign in</h1>
-      <p className="mt-1 text-sm text-fg-subtle">Welcome back to Control Center.</p>
+      <p className="mt-1 text-sm text-fg-subtle">Welcome back to Agent Control Center.</p>
 
       <form onSubmit={onSubmit} className="mt-6 space-y-4">
         <div className="space-y-1.5">

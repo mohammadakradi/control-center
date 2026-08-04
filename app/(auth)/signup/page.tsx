@@ -42,7 +42,7 @@ export default function SignUpPage() {
   return (
     <div className={card}>
       <h1 className="text-lg font-semibold tracking-tight text-fg-strong">Create account</h1>
-      <p className="mt-1 text-sm text-fg-subtle">Set up your Control Center account.</p>
+      <p className="mt-1 text-sm text-fg-subtle">Set up your Agent Control Center account.</p>
 
       <form onSubmit={onSubmit} className="mt-6 space-y-4">
         <div className="space-y-1.5">

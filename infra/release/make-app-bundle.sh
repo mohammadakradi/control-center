@@ -1,5 +1,5 @@
 #!/bin/sh
-# Create (or refresh) "Control Center.app" so the app launches like any other Mac app — from
+# Create (or refresh) "Agent Control Center.app" so the app launches like any other Mac app — from
 # Launchpad, Spotlight or the Applications folder, with its own Dock icon and no terminal.
 #
 #   sh infra/release/make-app-bundle.sh            # → /Applications, else ~/Applications
@@ -12,7 +12,7 @@
 #
 #   native (preferred) — infra/native/ControlCenter.swift compiled with the Swift that ships in
 #     Xcode Command Line Tools. It owns its window, so the Dock shows OUR icon and ⌘Tab lists
-#     Control Center rather than Chrome. Compiling locally also means nothing is downloaded and
+#     the app rather than Chrome. Compiling locally also means nothing is downloaded and
 #     therefore nothing is quarantined: no signing, no notarisation, no Gatekeeper prompt.
 #
 #   launcher (fallback) — a shell script that starts the server and opens a browser window.
@@ -20,7 +20,11 @@
 #     shows Chrome's icon. Used when `swiftc` isn't installed.
 set -eu
 
-APP_NAME="Control Center"
+APP_NAME="Agent Control Center"
+# What the bundle used to be called. macOS has its own "Control Center", so ours was renamed —
+# and an install that predates the rename has a stale bundle to clear out (below), or you end up
+# with two apps, one of them pointing at whatever the old install left behind.
+LEGACY_APP_NAME="Control Center"
 CC_HOME="${CC_HOME:-$HOME/.control-center}"
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 
@@ -68,7 +72,7 @@ kind=launcher
 if command -v swiftc >/dev/null 2>&1 && [ -f "$src_root/infra/native/ControlCenter.swift" ]; then
   echo "Compiling the native app (Swift)…"
   if swiftc -O -whole-module-optimization \
-    -o "$staged/Contents/MacOS/ControlCenterApp" \
+    -o "$staged/Contents/MacOS/AgentControlCenter" \
     "$src_root/infra/native/ControlCenter.swift" 2>"$stage/swift.log"; then
     kind=native
   else
@@ -78,7 +82,7 @@ if command -v swiftc >/dev/null 2>&1 && [ -f "$src_root/infra/native/ControlCent
 fi
 
 if [ "$kind" = launcher ]; then
-  cat >"$staged/Contents/MacOS/ControlCenterApp" <<LAUNCHER
+  cat >"$staged/Contents/MacOS/AgentControlCenter" <<LAUNCHER
 #!/bin/sh
 # Generated fallback: start the server, then open a browser window.
 mkdir -p "\$HOME/.control-center/logs"
@@ -87,7 +91,7 @@ echo "--- launched \$(date) ---"
 exec "$cli" start
 LAUNCHER
 fi
-chmod +x "$staged/Contents/MacOS/ControlCenterApp"
+chmod +x "$staged/Contents/MacOS/AgentControlCenter"
 
 # LSUIElement only for the fallback: that one hands off to Chrome and exits, so a Dock entry
 # would just flicker. The native app *is* the window and must be a normal app.
@@ -101,13 +105,11 @@ cat >"$staged/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key><string>$APP_NAME</string>
   <key>CFBundleDisplayName</key><string>$APP_NAME</string>
-  <key>CFBundleIdentifier</key><string>dev.controlcenter.app</string>
+  <key>CFBundleIdentifier</key><string>dev.agentcontrolcenter.app</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <!-- Not "ControlCenter": macOS runs its own process by that name, and two of them in
-       Activity Monitor is needlessly confusing. The display name is unaffected. -->
-  <key>CFBundleExecutable</key><string>ControlCenterApp</string>
+  <key>CFBundleExecutable</key><string>AgentControlCenter</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -137,6 +139,16 @@ old=""
 [ -d "$app" ] && old="$stage/old.app" && mv "$app" "$old"
 mv "$staged" "$app"
 rm -rf "$old"
+
+# Clear out the pre-rename bundle, so an upgrade doesn't leave two apps in Applications — the
+# old one would still launch and still work, which is the confusing kind of leftover.
+for dir in /Applications "$HOME/Applications"; do
+  legacy="$dir/$LEGACY_APP_NAME.app"
+  if [ -d "$legacy" ] && [ -f "$legacy/Contents/Info.plist" ] &&
+    grep -q "dev.controlcenter" "$legacy/Contents/Info.plist" 2>/dev/null; then
+    rm -rf "$legacy" && echo "Removed the old $LEGACY_APP_NAME.app (renamed to $APP_NAME)"
+  fi
+done
 
 # Nudge Launch Services so Finder, Launchpad and Spotlight pick up the (possibly new) icon.
 touch "$app"

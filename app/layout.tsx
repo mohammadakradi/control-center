@@ -11,7 +11,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Control Center",
+  title: "Agent Control Center",
   description: "Manage and dispatch your Claude Code agents",
   applicationName: "Agent Platform",
   // Installed-app behaviour on iOS/iPadOS Safari, which ignores the manifest's `display`.

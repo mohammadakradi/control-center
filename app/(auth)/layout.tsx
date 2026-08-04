@@ -8,7 +8,7 @@ export default function AuthLayout({
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/logo.svg" alt="" width={28} height={28} aria-hidden="true" />
           <span className="text-lg font-semibold tracking-tight text-fg-strong">
-            Control Center
+            Agent Control Center
           </span>
         </div>
         {children}

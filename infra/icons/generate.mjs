@@ -59,10 +59,10 @@ const TARGETS = [
   { out: "public/icons/apple-touch-icon-180.png", size: 180, scale: 0.72, radius: 0 },
 ];
 
-/** macOS .icns for the Control Center.app bundle — what the Dock and Launchpad actually read.
+/** macOS .icns for the Agent Control Center.app bundle — what the Dock and Launchpad actually read.
  *  Built from the same mark: render each size QuickLook-style, then let iconutil pack them. */
 function buildIcns(work) {
-  const iconset = join(work, "Control Center.iconset");
+  const iconset = join(work, "AgentControlCenter.iconset");
   mkdirSync(iconset, { recursive: true });
   // The sizes iconutil expects; @2x variants are just the doubled pixel size.
   const sizes = [16, 32, 128, 256, 512];
