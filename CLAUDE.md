@@ -238,10 +238,34 @@ there is intentionally no published image and no `release` stage in the Dockerfi
   `CC_SKIP_UPDATE_CHECK=1`, `CC_NO_OPEN=1` (don't open a window — used by smoke tests),
   `CC_REPO` (track a fork).
 
-## Installable app (PWA)
-Separately from how the software is installed, the *running* dashboard installs from Chrome as
-a standalone app — own window, own Dock/Launchpad icon, `⌘Tab`-able — while still being the
-same server on `localhost:3001`. This part is Chrome's "install", and it needs the app running.
+## The Mac app (native window) and the PWA
+`Control Center.app` in `/Applications` is the front door: double-click it, no terminal. The
+bundle is built by `infra/release/make-app-bundle.sh` — on first install, after **every** update,
+and on demand via `control-center install-app`. It comes in two forms:
+- **native** (whenever `swiftc` exists — Xcode Command Line Tools): `infra/native/ControlCenter.swift`
+  compiled locally into the bundle. A real `NSApplication` + `WKWebView`, so **it owns the window
+  and therefore the Dock icon** — the whole reason it exists, since a Chrome `--app=` window puts
+  *Chrome* in the Dock. It starts the server itself (`control-center start`, which also applies
+  updates and migrations), polls until the server answers, and opens external links in the real
+  browser. Compiling locally means nothing is downloaded, so nothing is quarantined: no signing,
+  no notarisation, no Gatekeeper prompt.
+- **launcher** (fallback, no Swift): a shell script that starts the server and opens a browser
+  window. Same Applications entry and icon; the *window* is Chrome's.
+
+Gotchas worth keeping:
+- `infra/native/` **must stay in `pack.sh`'s allowlist** — without the Swift source an installed
+  app can't rebuild its own bundle on update, and silently degrades to the launcher.
+- The bundle is swapped with `mv`, never `rm -rf` in place: updates rebuild it while the app that
+  triggered the update is running, and rename leaves the running inode alone.
+- `CFBundleExecutable` is `ControlCenterApp`, not `ControlCenter` — macOS runs its own process by
+  that name.
+- `NSAppTransportSecurity` allows local networking; ATS blocks plain HTTP to localhost otherwise.
+- The executable is unsigned. Fine while it's compiled on the machine that runs it; the day a
+  prebuilt binary ships, it needs signing + notarisation or Gatekeeper will block it.
+
+Separately, the *running* dashboard can also be installed from Chrome as a PWA — own window and
+Dock icon, same server. `control-center start` prefers that bundle if it exists. Note the install
+button lives in a **normal tab's** address bar; a `--app=` window has no menu for it.
 - **Install:** open http://localhost:3001 in Chrome → install button in the address bar (or
   ⋮ → Cast, save, and share → Install page as app). That creates a real Mac app bundle under
   `~/Applications/Chrome Apps/` carrying the app's own icon — which is what puts Control Center

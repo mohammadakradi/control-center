@@ -132,6 +132,15 @@ info "Setting up the database…"
     PLATFORM_DATA_DIR="$CC_HOME/data" ./node_modules/.bin/tsx runner/migrate.ts
 ) || die "database migration failed. Nothing was started; your data is untouched."
 
+# ── the Mac app ─────────────────────────────────────────────────────────────────────────
+# So it can be launched from Launchpad/Applications like anything else. Native window (its own
+# Dock icon) when Xcode Command Line Tools are present, browser launcher otherwise. Never fatal:
+# a working CLI install shouldn't fail because a bundle couldn't be built.
+if [ "$(uname -s)" = Darwin ]; then
+  sh "$CC_HOME/app/infra/release/make-app-bundle.sh" 2>/dev/null ||
+    warn "Couldn't create Control Center.app — run 'control-center install-app' to retry."
+fi
+
 # ── the command ─────────────────────────────────────────────────────────────────────────
 mkdir -p "$BIN_DIR"
 cp "$CC_HOME/app/infra/release/control-center.sh" "$BIN_DIR/control-center"

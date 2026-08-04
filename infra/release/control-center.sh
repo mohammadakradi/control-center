@@ -208,10 +208,11 @@ hint_install_app() {
   [ -f "$marker" ] && return 0
   cat <<'EOF'
 
-  Tip: make this a real app with its own Dock icon —
-    in the window that just opened, open the ⋮ menu → Cast, save and share → Install…
-  Control Center then appears in the Dock, Launchpad and ⌘Tab, and this command will
-  launch it directly from now on.
+  Tip: for the window itself to carry the Control Center icon, install it from Chrome —
+  open http://localhost:3001 in a NORMAL tab (not this app window, which has no menu for
+  it) and use the install button in the address bar. This command then launches that
+  app instead. "Control Center.app" in your Applications folder already launches
+  everything without a terminal.
 EOF
   touch "$marker" 2>/dev/null || :
 }
@@ -282,6 +283,15 @@ apply_update() {
   rm -rf "$tmp"
   trap - EXIT INT TERM
 
+  # Refresh the Mac app bundle from the version just installed — otherwise the icon and the
+  # native window stay on whatever the last install produced. Rebuilding under a *running* app
+  # is safe: make-app-bundle.sh swaps the bundle with mv, which leaves the running inode alone.
+  if [ "$(uname -s)" = Darwin ] && [ -f "$APP_DIR/infra/release/make-app-bundle.sh" ]; then
+    sh "$APP_DIR/infra/release/make-app-bundle.sh" >/dev/null 2>&1 &&
+      info "Refreshed the Control Center.app bundle." ||
+      warn "Couldn't refresh the app bundle — run: control-center install-app"
+  fi
+
   info "Updated to $(installed_version). The previous version is kept at $CC_HOME/app.old"
   info "Schema migrations run on the next start; your database is copied to data/backup/ first."
 }
@@ -344,6 +354,8 @@ Usage: control-center <command>
   start [--no-update]  Check for a new release, update if there is one, start, open the window
   stop                 Stop the app (your data stays in $DATA_DIR)
   restart              Stop, then start without checking for updates
+  install-app [DIR]    (Re)create "Control Center.app" so you can launch it from Launchpad
+                       or Applications instead of this command
   export [--include-tokens] [--out FILE]
                        Package this install's data into a portable archive
   import ARCHIVE [--claim-as-local] [--force]
@@ -374,6 +386,11 @@ case "${1:-start}" in
   restart)
     stop_all
     CC_SKIP_UPDATE_CHECK=1 cmd_start
+    ;;
+  install-app)
+    shift 2>/dev/null || :
+    need_install
+    sh "$APP_DIR/infra/release/make-app-bundle.sh" "$@"
     ;;
   export)
     shift 2>/dev/null || :
