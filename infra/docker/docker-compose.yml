@@ -6,11 +6,14 @@ name: platform
 #   - the repo source (hot reload), with node_modules/.next masked by named volumes
 #     so the Linux-built native modules from the image aren't shadowed by the host's
 #   - ~/.claude  → the runner reuses your Claude Code login + plugins
-#   - ~/Dev      → mounted at the SAME absolute path so project paths stored in the
-#                  DB (e.g. /Users/you/Dev/Matcher) resolve inside the container
+#   - your whole host home → mounted at the SAME absolute path so project paths stored
+#                  in the DB (e.g. /Users/you/Documents/Matcher) resolve inside the
+#                  container, and so the folder picker can browse anywhere you keep code
 #   - ~/.gitconfig → so commits the agent makes carry your identity
-# This yields a reproducible runtime, not isolation. The container runs as the
-# unprivileged `node` user (HOME=/home/node) and ports bind to loopback only.
+# This yields a reproducible runtime, **not isolation** — and with the home mount it is
+# not much of a sandbox either: tasks can read and write anything under your home,
+# ~/.ssh included. The container runs as the unprivileged `node` user (HOME=/home/node)
+# and ports bind to loopback only.
 
 services:
   platform:
@@ -28,6 +31,14 @@ services:
     environment:
       NODE_ENV: development
       NEXT_TELEMETRY_DISABLED: "1"
+      # Where the in-app folder picker may browse (colon-separated, PATH-style). The FIRST
+      # entry is where it opens; the rest show as switchable roots. These are HOST paths —
+      # the container's own home is /home/node, so it must be told explicitly. Every entry
+      # needs a matching bind mount below, or it just lists an empty folder.
+      # `/` is deliberately NOT a root: inside the container that's the *container's* root
+      # filesystem (/bin, /etc, …), not your Mac's, so it would show paths that don't exist
+      # on the host. Set PROJECT_ROOTS=/ if you want it anyway.
+      PROJECT_ROOTS: ${HOME}:/Users:/Volumes
       # Make git push/pull and `gh pr create` over HTTPS to github.com authenticate
       # with your GH_TOKEN (set in .env) via gh's credential helper — WITHOUT writing
       # to the read-only, bind-mounted ~/.gitconfig. These GIT_CONFIG_* vars are read
@@ -55,9 +66,21 @@ services:
       - platform_next:/app/.next
       # Claude Code login + installed plugins (read-write: the SDK writes sessions).
       - ${HOME}/.claude:/home/node/.claude
-      # Local projects, mounted at the identical absolute path so DB-stored paths
-      # resolve. All managed projects must live under this directory.
-      - ${HOME}/Dev:${HOME}/Dev
+      # All user homes + mounted drives, at their identical absolute paths, so DB-stored
+      # project paths resolve and the picker can browse wherever you keep code. A project
+      # MUST live under a mounted path — otherwise the runner can't see it either.
+      # Deliberately broad: everything here is readable AND writable by tasks (~/.ssh,
+      # ~/Library, app data included). Narrow it to specific folders (e.g. ${HOME}/Dev,
+      # ${HOME}/work) if that's too much, keeping PROJECT_ROOTS above in sync.
+      # NOTE: `/Users` + `/Volumes` are the **macOS** layout. On a Linux host use `/home` (and
+      # `/mnt`, `/media`) here and in PROJECT_ROOTS. On Windows, run the whole thing from WSL2
+      # and use its Linux paths — a native `C:\…` path cannot resolve inside a Linux container,
+      # which breaks the same-absolute-path contract the DB and runner rely on.
+      - /Users:/Users
+      # External/network drives. Note: volumes mounted on the host *after* this container
+      # starts may not appear inside it (bind mounts don't propagate sub-mounts) — restart
+      # the container after plugging a drive in.
+      - /Volumes:/Volumes
       # Git identity for commits the agent makes.
       - ${HOME}/.gitconfig:/home/node/.gitconfig:ro
       # SSH keys — only needed if your project remotes use SSH (git@github.com:…).

@@ -59,12 +59,34 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 
 ### Docker dev notes
 - The app is host-coupled (drives Claude against absolute host project paths, reuses
-  `~/.claude`), so the container bind-mounts `~/.claude` → `/home/node/.claude`, `~/Dev` (at
-  the same absolute path — managed projects must live under it), `~/.gitconfig`, and the repo
-  source. `node_modules` and `.next` are masked by named volumes so the Linux-built
+  `~/.claude`), so the container bind-mounts `~/.claude` → `/home/node/.claude`, **`/Users`
+  and `/Volumes` at their identical absolute paths** (a project must live under a mounted path,
+  or the runner can't see it — and the folder picker shows an unmounted path as an empty
+  folder), `~/.gitconfig`, and the repo source. Those mounts are deliberately broad: tasks can
+  read/write anything under them, `~/.ssh` included. Narrow them in compose (and keep
+  `PROJECT_ROOTS` in sync) if that's not wanted. `node_modules` and `.next` are masked by named
+  volumes so the Linux-built
   `better-sqlite3` isn't shadowed by the host's macOS build — **never** bind-mount host
   `node_modules` into the container. After a dependency change, `pnpm dev:clean` drops those
   volumes so they re-seed from the rebuilt image.
+- **Nothing GUI-bound works inside the container** — no `osascript`, no Finder, no
+  `open`. That's why the Add-project **Browse…** button is an in-app folder browser
+  (`/api/fs/list`) rather than a native dialog. Compose passes
+  `PROJECT_ROOTS=${HOME}:/Users:/Volumes` — *host* paths, since the container's own home is
+  `/home/node`; the first entry is where the picker opens, the rest are switchable roots. `/`
+  is deliberately not a root: inside the container that's the container's own filesystem, not
+  the Mac's, so it would show paths that don't exist on the host.
+- **Host OS: macOS as configured; Linux with edits; Windows only via WSL2.** The server code is
+  OS-agnostic (`lib/fs-browse.ts` splits `PROJECT_ROOTS` on `path.delimiter`, so `;` on Windows),
+  and in Docker it always runs on Linux anyway. What's host-specific is the *wiring*: compose
+  mounts `/Users` + `/Volumes` (macOS layout — use `/home`, `/mnt`, `/media` on Linux) and
+  interpolates `${HOME}` (Windows sets `USERPROFILE`). A native Windows path can't resolve
+  inside a Linux container at all, so the same-absolute-path contract only holds under WSL2.
+- **A new route directory is not hot-reloaded.** File watching over the macOS bind mount
+  misses newly *created* directories, so adding `app/api/<new>/route.ts` 404s until the dev
+  server restarts — the running route table still holds the old tree (check
+  `.next/server/app-paths-manifest.json`). Touching files does not help. Same for compose env
+  changes: recreate the container (`pnpm stop && pnpm dev`).
 - **Claude auth is per user:** each signed-in user saves their own Anthropic token
   (subscription token from `claude setup-token`, or an API key) under **Settings** in the
   UI; it's encrypted (AES-256-GCM) into `data/secrets/<userId>.json` under the required
@@ -103,6 +125,10 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 - `app/usage/` — Per-user usage page: spend summary + Claude plan-limit bars. A top-level
   nav entry, not a Settings sub-section (moved out of Settings 2026-08-02)
 - `app/api/` — API routes (projects, tasks, agents, git, fs, diff, file, settings/token)
+- `app/api/fs/list/` — Signed-in-only directory listing behind the **Browse…** folder picker
+  (`components/FolderPicker.tsx` + `lib/fs-browse.ts`). There is no native OS picker: the
+  old `/api/fs/pick` shelled out to macOS `osascript`, which can never work in the Linux
+  dev container, so it was removed (2026-08-04)
 - `components/` — All reusable UI components (bespoke)
 - `components/ui-cards.tsx` — Core primitives: `card`, `CardSection`, `PageHeader`,
   `EmptyState`, `Chip`, `Tile`, `Fact`
@@ -115,6 +141,12 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
   theme and sidebar state (both persisted in `localStorage`, applied to `<html>`)
 - `lib/secrets.ts` — Encrypted per-user Anthropic token vault (`data/secrets/`, master
   key from `SECRETS_MASTER_KEY`; write-only API, tokens never leave the server)
+- `lib/fs-browse.ts` — Jailed directory listing for the folder picker. Browsable roots come
+  from `PROJECT_ROOTS` (colon-separated; compose sets **host** paths), else the home dir *plus*
+  the parents of registered projects. Refuses anything above the outermost root (403), but
+  walks up freely between roots, so `$HOME:/Users` lets you start in your home and still climb
+  to `/Users`. Widening the roots without widening the compose mounts just yields empty
+  folders. Typing a path into the Add-project field is *not* restricted — only browsing is
 - `runner/` — Hono task-execution server (separate from Next.js; loopback-only, no CORS —
   reached exclusively through the Next.js proxy routes; `runner/user-env.ts` builds each
   task's subprocess env with the owner's token)
@@ -144,6 +176,10 @@ query it instead of brute-force reading/grepping (far fewer tokens):
   `graphify affected "<component>"` (blast radius). Overview: `graphify-out/GRAPH_REPORT.md`.
 - Refresh after structural changes: `graphify update .` (no LLM). Rebuild if missing:
   `graphify extract . --no-cluster`.
+- **Caveat (found 2026-08-04):** a no-LLM `graphify update .` re-extracts structure but strips
+  `community_name` from every node — the human-readable cluster names `query`/`explain` lean on.
+  It backs the curated graph up to `graphify-out/<date>/` first. Either set `GEMINI_API_KEY`
+  before refreshing, or accept a slightly stale graph rather than committing a de-named one.
 
 ## Conventions
 - Component style: function components + hooks; `"use client"` only when needed; server components by default
