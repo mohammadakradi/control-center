@@ -70,8 +70,11 @@ jobs:
       # without a matching migration, that release would start against a database it can't
       # query — so refuse to publish until the migration is committed.
       - name: Check migrations cover the schema
+        # `npx drizzle-kit` directly, not `pnpm db:generate`: that script routes through
+        # infra/dev/run-script.sh, a developer convenience for hopping into the dev container.
+        # A bug in it once failed a release here — the publish path shouldn't depend on it.
         run: |
-          npx --yes pnpm@9.12.1 db:generate
+          npx drizzle-kit generate
           if [ -n "$(git status --porcelain drizzle)" ]; then
             echo "::error::lib/db/schema.ts has changes with no migration in drizzle/."
             echo "::error::Run 'pnpm db:generate', review the SQL, and commit it."
