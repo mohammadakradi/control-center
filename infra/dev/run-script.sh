@@ -22,9 +22,21 @@ cd "$root"
   exit 1
 }
 
-# esbuild throws at require-time when its platform binary is missing, which is exactly the
-# condition that breaks tsx and drizzle-kit — so this is the honest test, not a uname guess.
-if node -e "require('esbuild')" >/dev/null 2>&1; then
+# Which esbuild platform packages are installed? That's the thing that decides whether tsx and
+# drizzle-kit can run here.
+#
+# NOT `node -e "require('esbuild')"`: under pnpm, esbuild is a transitive dependency and isn't in
+# the root node_modules, so that require fails on *every* platform. It made this wrapper divert
+# to the container even on machines where the host was fine, and hard-fail in CI where there is
+# no container — a check that was wrong everywhere while looking right on the one machine it was
+# written on.
+want="$(node -p 'process.platform + "-" + process.arch' 2>/dev/null || echo unknown)"
+installed=$(ls node_modules/.pnpm 2>/dev/null | grep '^@esbuild+' || :)
+[ -n "$installed" ] || installed=$(ls node_modules/@esbuild 2>/dev/null | sed 's/^/@esbuild+/' || :)
+
+# Run here when a matching binary is present — or when we can't tell at all, since guessing
+# "wrong platform" would break a perfectly good environment (CI, a plain npm install).
+if [ -z "$installed" ] || printf '%s\n' "$installed" | grep -q "^@esbuild+${want}[@/]*"; then
   exec "$@"
 fi
 
@@ -41,8 +53,9 @@ fi
 
 cat >&2 <<EOF
 
-error: this checkout's node_modules were installed for Linux (inside the dev container), so
-       "$1" can't run on this host, and the container isn't running.
+error: this checkout's node_modules carry esbuild for another platform (they were installed
+       inside the Linux dev container), so "$1" can't run on $want, and the container
+       isn't running.
 
        Either start it:            pnpm dev        (then re-run this command)
        or install host-native deps: pnpm install --force

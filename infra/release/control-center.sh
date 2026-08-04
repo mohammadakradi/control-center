@@ -364,13 +364,15 @@ Usage: control-center <command>
   status               Whether it's running, on which version and port
   logs [-f]            Tail the web + runner logs
   version              Print the installed version
+  uninstall [--purge]  Remove the app, the command and the Mac bundle. Keeps your data
+                       unless you pass --purge
   help                 This text
 
 Environment: CC_PORT (default 3001), CC_HOME (default ~/.control-center),
 CC_SKIP_UPDATE_CHECK=1 to never check on start, CC_NO_OPEN=1 to not open a window,
 CC_REPO to track a fork.
 
-To remove: control-center stop, then delete $CC_HOME and ~/.local/bin/control-center.
+To remove everything: control-center uninstall --purge
 EOF
 }
 
@@ -386,6 +388,43 @@ case "${1:-start}" in
   restart)
     stop_all
     CC_SKIP_UPDATE_CHECK=1 cmd_start
+    ;;
+  uninstall)
+    shift 2>/dev/null || :
+    purge=no
+    for a in "$@"; do [ "$a" = --purge ] && purge=yes; done
+
+    info "Uninstalling Control Center…"
+    stop_all
+    # Quit the Mac app if it's open, otherwise removing its bundle leaves a zombie in the Dock.
+    if [ "$(uname -s)" = Darwin ]; then
+      osascript -e 'tell application "Control Center" to quit' >/dev/null 2>&1 || :
+      pkill -f "Control Center.app/Contents/MacOS/ControlCenterApp" >/dev/null 2>&1 || :
+      for dir in /Applications "$HOME/Applications" "$HOME/Applications/Chrome Apps.localized"; do
+        bundle="$dir/Control Center.app"
+        [ -d "$bundle" ] && rm -rf "$bundle" && info "Removed $bundle"
+      done
+    fi
+    rm -f "$HOME/.local/bin/control-center" && info "Removed the control-center command"
+
+    if [ "$purge" = yes ]; then
+      # Everything: database, encrypted tokens, attachments, logs, settings.
+      rm -rf "$CC_HOME"
+      info "Removed $CC_HOME — database, tokens and attachments are gone."
+    else
+      cat <<EOF
+
+Your data is still at $CC_HOME
+  data/       projects, tasks, transcripts, attachments
+  data/secrets/  your encrypted Anthropic token
+  .env        the key that decrypts it — lose this and the token is unrecoverable
+
+Re-installing will pick it all up again. To delete it too:
+  control-center uninstall --purge     (or simply: rm -rf $CC_HOME)
+EOF
+    fi
+    info ""
+    info "Done. The projects on your disk were never touched — only Control Center's own files."
     ;;
   install-app)
     shift 2>/dev/null || :
