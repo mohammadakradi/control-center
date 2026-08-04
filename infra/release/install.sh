@@ -40,7 +40,7 @@ info "Node $(node -v) — OK"
 # ── which release ───────────────────────────────────────────────────────────────────────
 TAG="${CC_VERSION:-}"
 if [ -z "$TAG" ]; then
-  info "Looking up the latest release of $REPO…"
+  info "Looking up the latest release of ${REPO}…"
   TAG=$(curl -fsSL --max-time 15 -H 'Accept: application/vnd.github+json' \
     "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null |
     sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
