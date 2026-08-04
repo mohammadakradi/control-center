@@ -9,7 +9,9 @@ name: Release
 # only the development runtime.
 on:
   push:
-    tags: ["v*"]
+    # Both spellings. Tagging `0.1.0` instead of `v0.1.0` used to match nothing at all, so the
+    # workflow silently never ran and the release page sat there with no assets on it.
+    tags: ["v*", "[0-9]*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -36,7 +38,8 @@ jobs:
         run: |
           tag="${{ github.event.inputs.tag || github.ref_name }}"
           pkg=$(node -p 'require("./package.json").version')
-          if [ "$tag" != "v$pkg" ]; then
+          # Accept `v0.1.0` and `0.1.0` alike; package.json is what the app reports.
+          if [ "${tag#v}" != "$pkg" ]; then
             echo "::error::tag $tag doesn't match package.json version $pkg."
             echo "::error::Bump package.json to ${tag#v} (or retag) — the installed version is read from package.json."
             exit 1
@@ -127,13 +130,24 @@ jobs:
             -f tag_name="$TAG" --jq .body >> dist/notes.md 2>/dev/null \
             || echo "_No generated changelog available._" >> dist/notes.md
 
+      # Create or update. A release for the tag often already exists — GitHub creates one when
+      # you publish from the UI, and re-running this workflow on the same tag is normal — so
+      # `gh release create` alone fails with "a release with the same tag name already exists".
+      # Uploading with --clobber makes a re-run replace the assets instead.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            "dist/control-center-${{ steps.version.outputs.version }}.tar.gz" \
-            dist/install.sh \
-            dist/SHA256SUMS \
-            --title "${{ steps.version.outputs.version }}" \
-            --notes-file dist/notes.md
+          assets="dist/control-center-$VERSION.tar.gz dist/install.sh dist/SHA256SUMS"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists — updating it."
+            gh release edit "$TAG" --title "$VERSION" --notes-file dist/notes.md
+            # shellcheck disable=SC2086 # deliberate word splitting into separate file args
+            gh release upload "$TAG" $assets --clobber
+          else
+            # shellcheck disable=SC2086 # deliberate word splitting into separate file args
+            gh release create "$TAG" $assets --title "$VERSION" --notes-file dist/notes.md
+          fi
+          gh release view "$TAG" --json assets --jq '.assets[].name'
