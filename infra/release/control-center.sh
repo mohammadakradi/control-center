@@ -417,7 +417,10 @@ case "${1:-start}" in
     stop_all
     # Quit the Mac app if it's open, otherwise removing its bundle leaves a zombie in the Dock.
     if [ "$(uname -s)" = Darwin ]; then
-      osascript -e 'tell application "Control Center" to quit' >/dev/null 2>&1 || :
+      # By bundle id, not by name: macOS ships its own "Control Center", so
+      # `tell application "Control Center"` targets Apple's and comes back with
+      # "User canceled (-128)" while ours keeps running.
+      osascript -e 'tell application id "dev.controlcenter.app" to quit' >/dev/null 2>&1 || :
       pkill -f "Control Center.app/Contents/MacOS/ControlCenterApp" >/dev/null 2>&1 || :
       for dir in /Applications "$HOME/Applications" "$HOME/Applications/Chrome Apps.localized"; do
         bundle="$dir/Control Center.app"
