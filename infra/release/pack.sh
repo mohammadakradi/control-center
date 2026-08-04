@@ -37,6 +37,7 @@ lib
 runner
 public
 infra/release
+infra/native
 "
 
 # The shipped shell scripts get checked before anything is packaged.

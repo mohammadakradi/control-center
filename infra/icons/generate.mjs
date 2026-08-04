@@ -59,6 +59,31 @@ const TARGETS = [
   { out: "public/icons/apple-touch-icon-180.png", size: 180, scale: 0.72, radius: 0 },
 ];
 
+/** macOS .icns for the Control Center.app bundle — what the Dock and Launchpad actually read.
+ *  Built from the same mark: render each size QuickLook-style, then let iconutil pack them. */
+function buildIcns(work) {
+  const iconset = join(work, "Control Center.iconset");
+  mkdirSync(iconset, { recursive: true });
+  // The sizes iconutil expects; @2x variants are just the doubled pixel size.
+  const sizes = [16, 32, 128, 256, 512];
+  for (const size of sizes) {
+    for (const scale of [1, 2]) {
+      const px = size * scale;
+      const src = join(work, `icns-${px}.svg`);
+      // Full-bleed with rounded corners, like every other Mac app icon.
+      writeFileSync(src, compose({ scale: 0.74, radius: 132 }));
+      execFileSync("qlmanage", ["-t", "-s", String(px), "-o", work, src], { stdio: "ignore" });
+      renameSync(
+        join(work, `icns-${px}.svg.png`),
+        join(iconset, `icon_${size}x${size}${scale === 2 ? "@2x" : ""}.png`),
+      );
+    }
+  }
+  const out = join(repo, "public/icons/app.icns");
+  execFileSync("iconutil", ["-c", "icns", iconset, "-o", out]);
+  console.log("public/icons/app.icns  (Dock / Launchpad)");
+}
+
 const work = mkdtempSync(join(tmpdir(), "app-icons-"));
 try {
   for (const { out, size, scale, radius } of TARGETS) {
@@ -70,6 +95,7 @@ try {
     renameSync(join(work, "tile.svg.png"), dest);
     console.log(`${out}  ${size}×${size}`);
   }
+  buildIcns(work);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

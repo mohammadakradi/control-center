@@ -1,6 +1,6 @@
 {
   "name": "platform",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "scripts": {
     "app": "docker compose -f infra/docker/docker-compose.yml up -d --build && node infra/launch/open-app.mjs",
@@ -16,13 +16,13 @@
     "build": "next build",
     "start": "next start",
     "runner": "tsx runner/server.ts",
-    "db:push": "drizzle-kit push",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx runner/migrate.ts",
-    "cc:export": "tsx runner/export.ts",
-    "cc:import": "tsx runner/import.ts",
-    "db:backfill-titles": "tsx runner/backfill-titles.ts",
-    "db:backfill-usage": "tsx runner/backfill-usage.ts",
+    "db:push": "sh infra/dev/run-script.sh drizzle-kit push",
+    "db:generate": "sh infra/dev/run-script.sh drizzle-kit generate",
+    "db:migrate": "sh infra/dev/run-script.sh tsx runner/migrate.ts",
+    "cc:export": "sh infra/dev/run-script.sh tsx runner/export.ts",
+    "cc:import": "sh infra/dev/run-script.sh tsx runner/import.ts",
+    "db:backfill-titles": "sh infra/dev/run-script.sh tsx runner/backfill-titles.ts",
+    "db:backfill-usage": "sh infra/dev/run-script.sh tsx runner/backfill-usage.ts",
     "lint": "eslint",
     "test": "tsx --test runner/*.test.ts lib/*.test.ts"
   },
