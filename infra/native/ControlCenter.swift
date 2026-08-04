@@ -24,7 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     var window: NSWindow!
     var webView: WKWebView!
     private var waited = 0.0
-    private var serverStarted = false
+    /// True when *this* app started the server, and is therefore responsible for stopping it
+    /// again. If the server was already up — someone ran `control-center start` in a terminal —
+    /// quitting the window must leave it alone.
+    private var ownsServer = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
@@ -57,17 +60,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         NSApp.activate(ignoringOtherApps: true)
 
         showStatus("Starting Control Center…")
-        ensureServerRunning()
-        waitForServer()
+        // Adopt a server that's already up rather than starting a second one; only start (and
+        // therefore own) one if nothing answers.
+        if isServerUp() {
+            webView.load(URLRequest(url: appURL))
+        } else {
+            startServer()
+            waitForServer()
+        }
     }
 
     // A window-less app on macOS keeps running with nothing to show; quitting on close is what
     // a single-window app should do.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
-    /// Start the server unless something is already listening. `start` also checks for a new
-    /// release, applies it, and runs migrations — so opening this app keeps the install current.
-    private func ensureServerRunning() {
+    /// Is something already serving? A synchronous probe, because the answer decides whether we
+    /// start a server we then have to stop.
+    private func isServerUp() -> Bool {
+        var request = URLRequest(url: appURL)
+        request.timeoutInterval = 1.5
+        request.httpMethod = "HEAD"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        var up = false
+        let done = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            up = response != nil
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 2)
+        return up
+    }
+
+    /// Start the server. `start` also checks for a new release, applies it, and runs migrations —
+    /// so opening this app keeps the install current.
+    private func startServer() {
         guard FileManager.default.isExecutableFile(atPath: cliPath) else {
             showStatus("Couldn't find the control-center command at \(cliPath).")
             return
@@ -81,10 +107,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         task.environment = env
         do {
             try task.run()
-            serverStarted = true
+            ownsServer = true
         } catch {
             showStatus("Couldn't start the server: \(error.localizedDescription)")
         }
+    }
+
+    /// Closing the window quits the app, and quitting takes the server with it — but only the
+    /// one we started. Synchronous on purpose: macOS gives an app a moment to tidy up on
+    /// terminate, and a detached `stop` would race that deadline and leave the server running.
+    func applicationWillTerminate(_ notification: Notification) {
+        guard ownsServer, FileManager.default.isExecutableFile(atPath: cliPath) else { return }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", "'\(cliPath)' stop"]
+        try? task.run()
+        // Bounded: never hang the quit on a wedged shutdown.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 8) { if task.isRunning { task.terminate() } }
+        task.waitUntilExit()
     }
 
     /// Poll until the server answers, then load it. A first run compiles on demand, so this is
@@ -110,7 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 }
                 if self.waited.truncatingRemainder(dividingBy: 10) == 0 {
                     self.showStatus(
-                        self.serverStarted
+                        self.ownsServer
                             ? "Starting Control Center…<br><small>a fresh install compiles on first run</small>"
                             : "Waiting for \(appURL.absoluteString)…"
                     )

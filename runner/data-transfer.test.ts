@@ -12,7 +12,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
-import { buildExportDatabase, checkCompatibility } from "../lib/data-transfer";
+import {
+  buildExportDatabase,
+  checkCompatibility,
+  installWideDataOpAllowed,
+} from "../lib/data-transfer";
 import { migrateDatabase } from "../lib/db/migrate";
 
 const repo = resolve(import.meta.dirname, "..");
@@ -162,4 +166,20 @@ test("an archive from a newer app is refused rather than half-understood", () =>
     ["0000_init", "0001_local_workspace"],
   );
   assert.equal(fine.ok, true, "an older archive is fine — migrations bring it forward");
+});
+
+test("install-wide data operations are refused once there's more than one account", () => {
+  // The UI offers export/restore/uninstall, and all three act on every workspace. On a shared
+  // install that would let anyone who opened the app take — or delete — someone else's history.
+  for (const action of ["export", "restore", "uninstall"] as const) {
+    assert.equal(installWideDataOpAllowed(0, action).ok, true, "fresh install");
+    assert.equal(installWideDataOpAllowed(1, action).ok, true, "one account is the normal case");
+
+    const refused = installWideDataOpAllowed(3, action);
+    assert.equal(refused.ok, false);
+    if (!refused.ok) {
+      assert.match(refused.reason, /3 accounts/);
+      assert.match(refused.reason, /control-center/, "must point at the command-line route");
+    }
+  }
 });
