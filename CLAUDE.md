@@ -33,6 +33,11 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 ## Build / run / test
 > Commands run during onboarding; baseline status noted.
 - Install: `pnpm install`
+- **Run it like an app: `pnpm app`** — brings the stack up *detached* and opens the dashboard in
+  a Chrome app window (no tabs, no address bar). Stop with `pnpm stop`. Use `pnpm dev` instead
+  when you want the logs in the foreground. See "Installable app" below.
+- Regenerate app icons: `pnpm icons` (macOS only — see "Installable app")
+- Build a release tarball locally: `pnpm release:pack` → `dist/` (see "Releases")
 - Dev server: `pnpm dev`  (Docker: builds the image + runs web :3001 + runner :4319 in one
   container via `infra/docker/docker-compose.yml`; URL: http://localhost:3001)
 - Stop the container: `pnpm stop`  ·  reset volumes after a dep change: `pnpm dev:clean`
@@ -50,9 +55,14 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
   `runner/__fixtures__/`. The DB spec builds a throwaway SQLite file from the real schema
   via `drizzle-kit push` and the `PLATFORM_DB` override — never `data/platform.db`.)
 - Typecheck: `npx tsc --noEmit`
-- DB migration: `pnpm db:push`  — **check what it plans first:** it has rebuilt the `tasks`
-  table (`__new_tasks` + copy + drop) rather than adding columns, which historically dropped
-  the `user_id` foreign key. Back up the DB (`VACUUM INTO`) before running it.
+- **Schema changes: `pnpm db:generate` then `pnpm db:migrate`.** `db:generate` writes a
+  versioned SQL file into `drizzle/` (review it — that file is what runs on every user's
+  machine); `db:migrate` applies what's pending, snapshotting first. Commit the migration with
+  the schema change: the release workflow refuses to publish when they disagree.
+- `pnpm db:push` is **dev-only** and no longer the migration path — it diffs the schema against
+  a live database and has rebuilt the `tasks` table (`__new_tasks` + copy + drop) rather than
+  adding columns, dropping the `user_id` foreign key with it. Never run it against a real
+  install; it's kept for throwaway databases and for repairing one that drifted.
 - Backfills (idempotent, safe to re-run): `pnpm db:backfill-titles` ·
   `pnpm db:backfill-usage` (`--dry-run` / `--all`; recomputes token+cost totals from the
   `result` messages already stored in `task_events` — no model calls, nothing billed)
@@ -113,6 +123,96 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 - Files: `Dockerfile` (multi-stage dev image), `infra/docker/docker-compose.yml`,
   `.dockerignore`.
 
+## Releases, installing, and updating
+Two separate things, easy to confuse: **this section** is how someone *gets* the software; the
+next one is how the running dashboard behaves like a desktop app. A user needs both.
+
+Releases install **natively — Node.js 22+, no Docker.** Docker is only the development runtime;
+there is intentionally no published image and no `release` stage in the Dockerfile.
+- **`package.json` `version` is the source of truth.** To cut a release: bump it, commit,
+  `git tag v<version>`, push the tag. `.github/workflows/release.yml` refuses to publish when
+  the tag and `package.json` disagree, because the *installed* version is read from
+  `package.json` (that's what `control-center version` and the in-app check report).
+- **The workflow** runs typecheck + lint + test, verifies `drizzle/` covers the schema (it
+  re-runs `db:generate` and fails if that produces anything), builds the tarball with
+  `infra/release/pack.sh`, asserts the tarball carries no local state, and publishes a release
+  with three assets: `control-center-<version>.tar.gz`, `install.sh`, `SHA256SUMS`. No
+  `pnpm build` — it fails upstream (see the build note above) and releases ship the dev server.
+- **`pack.sh` uses an allowlist, never an exclude list.** This repo keeps a SQLite database, an
+  encrypted token vault and `.env` files beside the source, so "ship only these paths" is the
+  only safe direction. It hard-fails if a listed path was renamed. `pnpm release:pack` builds
+  one locally into `dist/` to inspect.
+- **Install:** download `install.sh` from the release page and run it. It checks Node ≥ 22,
+  downloads and checksums the tarball, installs deps with `npx pnpm@9.12.1` (no global pnpm
+  needed; `better-sqlite3` pulls a prebuilt binary, so no compiler), unpacks into
+  `~/.control-center/app`, generates `~/.control-center/.env` with a fresh
+  `SECRETS_MASTER_KEY`, creates the database from the schema, and drops a `control-center`
+  command into `~/.local/bin`.
+- **Update:** `control-center start` asks the GitHub Releases API for the latest tag, and if
+  it's newer, downloads → verifies → installs deps → stops → backs up the DB → swaps
+  `app/` (keeping the old one at `app.old`) → starts. Everything happens in a temp dir first,
+  so a failure leaves the working install untouched. `control-center update` does it on demand.
+- **Layout under `~/.control-center`:** `app/` (replaced wholesale on update), `data/`
+  (SQLite + token vault + uploads — *never* touched by an update), `logs/`, `run/` (pid files),
+  `.env`. The data directory lives outside `app/` precisely so updates can't take it with them;
+  `PLATFORM_DATA_DIR` is what points the app at it (`lib/config.ts`, `lib/db`, and
+  `drizzle.config.ts` all honour it, so a manual `db:push` can't create a second database).
+- **The app never updates itself.** `lib/updates.ts` + `components/UpdateBanner.tsx` only
+  *report* that a release exists. Applying it means replacing the files of the running process,
+  which is the launcher's job. This is also why there's no Docker socket anywhere.
+- **Schema migrations are automatic and run before anything serves a request.** `install.sh`
+  and every `control-center start` run `runner/migrate.ts` (→ `lib/db/migrate.ts`), which
+  applies the versioned SQL in `drizzle/`. Three cases it handles, all covered by
+  `runner/migrate.test.ts`:
+  - *no database* → apply every migration;
+  - *database with bookkeeping* → apply what's pending (usually nothing, and then it does
+    **not** snapshot — `start` runs every launch and copying the DB each time would fill the
+    disk);
+  - *database without bookkeeping* (created by the old `db:push` flow) → **adopt** it: record
+    the migrations as already applied rather than replaying `CREATE TABLE`s against tables that
+    already exist. Verified to preserve rows.
+
+  After migrating it compares every ORM table/column against `PRAGMA table_info` and **throws
+  rather than starting** if something the code needs is missing — a database too old to adopt
+  gets a specific error and a pointer to `pnpm db:push`, not a crash on first query. Anything
+  that changes the database is snapshotted to `data/backup/` first via `VACUUM INTO` (the
+  supported way to copy a live WAL database).
+- Migrations are **not** wired into `pnpm dev` on purpose: dev databases here have been corrupt
+  before, and a failed `VACUUM INTO` would block the dev server. Run `pnpm db:migrate` by hand
+  in a checkout — the first run will adopt your existing `data/platform.db`.
+- **`control-center` env:** `CC_PORT` (3001), `CC_HOME` (`~/.control-center`),
+  `CC_SKIP_UPDATE_CHECK=1`, `CC_NO_OPEN=1` (don't open a window — used by smoke tests),
+  `CC_REPO` (track a fork).
+
+## Installable app (PWA)
+Separately from how the software is installed, the *running* dashboard installs from Chrome as
+a standalone app — own window, own Dock/Launchpad icon, `⌘Tab`-able — while still being the
+same server on `localhost:3001`. This part is Chrome's "install", and it needs the app running.
+- **Install:** open http://localhost:3001 in Chrome → install button in the address bar (or
+  ⋮ → Cast, save, and share → Install page as app). `pnpm app` is the no-install path: it opens
+  a Chrome window with `--app=` (`infra/launch/open-app.mjs`, falls back Chromium → Edge → Brave
+  → default browser, and cross-platform).
+- **Manifest:** `app/manifest.ts` → `/manifest.webmanifest`. Chromium's install criteria are
+  `name`/`short_name`, a 192px **and** a 512px icon, `start_url`, `display`, and
+  `prefer_related_applications` unset — over HTTPS or localhost.
+- **No service worker, deliberately.** Chromium hasn't required one for installability for
+  years, and its fetch handler would sit in front of the SSE task stream and dev HMR for no
+  offline benefit on a local-only app. Don't add one without a concrete reason.
+- **`proxy.ts` lets `/manifest.webmanifest` through signed out** — Chrome fetches it to decide
+  installability, and a redirect to `/signin` makes the app un-installable.
+- **Icons** are generated from the single brand mark in `app/icon.svg` by `pnpm icons`
+  (`infra/icons/generate.mjs`): it composes the mark over the brand's dark radial background at
+  three scales and rasterizes via macOS QuickLook (`qlmanage`) — there's no ImageMagick or
+  librsvg here. Outputs are committed, so it only runs when the mark changes. Edit the mark,
+  never the PNGs.
+- **Trap — do not add `app/apple-icon.png`.** That Next file convention crashes metadata
+  rendering on *every* page in this Next build (`ReferenceError: require is not defined`, a 500
+  on `/signin` and everything else). The touch icon is declared by path instead, via
+  `metadata.icons.apple` in `app/layout.tsx`. `app/icon.svg` (favicon) is fine.
+- Per-scheme `<meta name="theme-color">` comes from the `viewport` export in `app/layout.tsx`.
+  It follows the OS scheme, which can disagree with the in-app light/dark/system toggle — the
+  standalone window chrome can't track that toggle.
+
 ## UI architecture map
 - `app/` — Next.js App Router pages and API routes
 - `app/page.tsx` — Dashboard (agent list, project list, recent tasks)
@@ -141,6 +241,11 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
   theme and sidebar state (both persisted in `localStorage`, applied to `<html>`)
 - `lib/secrets.ts` — Encrypted per-user Anthropic token vault (`data/secrets/`, master
   key from `SECRETS_MASTER_KEY`; write-only API, tokens never leave the server)
+- `lib/db/migrate.ts` — Schema migrations: applies `drizzle/`, adopts pre-migration databases,
+  snapshots before changes, and refuses to run against a schema the code can't query. Driven
+  by `runner/migrate.ts` (`pnpm db:migrate`), which `install.sh` and `control-center start` run
+- `drizzle/` — Versioned migration SQL + journal. **Ships in the release tarball** (an
+  installed app can't migrate without it) and is checked against the schema in CI
 - `lib/fs-browse.ts` — Jailed directory listing for the folder picker. Browsable roots come
   from `PROJECT_ROOTS` (colon-separated; compose sets **host** paths), else the home dir *plus*
   the parents of registered projects. Refuses anything above the outermost root (403), but

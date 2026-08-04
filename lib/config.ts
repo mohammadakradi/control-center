@@ -9,8 +9,17 @@ export const RUNNER_PORT = Number(process.env.RUNNER_PORT ?? 4319);
 export const RUNNER_URL =
   process.env.RUNNER_URL ?? `http://localhost:${RUNNER_PORT}`;
 
-/** Local data dir (sqlite + uploads). Both the Next app and the runner run with cwd = repo root. */
-export const DATA_DIR = resolve(process.cwd(), "data");
+/**
+ * Local data dir (sqlite + uploads + the token vault). Both the Next app and the runner run
+ * with cwd = repo root, so a checkout keeps its data in `./data`.
+ *
+ * `PLATFORM_DATA_DIR` moves it elsewhere, which an *installed* app requires: the `control-center`
+ * CLI points it at `~/.control-center/data` so that replacing the app directory on update can't
+ * take the database and encrypted tokens with it.
+ */
+export const DATA_DIR = process.env.PLATFORM_DATA_DIR?.trim()
+  ? resolve(process.env.PLATFORM_DATA_DIR.trim())
+  : resolve(process.cwd(), "data");
 /** Where task attachments (docs/photos the user adds to a request) are stored, per task. */
 export const UPLOADS_DIR = resolve(DATA_DIR, "uploads");
 

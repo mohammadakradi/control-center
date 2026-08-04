@@ -50,3 +50,6 @@ next-env.d.ts
 
 # graphify code-graph (generated; rebuild with `graphify update .`)
 graphify-out/
+
+# Release tarballs built by infra/release/pack.sh
+dist

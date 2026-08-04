@@ -151,3 +151,18 @@ deleted. File watching over the macOS bind mount misses newly *created directori
 `touch`ing files inside the container does not wake it. Restart (`pnpm stop && pnpm dev`).
 Debugging note: `curl`ing an `/api/*` route unauthenticated proves nothing — `proxy.ts:31`
 answers 401 before Next routes the request, so the route can 404 and you'd never know.
+
+## `app/apple-icon.png` is poison in this Next build (2026-08-04)
+Adding the static `app/apple-icon.png` metadata-image convention made **every** page 500 with
+`ReferenceError: require is not defined` — `/signin` included, because the failure is in the
+root layout's metadata resolution, not in the icon route. Removing the file fixed it instantly.
+`app/icon.svg` (favicon) and `app/manifest.ts` are both fine; it's specifically the raster
+`apple-icon` convention. Declare the touch icon by path instead:
+`metadata.icons = { apple: "/icons/apple-touch-icon-180.png" }`, with the PNG in `public/`.
+Another entry for the AGENTS.md "this is not the Next.js you know" list.
+
+## App icons come from one SVG — never hand-edit the PNGs
+`pnpm icons` (`infra/icons/generate.mjs`) composes `app/icon.svg` over the brand's dark radial
+background and rasterizes 192/512/maskable-512/apple-180 through macOS QuickLook (`qlmanage`) —
+there is no ImageMagick or librsvg on the host or in the container, and `sips` can't read SVG.
+Change the mark in `app/icon.svg`, re-run, commit the PNGs.

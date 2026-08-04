@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { Sidebar } from "@/components/Sidebar";
 import { MobileTabBar, MobileTopBar } from "@/components/MobileNav";
+import { UpdateBanner } from "@/components/UpdateBanner";
 
 export default async function AppLayout({
   children,
@@ -16,6 +17,8 @@ export default async function AppLayout({
       <Sidebar userEmail={user.email} />
       <div className="flex min-w-0 flex-1 flex-col">
         <MobileTopBar userEmail={user.email} />
+        {/* Renders nothing unless a packaged install is behind a published release. */}
+        <UpdateBanner />
         <main className="mx-auto w-full max-w-6xl px-4 pt-6 pb-24 sm:px-6 sm:py-8 md:pb-14">
           {children}
         </main>
