@@ -221,7 +221,7 @@ apply_update() {
   # shellcheck disable=SC2064 # expand $tmp now, not at trap time
   trap "rm -rf '$tmp'" EXIT INT TERM
 
-  info "Downloading $version…"
+  info "Downloading ${version}…"
   curl -fsSL --max-time 300 -o "$tmp/$tarball" "$base/$tarball" || die "download failed: $base/$tarball"
   if curl -fsSL --max-time 30 -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" 2>/dev/null; then
     verify_checksum "$tmp/$tarball" "$tmp/SHA256SUMS"

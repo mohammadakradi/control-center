@@ -95,7 +95,17 @@ against a real install.
 6. `control-center start` on a database it can't migrate exits non-zero and starts nothing —
    the failure has to be louder than a broken page.
 
-## 6. Release workflow (first real tag)
+## 6. Shell-portability of the shipped scripts (regression: v0.1.0)
+1. `sh infra/release/pack.sh` must pass. Now break it on purpose — change `${REPO}…` back to
+   `$REPO…` in install.sh — and re-run: it must **refuse** with a message naming the file and
+   line. Restore.
+2. Why it matters: macOS `/bin/sh` is bash 3.2 and reads `$REPO…` as one variable name, so
+   under `set -u` the installer died on its third line with `REPO…: unbound variable`. Linux
+   shells parse it fine, so no CI job catches it.
+3. Sanity-check the guard itself with `sh -c "LC_ALL=C grep -nE '...' file"` — under `/bin/sh`,
+   `grep -P` exits 2 (BSD grep has no PCRE) and an `if` treats that as "no match".
+
+## 7. Release workflow (first real tag)
 1. Bump `package.json` to `0.2.0`, tag `v0.2.0`, push the tag.
 2. The workflow fails fast if the tag and `package.json` disagree — try `v9.9.9` once to see it.
 2b. Change `lib/db/schema.ts` without running `pnpm db:generate` and push a tag → the

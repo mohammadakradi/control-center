@@ -39,6 +39,27 @@ public
 infra/release
 "
 
+# The shipped shell scripts get checked before anything is packaged.
+#
+# The `$VAR` + non-ASCII check exists because v0.1.0 shipped an installer that died on its
+# third line with `REPO…: unbound variable`: macOS /bin/sh is bash 3.2, which swallows the
+# UTF-8 ellipsis bytes into the variable name. Linux shells parse it fine, so CI can't catch
+# it — only this pattern check can. Brace such references: `${REPO}…`.
+for script in infra/release/*.sh; do
+  sh -n "$script" || {
+    printf 'error: %s has a syntax error\n' "$script" >&2
+    exit 1
+  }
+  # `grep -E` with a byte range, not `grep -P`: BSD grep (what /bin/sh gets on macOS) has no
+  # PCRE and exits 2, which an `if` reads as "no match" — the check would pass by being broken.
+  # LC_ALL=C makes each byte a character, so the ellipsis's high bytes match `[^ -~]`.
+  if LC_ALL=C grep -nE '\$[A-Za-z_][A-Za-z0-9_]*[^ -~]' "$script"; then
+    printf 'error: %s has $VAR directly followed by a non-ASCII character (see above).\n' "$script" >&2
+    printf '       Brace it — ${VAR}… — or bash 3.2 reads the whole thing as the name.\n' >&2
+    exit 1
+  fi
+done
+
 rm -rf "$stage"
 mkdir -p "$stage"
 

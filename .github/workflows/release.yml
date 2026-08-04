@@ -2,16 +2,18 @@ name: Release
 
 # Cutting a release:
 #   1. bump "version" in package.json  (this is the source of truth)
-#   2. git tag v<that version> && git push --tags
+#   2. tag it and push the tag
+#   3. publish the release on GitHub (Releases → Draft/Publish, picking that tag)
 #
-# This builds the runtime tarball and publishes it as a GitHub Release with the installer
-# beside it. There is no Docker image: releases install natively (Node 22+), and Docker is
-# only the development runtime.
+# Step 3 is the trigger: this runs on `release: published`, not on the tag push, so a tag on
+# its own never publishes anything — you decide when it goes out. The run then attaches the
+# runtime tarball, the installer and the checksums to the release you just published.
+#
+# There is no Docker image: releases install natively (Node 22+); Docker is the dev runtime.
 on:
-  push:
-    # Both spellings. Tagging `0.1.0` instead of `v0.1.0` used to match nothing at all, so the
-    # workflow silently never ran and the release page sat there with no assets on it.
-    tags: ["v*", "[0-9]*"]
+  release:
+    types: [published]
+  # Manual re-run for an existing tag — how you recover a release whose run failed.
   workflow_dispatch:
     inputs:
       tag:
@@ -27,7 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          # The published release's tag, or the one given to a manual re-run. Never a branch:
+          # a release must be built from exactly the tree its tag points at.
+          ref: ${{ github.event.inputs.tag || github.event.release.tag_name }}
 
       - uses: actions/setup-node@v4
         with:
@@ -36,7 +40,7 @@ jobs:
       - name: Resolve tag and check it matches package.json
         id: version
         run: |
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          tag="${{ github.event.inputs.tag || github.event.release.tag_name }}"
           pkg=$(node -p 'require("./package.json").version')
           # Accept `v0.1.0` and `0.1.0` alike; package.json is what the app reports.
           if [ "${tag#v}" != "$pkg" ]; then
@@ -120,8 +124,8 @@ jobs:
           Already installed? \`control-center start\` finds this release and updates before launching.
 
           Your database, encrypted tokens and settings live in \`~/.control-center/\` and survive
-          updates. Schema changes are **not** migrated automatically yet — a copy of your
-          database is taken into \`~/.control-center/data/backup/\` before every update.
+          updates. Schema changes are migrated automatically on start, and your database is
+          copied into \`~/.control-center/data/backup/\` before anything changes it.
 
           ---
 
@@ -142,8 +146,16 @@ jobs:
         run: |
           assets="dist/control-center-$VERSION.tar.gz dist/install.sh dist/SHA256SUMS"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG exists — updating it."
-            gh release edit "$TAG" --title "$VERSION" --notes-file dist/notes.md
+            echo "Release $TAG exists — attaching assets."
+            # Only fill in notes if the release has none. On a `release: published` run the
+            # author has usually just written them, and replacing their text with generated
+            # boilerplate would be worse than adding nothing.
+            if [ -z "$(gh release view "$TAG" --json body --jq '.body' | tr -d '[:space:]')" ]; then
+              gh release edit "$TAG" --notes-file dist/notes.md
+              echo "Release had no notes — filled in the install instructions."
+            else
+              echo "Keeping the existing release notes."
+            fi
             # shellcheck disable=SC2086 # deliberate word splitting into separate file args
             gh release upload "$TAG" $assets --clobber
           else

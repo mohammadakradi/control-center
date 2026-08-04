@@ -129,15 +129,26 @@ next one is how the running dashboard behaves like a desktop app. A user needs b
 
 Releases install **natively — Node.js 22+, no Docker.** Docker is only the development runtime;
 there is intentionally no published image and no `release` stage in the Dockerfile.
-- **`package.json` `version` is the source of truth.** To cut a release: bump it, commit,
-  `git tag v<version>`, push the tag. `.github/workflows/release.yml` refuses to publish when
-  the tag and `package.json` disagree, because the *installed* version is read from
-  `package.json` (that's what `control-center version` and the in-app check report).
+- **`package.json` `version` is the source of truth.** To cut a release: bump it, commit, tag
+  (`v0.2.0` or `0.2.0` — both accepted), push the tag, then **publish the release on GitHub**.
+  Publishing is the trigger (`release: published`), not the tag push, so a tag alone ships
+  nothing. `.github/workflows/release.yml` refuses when the tag and `package.json` disagree,
+  because the *installed* version is read from `package.json` (that's what `control-center
+  version` and the in-app update check report). A run that failed can be re-run from Actions →
+  Release → "Run workflow" with the tag as input; publishing is idempotent (assets are
+  re-uploaded with `--clobber`, and hand-written release notes are left alone).
 - **The workflow** runs typecheck + lint + test, verifies `drizzle/` covers the schema (it
   re-runs `db:generate` and fails if that produces anything), builds the tarball with
   `infra/release/pack.sh`, asserts the tarball carries no local state, and publishes a release
   with three assets: `control-center-<version>.tar.gz`, `install.sh`, `SHA256SUMS`. No
   `pnpm build` — it fails upstream (see the build note above) and releases ship the dev server.
+- **Shell scripts in `infra/release/` must survive bash 3.2** — that's what `/bin/sh` is on
+  macOS, and it swallows a UTF-8 character placed directly after `$VAR` into the variable
+  name (`$REPO…` → `REPO…: unbound variable`). It shipped in v0.1.0 and killed the installer
+  on its third line. Brace them: `${REPO}…`. `pack.sh` now refuses to build if the pattern
+  reappears, using `LC_ALL=C grep -E` — **not** `grep -P`, which BSD grep answers with exit 2,
+  which an `if` reads as "no match" (the first version of that guard passed by being broken).
+  Linux CI can't catch this class at all, so the packaging check is the only line of defence.
 - **`pack.sh` uses an allowlist, never an exclude list.** This repo keeps a SQLite database, an
   encrypted token vault and `.env` files beside the source, so "ship only these paths" is the
   only safe direction. It hard-fails if a listed path was renamed. `pnpm release:pack` builds
