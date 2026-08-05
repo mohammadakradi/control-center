@@ -10,6 +10,7 @@ import {
   type Attachment,
   type TaskStatus,
 } from "../lib/db/schema";
+import { classifyTurnEnd, type PauseReason } from "./completion";
 import { GATE_PROMPT } from "./gate-prompt";
 import {
   makeApprovalServer,
@@ -125,15 +126,27 @@ function userMessage(text: string): SDKUserMessage {
 const DONE_AT_END = /\[\[DONE\]\]\s*$/;
 const GATE_AT_END = /\[\[GATE:(PROPOSAL|REPORT)\]\]\s*$/;
 
-/** The agent sometimes ends a turn *mid-workflow* — e.g. right after dispatching
- *  its review/audit subagents — narrating that it will pick back up once they
- *  report. That is NOT completion: finalizing there synthesizes a bogus "done"
- *  and drops the real report/gate the agent produces next. This matches that
- *  "I'm waiting" phrasing so we can nudge the agent to continue instead. */
-const WAITING_RE =
-  /\b(standing by|will resume|report(?:ing)? back|wait(?:ing|s)? (?:for|on)|i'?ll (?:resume|continue|wait)|continue once|once (?:they|it|the)\b[^.]*\b(?:report|finish|complete|return|back)|running in the background|in the background\b[^.]*\b(?:wait|report|verdict|result|finish)|before the (?:report|proposal) gate|dispatch(?:ed|ing)\b[^.]*\b(?:review|audit|sub-?agents?|sub-?tasks?))/i;
 /** Cap auto-continue nudges so a stuck agent can't loop forever. */
 const MAX_AUTO_CONTINUE = 3;
+
+/** What to send when a turn ended without the agent being finished (see ./completion). */
+function nudgePrompt(reason: PauseReason): string {
+  const carryOn =
+    "Do NOT stop here and do NOT restart: continue this SAME task from where you left " +
+    "off and carry the workflow through to its report gate by calling the " +
+    'request_approval tool with { gate: "report", summary: <plain-language report> }. ' +
+    "Only print [[DONE]] once the task is genuinely complete.";
+  if (reason === "waiting")
+    return (
+      "Your dispatched sub-tasks/reviews have completed and their results are above. " +
+      `Incorporate the findings. ${carryOn}`
+    );
+  return (
+    "Your turn ended without a result: the last thing you said announced what you were " +
+    "about to do (or said nothing at all) rather than reporting what you did, and no " +
+    `report gate or [[DONE]] was produced — so the work is not finished. ${carryOn}`
+  );
+}
 
 /** True for messages from the main agent thread (subagent messages carry a
  *  parent_tool_use_id / subagent_type and must not drive task completion). */
@@ -489,7 +502,12 @@ function runTask(
       handle.query = q;
       channel.push(userMessage(prompt));
 
+      // Last non-empty main-thread prose (sticky — the content we'd surface as a report),
+      // and the text of the most recent main-thread message in the CURRENT turn (which may
+      // be empty, e.g. a turn that ended right after a tool call). The turn-scoped one is
+      // what decides completion: sticky text can be many messages stale.
       let lastAssistantText = "";
+      let turnText = "";
       for await (const m of q as AsyncIterable<SDKMessage>) {
         const sid = (m as { session_id?: string }).session_id;
         if (sid && !task.sessionId) {
@@ -505,6 +523,7 @@ function runTask(
 
         if (m.type === "assistant" && isMainThread(m)) {
           const text = extractText(m);
+          turnText = text;
           if (text.trim()) lastAssistantText = text;
           if (DONE_AT_END.test(text)) {
             producedReport = true;
@@ -554,6 +573,11 @@ function runTask(
             );
           } else if (!handle.done) {
             const gate = lastAssistantText.match(GATE_AT_END);
+            // Did this turn actually end on a result, or on the agent narrating its next
+            // step? Classified from the turn's own last message, then reset for the next.
+            const endText = turnText;
+            const turnEnd = classifyTurnEnd(endText);
+            turnText = "";
             if (handle.pendingApproval) {
               // A tool-based gate is awaiting the user — keep the session alive.
             } else if (gate) {
@@ -569,41 +593,39 @@ function runTask(
                 handle,
                 kind === "proposal" ? "awaiting_proposal" : "awaiting_report",
               );
-            } else if (
-              !producedReport &&
-              autoContinues < MAX_AUTO_CONTINUE &&
-              WAITING_RE.test(lastAssistantText)
-            ) {
-              // The agent ended the turn mid-workflow (e.g. it dispatched review
-              // subagents and said it would resume). It isn't done — nudge it to
-              // continue rather than finalizing and dropping the real report/gate
-              // it still owes us.
+            } else if (turnEnd.kind === "paused" && autoContinues < MAX_AUTO_CONTINUE) {
+              // The agent ended the turn mid-workflow — it dispatched review subagents and
+              // said it would resume, or it just announced its next step ("Let me read the
+              // workflow rules:") and stopped. Either way it isn't done: nudge it to
+              // continue rather than finalizing and passing its narration off as the report.
               autoContinues += 1;
               record(handle, "log", {
-                message:
-                  "Agent paused mid-workflow; nudging it to finish (continue → report gate).",
+                message: `Agent paused mid-workflow (${turnEnd.reason}); nudging it to finish (continue → report gate).`,
               });
-              handle.pushInput(
-                userMessage(
-                  "Your dispatched sub-tasks/reviews have completed and their results are " +
-                    "above. Do NOT stop here — continue this SAME task: incorporate the " +
-                    "findings and carry the workflow through to its report gate by calling " +
-                    'the request_approval tool with { gate: "report", summary: <plain-language ' +
-                    "report> }. Only print [[DONE]] once the task is genuinely complete.",
-                ),
+              handle.pushInput(userMessage(nudgePrompt(turnEnd.reason)));
+            } else if (turnEnd.kind === "paused") {
+              // Out of nudges and still stopping mid-work. Saying "done" here would be a
+              // lie — and stapling [[DONE]] onto narration is exactly how a preamble ends
+              // up rendered as the task's report. Fail honestly; Continue resumes it.
+              const nudged = `nudged ${autoContinues} time${autoContinues === 1 ? "" : "s"}`;
+              finalize(
+                handle,
+                "failed",
+                producedReport
+                  ? `Agent stopped mid-workflow after its report (${nudged}), so the run may be incomplete. Use Continue to resume it.`
+                  : `Agent stopped mid-workflow without producing a final report (${nudged}). Use Continue to resume it.`,
               );
             } else {
-              // Turn ended with nothing pending → the task is complete. If the run
-              // produced no report (e.g. onboard, which prints a plain summary with
-              // no [[DONE]] and no report gate), surface that summary as the report
-              // so the user sees a result rather than an empty/activity-only view.
-              if (!producedReport && lastAssistantText.trim()) {
+              // Turn ended on a result-shaped message with nothing pending → the task is
+              // complete. If the run produced no report (e.g. onboard, which prints a plain
+              // summary with no [[DONE]] and no report gate), surface that summary as the
+              // report so the user sees a result rather than an activity-only view. Only
+              // this turn's own closing text qualifies — never stale prose from earlier.
+              if (!producedReport && endText.trim()) {
                 record(handle, "message", {
                   type: "assistant",
                   message: {
-                    content: [
-                      { type: "text", text: `${lastAssistantText.trim()}\n\n[[DONE]]` },
-                    ],
+                    content: [{ type: "text", text: `${endText.trim()}\n\n[[DONE]]` }],
                   },
                 });
                 producedReport = true;

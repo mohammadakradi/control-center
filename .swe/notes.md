@@ -180,6 +180,34 @@ update after every change.
     anything else off-list → `null`, which the route turns into a 400. Auth is checked
     before range validation.
 
+- **2026-08-05 — a turn ending is not a task ending (`runner/completion.ts`).** In
+  streaming-input mode the SDK emits a `result` at every turn boundary and then waits for
+  input, so the *runner* decides completion. It used to treat any turn end as done and, if no
+  report gate / `[[DONE]]` had appeared, staple `[[DONE]]` onto the last assistant text and
+  surface that as the report — which the UI renders as the Report card. Real transcripts
+  therefore showed "I'll follow the fe:task workflow — first, investigation. Let me read the
+  workflow rules…" as the report with the task **Done**, before any work existed. Now
+  `classifyTurnEnd(text)` returns `final` or `paused` (`waiting` | `narration` | `no-text`)
+  and the runner nudges (up to `MAX_AUTO_CONTINUE` = 3) then **fails** rather than faking a
+  report. Design points worth keeping:
+  - **Conservative by construction**: only a positive continuation signal (trailing colon,
+    first-person "let me / I'll …" as the *last* sentence, the old `WAITING_RE` phrasing, or
+    no text at all) counts as a pause. Ambiguous prose stays `final`, so `onboard`-style
+    commands that end with a plain summary and no marker behave exactly as before.
+  - A body ending in **`?` is `final`** — the agent asking the user something is a deliberate
+    stop, and nudging would answer on the user's behalf.
+  - A **structured** message (headings/lists, ≥240 chars) stays `final` even if its closing
+    sentence sounds like an intention ("I'll wait for your approval") — that's a real report.
+  - Completion is judged from `turnText` (the last main-thread message of *this* turn,
+    possibly empty), not the sticky `lastAssistantText`, which can be many messages stale;
+    the synthesized report now also uses the turn's own closing text.
+  - The nudge no longer requires `!producedReport`: stopping mid-work is a pause even after a
+    report gate (the commit step still owes an ending).
+  - `GATE_PROMPT` now states the contract to the agent, so the nudge is a backstop and not
+    the primary mechanism.
+  - **Not retroactive** — tasks that already recorded a synthesized `[[DONE]]` event keep
+    showing their bogus Report card; the UI reads persisted events.
+
 ## Gotchas
 - **2026-08-03 — host-side `pnpm test` fails with an esbuild platform error** — the host
   `node_modules` currently carries `@esbuild/linux-arm64` (tsx can't transform anything).

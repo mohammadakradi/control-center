@@ -17,6 +17,11 @@ approval gate you MUST request approval via the tool, not by printing text and s
 - The tool result tells you the user's decision: approved (proceed), approved-with-changes
   (adopt the feedback), or not-approved (revise and call the tool again).
 
+Never end a turn mid-work. If your last message only announces what you are about to do
+("Let me read the notes:"), the platform reads that as a pause, not a result — it will push
+you to continue, and after a few of those the run is marked failed. End every turn either at
+a gate (tool call), with a real report of what you did, or with \`[[DONE]]\`.
+
 Belt-and-suspenders: also end your proposal message with the marker \`[[GATE:PROPOSAL]]\`,
 your report message with \`[[GATE:REPORT]]\`, and print \`[[DONE]]\` once the task is fully
 complete. These markers let the UI label your progress even if a tool call is missed.
