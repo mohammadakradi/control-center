@@ -110,10 +110,15 @@ jobs:
           # And the things an install cannot work without. Absence is the failure mode that hides:
           # `infra/native/` once fell out of the allowlist, and the only symptom would have been
           # the Mac app quietly degrading to a browser window on somebody's next update.
+          # The bundled agents are the same class of hazard: drop them and an install has an
+          # empty agent list with nothing to dispatch, on a device that can't get them anywhere
+          # else. Check the manifests, since that's what discovery actually reads.
           for required in \
             package.json pnpm-lock.yaml drizzle/ runner/import.ts runner/migrate.ts \
             infra/native/ControlCenter.swift infra/release/install.sh \
-            infra/release/make-app-bundle.sh public/icons/app.icns; do
+            infra/release/make-app-bundle.sh public/icons/app.icns \
+            agents/swe/.claude-plugin/plugin.json agents/fe/.claude-plugin/plugin.json \
+            agents/pm/.claude-plugin/plugin.json; do
             printf '%s\n' "$list" | grep -q "^[^/]*/$required" || {
               echo "::error::the release tarball is missing $required"
               exit 1

@@ -1,0 +1,13 @@
+{
+  "name": "pm-agent-local",
+  "owner": {
+    "name": "mohammad"
+  },
+  "plugins": [
+    {
+      "name": "pm",
+      "source": "./",
+      "description": "Portable project-manager agent — analyze, propose, break a request into stack-specific tasks."
+    }
+  ]
+}

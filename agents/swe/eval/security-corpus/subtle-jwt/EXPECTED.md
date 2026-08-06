@@ -1,0 +1,1 @@
+class: Auth bypass / missing signature verification (CWE-347). Uses jwt.decode (no verification) instead of jwt.verify(token, secret) → anyone can forge a token with any userId. Fix: jwt.verify with a fixed algorithm + secret.

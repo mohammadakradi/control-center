@@ -1,0 +1,14 @@
+{
+  "name": "swe",
+  "version": "0.8.0",
+  "description": "A portable software-engineer agent: onboards itself to any project (writing CLAUDE.md), then implements, fixes, reviews, and ships changes under a fixed set of engineering rules.",
+  "author": {
+    "name": "mohammad"
+  },
+  "keywords": [
+    "software-engineer",
+    "onboarding",
+    "workflow",
+    "claude-md"
+  ]
+}

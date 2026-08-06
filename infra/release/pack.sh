@@ -31,6 +31,7 @@ drizzle.config.ts
 drizzle
 eslint.config.mjs
 proxy.ts
+agents
 app
 components
 lib

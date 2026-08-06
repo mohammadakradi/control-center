@@ -1,0 +1,17 @@
+{
+  "name": "fe",
+  "version": "0.4.0",
+  "description": "A portable frontend-engineer agent: onboards itself to any UI project (scanning framework, styling system, design tokens & color palette), then builds, restyles, audits, and ships frontend changes — favoring component reuse, design-token fidelity, accessibility, and theme consistency.",
+  "author": {
+    "name": "mohammad"
+  },
+  "keywords": [
+    "frontend",
+    "ui",
+    "design-system",
+    "accessibility",
+    "onboarding",
+    "workflow",
+    "claude-md"
+  ]
+}

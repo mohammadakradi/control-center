@@ -1,0 +1,13 @@
+{
+  "name": "fe-agent-local",
+  "owner": {
+    "name": "mohammad"
+  },
+  "plugins": [
+    {
+      "name": "fe",
+      "source": "./",
+      "description": "Portable frontend-engineer agent — onboard, task, fix, audit, review, ship."
+    }
+  ]
+}
