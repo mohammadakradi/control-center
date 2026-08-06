@@ -8,6 +8,7 @@
     "dev:clean": "docker compose -f infra/docker/docker-compose.yml down --volumes",
     "stop": "docker compose -f infra/docker/docker-compose.yml down",
     "icons": "node infra/icons/generate.mjs",
+    "agents:sync": "sh infra/agents/sync.sh",
     "release:pack": "sh infra/release/pack.sh",
     "dev:local": "concurrently -n web,runner -c cyan,magenta \"npm:dev:web\" \"npm:dev:runner\"",
     "dev:container": "concurrently -n web,runner -c cyan,magenta \"next dev -H 0.0.0.0 -p 3001\" \"npm:dev:runner\"",
@@ -24,7 +25,7 @@
     "db:backfill-titles": "sh infra/dev/run-script.sh tsx runner/backfill-titles.ts",
     "db:backfill-usage": "sh infra/dev/run-script.sh tsx runner/backfill-usage.ts",
     "lint": "eslint",
-    "test": "tsx --test runner/*.test.ts lib/*.test.ts"
+    "test": "tsx --test runner/*.test.ts lib/*.test.ts lib/discovery/*.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.187",

@@ -1,0 +1,13 @@
+{
+  "name": "swe-agent-local",
+  "owner": {
+    "name": "mohammad"
+  },
+  "plugins": [
+    {
+      "name": "swe",
+      "source": "./",
+      "description": "Portable software-engineer agent — onboard, task, fix, review, ship."
+    }
+  ]
+}

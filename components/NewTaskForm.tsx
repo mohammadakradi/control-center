@@ -16,7 +16,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { Avatar } from "@/components/AgentAvatar";
-import { AttachmentPicker, mergeFiles } from "@/components/AttachmentPicker";
+import { AttachmentPicker, FileDropZone } from "@/components/AttachmentPicker";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 
@@ -132,7 +132,6 @@ export function NewTaskForm({
   // error then carries a link to Settings instead of being a dead end.
   const [needsToken, setNeedsToken] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
-  const [dragging, setDragging] = useState(false);
 
   const cmd = commands.find((c) => c.name === command);
   const hasOnboard = (agent?.commands ?? []).some((c) => c.name === "onboard");
@@ -282,25 +281,11 @@ export function NewTaskForm({
 
       {/* Step 3 — prompt */}
       <Eyebrow>Prompt</Eyebrow>
-      <div
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragging(false);
-          const { files: merged, error: err } = mergeFiles(
-            files,
-            e.dataTransfer.files,
-          );
-          setFiles(merged);
-          if (err) setError(err);
-        }}
-        className={`rounded-xl border bg-sunken focus-within:border-accent focus-within:ring-2 focus-within:ring-ring/25 ${
-          dragging ? "border-accent ring-2 ring-ring/25" : "border-line-strong"
-        }`}
+      <FileDropZone
+        files={files}
+        setFiles={setFiles}
+        onError={(msg) => msg && setError(msg)}
+        className="rounded-xl border bg-sunken focus-within:border-accent focus-within:ring-2 focus-within:ring-ring/25"
       >
         <div className="relative">
           <span className="absolute top-3.5 left-4 font-mono text-sm text-accent">
@@ -338,7 +323,7 @@ export function NewTaskForm({
             />
           </div>
         </div>
-      </div>
+      </FileDropZone>
       {model === "auto" && (
         <p className="mt-2 text-xs text-fg-faint">{autoHint(agent?.namespace)}</p>
       )}

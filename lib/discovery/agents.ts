@@ -3,7 +3,11 @@ import { basename, resolve } from "node:path";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { agents, tasks, type AgentCommand } from "../db/schema";
-import { INSTALLED_PLUGINS_JSON, KNOWN_MARKETPLACES_JSON } from "../config";
+import {
+  BUNDLED_AGENTS_DIR,
+  INSTALLED_PLUGINS_JSON,
+  KNOWN_MARKETPLACES_JSON,
+} from "../config";
 import { parseFrontmatter } from "../util";
 
 type InstalledEntry = {
@@ -56,8 +60,13 @@ function readCommands(pluginDir: string, namespace: string): AgentCommand[] {
 
 export type DiscoveredAgent = typeof agents.$inferInsert;
 
+type PluginManifest = { name?: string; description?: string; version?: string };
+
+/** This platform surfaces the locally-built agents (swe, fe, pm), not every installed plugin. */
+const SURFACED = new Set(["swe", "fe", "pm"]);
+
 /** Read installed Claude Code plugins and turn them into agent records. */
-export function discoverAgents(): DiscoveredAgent[] {
+function discoverRegistryAgents(): DiscoveredAgent[] {
   const installed = readJson<InstalledPlugins>(INSTALLED_PLUGINS_JSON);
   const marketplaces = readJson<Marketplaces>(KNOWN_MARKETPLACES_JSON) ?? {};
   if (!installed?.plugins) return [];
@@ -77,7 +86,7 @@ export function discoverAgents(): DiscoveredAgent[] {
     if (!pluginDir) continue;
 
     const manifest =
-      readJson<{ name?: string; description?: string; version?: string }>(
+      readJson<PluginManifest>(
         resolve(pluginDir, ".claude-plugin/plugin.json"),
       ) ?? {};
     const namespace = manifest.name ?? pluginKey.split("@")[0];
@@ -94,17 +103,85 @@ export function discoverAgents(): DiscoveredAgent[] {
       scope: entry.scope ?? null,
     });
   }
-  // This platform surfaces the locally-built agents (swe, fe, pm).
-  const SURFACED = new Set(["swe", "fe", "pm"]);
   return result.filter((a) => SURFACED.has(a.namespace));
 }
 
+/**
+ * Read the agent plugins shipped inside the app itself (`agents/<namespace>`).
+ *
+ * This is what gives a fresh install working agents: a new device has neither the plugin
+ * directories nor the Claude Code marketplace entries that point at them, so registry discovery
+ * alone returns nothing. Nothing needs to be installed through the CLI for these to *run* —
+ * the runner loads a plugin by path (`plugins: [{ type: "local", path }]`), so the registry is
+ * only ever how an agent is found, not how it is executed.
+ *
+ * No namespace filter here: unlike the user's registry (which holds unrelated plugins), whatever
+ * is in this directory was shipped deliberately.
+ */
+export function discoverBundledAgents(
+  dir: string = BUNDLED_AGENTS_DIR,
+): DiscoveredAgent[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir).sort();
+  } catch {
+    return []; // no bundle — fine, the registry may still have agents
+  }
+
+  const out: DiscoveredAgent[] = [];
+  for (const name of entries) {
+    const pluginDir = resolve(dir, name);
+    const manifest = readJson<PluginManifest>(
+      resolve(pluginDir, ".claude-plugin/plugin.json"),
+    );
+    if (!manifest) continue; // not a plugin directory
+    const namespace = manifest.name ?? name;
+    const id = `${namespace}@bundled`;
+    out.push({
+      id,
+      name: namespace,
+      namespace,
+      version: manifest.version ?? null,
+      sourcePath: pluginDir,
+      pluginId: id,
+      description: manifest.description ?? null,
+      commands: readCommands(pluginDir, namespace),
+      scope: "bundled",
+    });
+  }
+  return out;
+}
+
+/** All agents available on this machine: CLI-installed plugins first, then the bundled ones. */
+export function discoverAgents(): DiscoveredAgent[] {
+  const registry = discoverRegistryAgents();
+  // A plugin installed through the Claude Code CLI wins over the bundled copy of the same
+  // namespace: on a machine where these agents are being developed, that entry points at the
+  // live source directory, and its edits should be what runs.
+  const claimed = new Set(registry.map((a) => a.namespace));
+  return [
+    ...registry,
+    ...discoverBundledAgents().filter((a) => !claimed.has(a.namespace)),
+  ];
+}
+
 /** Discover installed plugins and upsert them into the DB. Returns the current agent set. */
-export function syncAgents() {
-  const discovered = discoverAgents();
+export function syncAgents(discovered: DiscoveredAgent[] = discoverAgents()) {
+  const liveIds = new Set<string>();
   for (const a of discovered) {
+    // The same agent can arrive under a different plugin id than last time — a bundled agent
+    // the user later installs through the CLI, or a CLI install that's removed and falls back
+    // to the bundled copy. `tasks.agent_id` is a foreign key with ON DELETE CASCADE, so reuse
+    // the row already holding that namespace instead of inserting a second one beside it.
+    const existing = db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(eq(agents.namespace, a.namespace))
+      .get();
+    const id = existing?.id ?? a.id;
+    liveIds.add(id);
     db.insert(agents)
-      .values(a)
+      .values({ ...a, id })
       .onConflictDoUpdate({
         target: agents.id,
         set: {
@@ -112,6 +189,7 @@ export function syncAgents() {
           namespace: a.namespace,
           version: a.version,
           sourcePath: a.sourcePath,
+          pluginId: a.pluginId,
           description: a.description,
           commands: a.commands,
           scope: a.scope,
@@ -124,7 +202,6 @@ export function syncAgents() {
   // would wipe its tasks + events. Discovery can miss an agent transiently
   // (e.g. while its plugin is being updated), and pruning on that miss would
   // permanently destroy a real agent's history. Agents with tasks are kept.
-  const liveIds = new Set(discovered.map((a) => a.id));
   for (const row of db.select({ id: agents.id }).from(agents).all()) {
     if (liveIds.has(row.id)) continue;
     const hasHistory = db

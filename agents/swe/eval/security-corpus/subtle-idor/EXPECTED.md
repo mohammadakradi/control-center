@@ -1,0 +1,1 @@
+class: IDOR / broken object-level authorization (CWE-639). Authenticated user can read ANY invoice by guessing/iterating id; no ownership check (invoice.userId === req.user.id). Fix: enforce ownership.

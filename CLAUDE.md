@@ -37,6 +37,7 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
   a Chrome app window (no tabs, no address bar). Stop with `pnpm stop`. Use `pnpm dev` instead
   when you want the logs in the foreground. See "Installable app" below.
 - Regenerate app icons: `pnpm icons` (macOS only — see "Installable app")
+- Refresh the vendored agent plugins: `pnpm agents:sync` (see "The agents ship with the app")
 - Build a release tarball locally: `pnpm release:pack` → `dist/` (see "Releases")
 - Dev server: `pnpm dev`  (Docker: builds the image + runs web :3001 + runner :4319 in one
   container via `infra/docker/docker-compose.yml`; URL: http://localhost:3001)
@@ -57,10 +58,12 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
   wrapped — run those with `docker exec platform …`. Caveat: arguments pass through untouched,
   so a path argument must exist inside the container too (the repo and `~/Dev` are mounted).
 - Lint: `pnpm lint`  (baseline: ✅ — no warnings)
-- Test: `pnpm test`  (baseline: ✅ 29 tests — Node's built-in runner via `tsx`, no extra
-  deps; specs live next to the code as `runner/*.test.ts`, fixtures in
-  `runner/__fixtures__/`. The DB spec builds a throwaway SQLite file from the real schema
-  via `drizzle-kit push` and the `PLATFORM_DB` override — never `data/platform.db`.)
+- Test: `pnpm test`  (baseline: ✅ 122 tests — Node's built-in runner via `tsx`, no extra
+  deps; specs live next to the code as `runner/*.test.ts`, `lib/*.test.ts` and
+  `lib/discovery/*.test.ts`, fixtures in `runner/__fixtures__/`. Those globs are listed
+  explicitly in the `test` script — a spec in a directory that isn't listed silently never
+  runs. DB specs build a throwaway SQLite file from the real schema via `drizzle-kit push`
+  and the `PLATFORM_DB` override — never `data/platform.db`.)
 - Typecheck: `npx tsc --noEmit`
 - **Schema changes: `pnpm db:generate` then `pnpm db:migrate`.** `db:generate` writes a
   versioned SQL file into `drizzle/` (review it — that file is what runs on every user's
@@ -145,6 +148,33 @@ match). Creating an account starts a private workspace instead of unlocking the 
 - **This is app-level separation, not OS-level.** Anyone with filesystem access can read
   `~/.control-center/.env` and the vault. Separate macOS accounts get separate installs and are
   genuinely isolated; two people sharing one login are not.
+
+## The agents ship with the app
+The swe / fe / pm plugins are **vendored into this repo at `agents/<namespace>` and shipped in the
+release tarball**, because a new device has neither the plugin directories nor the Claude Code
+marketplace entries that point at them — so registry-only discovery gave a fresh install an empty
+agent list and nothing to dispatch.
+- **Nothing has to be installed through the `claude` CLI for an agent to run.** The runner loads
+  a plugin by path (`plugins: [{ type: "local", path: agent.sourcePath }]` in
+  `runner/session-manager.ts`), so the CLI's registry is only ever how an agent is *found*.
+- **Discovery is registry-first, bundle-as-fallback** (`lib/discovery/agents.ts`): a plugin
+  registered through the CLI wins over the bundled copy of the same namespace, so on a machine
+  where these agents are being developed the live source directory is still what runs. Only the
+  registry side is filtered to `swe`/`fe`/`pm` — anything in `agents/` was shipped deliberately.
+  Bundled agents get id `<namespace>@bundled`, `scope: "bundled"`, and `sourcePath` inside the
+  app directory. `PLATFORM_AGENTS_DIR` overrides where that directory is.
+- **An agent that reappears under a different plugin id reuses its existing row.** `tasks.agent_id`
+  is a foreign key with ON DELETE CASCADE, so `syncAgents()` adopts the row already holding that
+  namespace rather than inserting a second one and stranding the history — that's what makes
+  switching between a CLI install and the bundled copy safe in either direction.
+- **`agents/` is a vendored copy, so it drifts.** `pnpm agents:sync` rsyncs it from the source
+  checkouts (`../{swe,fe,pm}-agent`, or `CC_AGENT_SRC`); run it after changing an agent and commit
+  the result, or releases ship a stale agent. The release workflow asserts the three
+  `.claude-plugin/plugin.json` files are in the tarball — losing them is silent otherwise.
+- Because `~/.control-center/app` is replaced wholesale on update, the agents are updated by
+  `control-center update` along with everything else — and local edits to them are lost. Someone
+  who wants to *edit* an agent should register it with `claude plugin marketplace add <dir>` +
+  `claude plugin install <ns>@<marketplace>`; that entry then takes precedence over the bundle.
 
 ## Moving data between installs (export / import)
 `pnpm cc:export` → a `.tar.gz` you can `control-center import` on another machine. The dev
@@ -286,6 +316,14 @@ and on demand via `control-center install-app`. It comes in two forms:
   window. Same Applications entry and icon; the *window* is Chrome's.
 
 Gotchas worth keeping:
+- **A `WKWebView` has no file chooser of its own.** `<input type="file">` does *nothing* — no
+  dialog, no error, nowhere — unless the host app implements
+  `WKUIDelegate.webView(_:runOpenPanelWith:initiatedByFrame:completionHandler:)`. It shipped
+  without one, so "Attach files" was dead in the Mac app while working in a browser, and dropping
+  a file on the composer was the only way to attach anything. Anything else WebKit delegates to
+  the host (printing, JS `alert`/`confirm`, camera/mic permission) fails the same silent way, so
+  add the delegate method rather than assuming browser behaviour. Its `completionHandler` must be
+  called on every path or the input stays locked for the rest of the session.
 - `infra/native/` **must stay in `pack.sh`'s allowlist** — without the Swift source an installed
   app can't rebuild its own bundle on update, and silently degrades to the launcher.
 - The bundle is swapped with `mv`, never `rm -rf` in place: updates rebuild it while the app that
@@ -329,6 +367,8 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   standalone window chrome can't track that toggle.
 
 ## UI architecture map
+- `agents/` — the swe / fe / pm plugins, vendored and shipped in the release tarball (see
+  "The agents ship with the app"); read by `lib/discovery/agents.ts`, never imported as code
 - `app/` — Next.js App Router pages and API routes
 - `app/page.tsx` — Dashboard (agent list, project list, recent tasks)
 - `app/agents/` — Agent list + detail pages
@@ -386,7 +426,7 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   as deltas onto `tasks.usage*`; shared by the live runner and `runner/backfill-usage.ts`
 - `public/` — Agent avatar images (`<namespace>-agent.png`)
 - Theme tokens/global styles: `app/globals.css`
-- Tests: `runner/*.test.ts` (`pnpm test`)
+- Tests: `runner/*.test.ts`, `lib/*.test.ts`, `lib/discovery/*.test.ts` (`pnpm test`)
 
 ## Code graph (graphify)
 A queryable code knowledge graph lives at `graphify-out/graph.json`. To understand the

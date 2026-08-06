@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { ACTIVE_STATUSES, STATUS_LABEL, reportHasFindings } from "@/lib/ui";
 import { Button } from "@/components/ui/button";
-import { AttachmentPicker } from "@/components/AttachmentPicker";
+import { AttachmentPicker, FileDropZone } from "@/components/AttachmentPicker";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Markdown } from "@/components/Markdown";
 import { FileModal } from "@/components/FileModal";
@@ -421,6 +421,9 @@ export function TaskLiveView({
   const [continuing, setContinuing] = useState(false);
   const [changeReq, setChangeReq] = useState("");
   const [changeFiles, setChangeFiles] = useState<File[]>([]);
+  // Why the last attempt didn't take. This used to be dropped on the floor, so a task the
+  // runner refused (no Anthropic token, daemon down, already running) looked like a dead button.
+  const [continueError, setContinueError] = useState<string | null>(null);
   // Resume a terminal task in its existing session, then re-open the live stream.
   // With a message and/or files the agent applies the requested changes; with neither
   // (the quick "Continue" button) it picks up where it left off.
@@ -429,6 +432,7 @@ export function TaskLiveView({
     const files = withChanges ? changeFiles : [];
     if (withChanges && !message && files.length === 0) return;
     setContinuing(true);
+    setContinueError(null);
     // FormData when there are files; the continue API accepts multipart and JSON.
     const fd = new FormData();
     if (message) fd.set("message", message);
@@ -436,9 +440,20 @@ export function TaskLiveView({
     const res = await fetch(`/api/tasks/${taskId}/continue`, {
       method: "POST",
       body: fd,
-    });
+    }).catch(() => null);
     setContinuing(false);
-    if (!res.ok) return;
+    if (!res?.ok) {
+      const body = res
+        ? ((await res.json().catch(() => ({}))) as { error?: string })
+        : {};
+      setContinueError(
+        body.error ??
+          (res
+            ? `Couldn't continue this task (HTTP ${res.status}).`
+            : "Couldn't reach the server."),
+      );
+      return;
+    }
     if (withChanges) {
       setChangeReq("");
       setChangeFiles([]);
@@ -572,7 +587,12 @@ export function TaskLiveView({
 
           {/* Ask the agent to keep going — request changes (with optional files) on the
               result; it resumes the same session and updates its earlier work. */}
-          <div className="mt-3 overflow-hidden rounded-xl border border-line-strong bg-sunken focus-within:border-accent focus-within:ring-2 focus-within:ring-ring/25">
+          <FileDropZone
+            files={changeFiles}
+            setFiles={setChangeFiles}
+            onError={setContinueError}
+            className="mt-3 overflow-hidden rounded-xl border bg-sunken focus-within:border-accent focus-within:ring-2 focus-within:ring-ring/25"
+          >
             <textarea
               value={changeReq}
               onChange={(e) => setChangeReq(e.target.value)}
@@ -606,7 +626,12 @@ export function TaskLiveView({
                 {continuing ? "Sending…" : "Send to agent"}
               </Button>
             </div>
-          </div>
+          </FileDropZone>
+          {continueError && (
+            <p role="alert" className="mt-2 text-xs text-danger">
+              {continueError}
+            </p>
+          )}
         </div>
       )}
 

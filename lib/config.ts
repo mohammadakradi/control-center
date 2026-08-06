@@ -33,3 +33,13 @@ export const KNOWN_MARKETPLACES_JSON = resolve(
   CLAUDE_DIR,
   "plugins/known_marketplaces.json",
 );
+
+/**
+ * Agent plugins shipped inside the app (`agents/<namespace>`), so a fresh install has working
+ * agents without the user first registering marketplaces with the Claude Code CLI. Both the Next
+ * app and the runner run with cwd = app root, and the release tarball carries this directory.
+ * `PLATFORM_AGENTS_DIR` overrides it.
+ */
+export const BUNDLED_AGENTS_DIR = process.env.PLATFORM_AGENTS_DIR?.trim()
+  ? resolve(process.env.PLATFORM_AGENTS_DIR.trim())
+  : resolve(process.cwd(), "agents");
