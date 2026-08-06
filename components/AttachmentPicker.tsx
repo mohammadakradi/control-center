@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { FileText, ImageIcon, Paperclip, X } from "lucide-react";
 
 export const MAX_FILES = 10;
@@ -30,6 +30,57 @@ export function mergeFiles(
     if (!next.some((x) => x.name === f.name && x.size === f.size)) next.push(f);
   }
   return { files: next.slice(0, MAX_FILES), error };
+}
+
+/**
+ * Drop target for a composer: dropping documents/photos anywhere on it attaches them, with the
+ * same size/count rules as the button.
+ *
+ * It lives beside the picker because the two belong together — a box that takes files by button
+ * must take them by drop as well. They drifted once: the task-detail composer had the button and
+ * no drop target, so a user in the Mac app (whose file dialog was also broken) had no way at all
+ * to attach a photo to a follow-up.
+ *
+ * The caller owns the box's own classes; this adds only the border/ring state, so pass a
+ * `className` **without** a border colour.
+ */
+export function FileDropZone({
+  files,
+  setFiles,
+  onError,
+  className = "",
+  children,
+}: {
+  files: File[];
+  setFiles: (f: File[]) => void;
+  /** Called with the skipped-file message, or null when a drop is clean. */
+  onError?: (message: string | null) => void;
+  className?: string;
+  children: ReactNode;
+}) {
+  const [dragging, setDragging] = useState(false);
+
+  return (
+    <div
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        const { files: merged, error } = mergeFiles(files, e.dataTransfer.files);
+        setFiles(merged);
+        onError?.(error ?? null);
+      }}
+      className={`${className} ${
+        dragging ? "border-accent ring-2 ring-ring/25" : "border-line-strong"
+      }`}
+    >
+      {children}
+    </div>
+  );
 }
 
 /** Attach-files bar: a button + selected-file chips. Controlled via `files`/`setFiles`.

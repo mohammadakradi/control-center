@@ -208,6 +208,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         return nil
     }
 
+    /// File inputs — the "Attach files" button on a task/composer.
+    ///
+    /// WKWebView has no built-in file chooser: unlike a browser, it does nothing at all when a
+    /// page opens an `<input type="file">` unless the host app puts a panel up. Without this,
+    /// clicking Attach was a no-op with no error anywhere — the button looked broken, and the
+    /// only way to attach anything was to drag it onto the composer.
+    func webView(
+        _ webView: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = parameters.allowsDirectories
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.resolvesAliases = true
+        // `completionHandler` must be called exactly once, on every path — WebKit keeps the
+        // input element locked until it is, so an early return leaves Attach dead for good.
+        if let window = webView.window {
+            panel.beginSheetModal(for: window) { response in
+                completionHandler(response == .OK ? panel.urls : nil)
+            }
+        } else {
+            completionHandler(panel.runModal() == .OK ? panel.urls : nil)
+        }
+    }
+
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         showStatus("Couldn't load the dashboard.<br><small>\(error.localizedDescription)</small>")
     }
