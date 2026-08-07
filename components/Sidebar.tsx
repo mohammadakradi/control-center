@@ -23,7 +23,14 @@ import { SignOutButton } from "@/components/SignOutButton";
  *  Collapse is styled entirely through the `rail:` variant (driven by
  *  `data-sidebar` on <html>), so the width is correct on first paint. React only
  *  reads the state to keep ARIA attributes honest. */
-export function Sidebar({ userEmail }: { userEmail?: string }) {
+export function Sidebar({
+  userEmail,
+  version,
+}: {
+  userEmail?: string;
+  /** The running version — passed in because reading it touches the filesystem. */
+  version?: string;
+}) {
   const pathname = usePathname();
   const collapsed = useSyncExternalStore(
     subscribeSidebar,
@@ -150,6 +157,15 @@ export function Sidebar({ userEmail }: { userEmail?: string }) {
           />
           <span className="rail:hidden">Collapse</span>
         </button>
+
+        {version && (
+          <p
+            className="px-3 text-[11px] text-fg-ghost rail:hidden"
+            title={`Agent Control Center ${version}`}
+          >
+            v{version}
+          </p>
+        )}
       </div>
     </aside>
   );
