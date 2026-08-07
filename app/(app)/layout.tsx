@@ -1,4 +1,5 @@
 import { getSignedInUser } from "@/lib/auth";
+import { APP_VERSION } from "@/lib/version";
 import { Sidebar } from "@/components/Sidebar";
 import { MobileTabBar, MobileTopBar } from "@/components/MobileNav";
 import { UpdateBanner } from "@/components/UpdateBanner";
@@ -14,7 +15,7 @@ export default async function AppLayout({
 
   return (
     <div className="flex min-h-dvh">
-      <Sidebar userEmail={signedIn?.email} />
+      <Sidebar userEmail={signedIn?.email} version={APP_VERSION} />
       <div className="flex min-w-0 flex-1 flex-col">
         <MobileTopBar userEmail={signedIn?.email} />
         {/* Renders nothing unless a packaged install is behind a published release. */}
