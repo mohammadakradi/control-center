@@ -15,7 +15,21 @@
 import Cocoa
 import WebKit
 
-let appURL = URL(string: ProcessInfo.processInfo.environment["CC_URL"] ?? "http://localhost:3001")!
+/// Where the dashboard is. `CC_URL` pins it; otherwise the app tries the current port and then
+/// the one older installs used.
+///
+/// Two ports, because the bundle and the `control-center` command can disagree for exactly one
+/// update: `update` rebuilds this bundle from the new source, but the command lives outside
+/// `app/` and is only refreshed by versions that know to do it. A bundle that insisted on one
+/// port would sit on "Starting…" forever while a perfectly healthy server answered on the other.
+let candidateURLs: [URL] = {
+    if let pinned = ProcessInfo.processInfo.environment["CC_URL"].flatMap(URL.init(string:)) {
+        return [pinned]
+    }
+    return [URL(string: "http://localhost:7373")!, URL(string: "http://localhost:3001")!]
+}()
+/// The candidate that actually answered. Starts as the preferred one.
+var appURL = candidateURLs[0]
 /// The launcher that starts the server, updates the install, and runs migrations.
 let cliPath = ProcessInfo.processInfo.environment["CC_CLI"]
     ?? ("\(NSHomeDirectory())/.local/bin/control-center")
@@ -68,7 +82,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         showStatus("Starting Agent Control Center…")
         // Adopt a server that's already up rather than starting a second one; only start (and
         // therefore own) one if nothing answers.
-        if isServerUp() {
+        if let live = runningServerURL() {
+            appURL = live
             webView.load(URLRequest(url: appURL))
         } else {
             startServer()
@@ -80,21 +95,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     // a single-window app should do.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
-    /// Is something already serving? A synchronous probe, because the answer decides whether we
-    /// start a server we then have to stop.
-    private func isServerUp() -> Bool {
-        var request = URLRequest(url: appURL)
-        request.timeoutInterval = 1.5
-        request.httpMethod = "HEAD"
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        var up = false
-        let done = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: request) { _, response, _ in
-            up = response != nil
-            done.signal()
-        }.resume()
-        _ = done.wait(timeout: .now() + 2)
-        return up
+    /// Is something already serving, and where? A synchronous probe, because the answer decides
+    /// whether we start a server we then have to stop.
+    private func runningServerURL() -> URL? {
+        for url in candidateURLs {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 1.5
+            request.httpMethod = "HEAD"
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            var up = false
+            let done = DispatchSemaphore(value: 0)
+            URLSession.shared.dataTask(with: request) { _, response, _ in
+                up = response != nil
+                done.signal()
+            }.resume()
+            _ = done.wait(timeout: .now() + 2)
+            if up { return url }
+        }
+        return nil
     }
 
     /// Start the server. `start` also checks for a new release, applies it, and runs migrations —
@@ -136,13 +154,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     /// Poll until the server answers, then load it. A first run compiles on demand, so this is
     /// patient — but it says what it's waiting for rather than showing a blank window.
     private func waitForServer() {
-        var request = URLRequest(url: appURL)
+        // Alternate across the candidates while waiting: whichever answers is the real one.
+        let target = candidateURLs[Int(waited) % candidateURLs.count]
+        var request = URLRequest(url: target)
         request.timeoutInterval = 2
         request.cachePolicy = .reloadIgnoringLocalCacheData
         URLSession.shared.dataTask(with: request) { [weak self] _, response, _ in
             guard let self else { return }
             DispatchQueue.main.async {
                 if response != nil {
+                    appURL = target
                     self.webView.load(URLRequest(url: appURL))
                     return
                 }
@@ -157,7 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 if self.waited.truncatingRemainder(dividingBy: 10) == 0 {
                     self.showStatus(
                         self.ownsServer
-                            ? "Starting Agent Control Center…<br><small>a fresh install compiles on first run</small>"
+                            ? "Starting Agent Control Center…"
                             : "Waiting for \(appURL.absoluteString)…"
                     )
                 }
