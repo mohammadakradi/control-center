@@ -4,7 +4,7 @@ import { streamSSE } from "hono/streaming";
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import { db } from "../lib/db";
 import { taskEvents, tasks, type Attachment, type TaskStatus } from "../lib/db/schema";
-import { RUNNER_PORT } from "../lib/config";
+import { RUNNER_HOST, RUNNER_PORT } from "../lib/config";
 import {
   continueTask,
   getHandle,
@@ -203,8 +203,8 @@ for (const { id } of orphaned) {
     .run();
 }
 
-serve({ fetch: app.fetch, port: RUNNER_PORT }, (info) => {
-  console.log(`[runner] listening on http://localhost:${info.port}`);
+serve({ fetch: app.fetch, port: RUNNER_PORT, hostname: RUNNER_HOST }, (info) => {
+  console.log(`[runner] listening on http://${RUNNER_HOST}:${info.port}`);
   if (orphaned.length > 0)
     console.log(`[runner] reconciled ${orphaned.length} orphaned task(s)`);
 });

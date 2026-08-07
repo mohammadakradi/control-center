@@ -31,6 +31,10 @@ services:
     environment:
       NODE_ENV: development
       NEXT_TELEMETRY_DISABLED: "1"
+      # The runner binds loopback by default (it has no auth of its own). Inside a container
+      # that would make the published port below unreachable, so bind all interfaces *in the
+      # container* — the publish is 127.0.0.1-only, so it still isn't on the network.
+      RUNNER_HOST: 0.0.0.0
       # Where the in-app folder picker may browse (colon-separated, PATH-style). The FIRST
       # entry is where it opens; the rest show as switchable roots. These are HOST paths —
       # the container's own home is /home/node, so it must be told explicitly. Every entry

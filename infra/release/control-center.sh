@@ -24,8 +24,16 @@ DATA_DIR="$CC_HOME/data"
 LOG_DIR="$CC_HOME/logs"
 RUN_DIR="$CC_HOME/run"
 ENV_FILE="$CC_HOME/.env"
-PORT="${CC_PORT:-3001}"
-RUNNER_PORT="${CC_RUNNER_PORT:-4319}"
+# This script's own path, so `update` can replace the installed command with the new version.
+case "$0" in
+  /*) SELF="$0" ;;
+  *) SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")" ;;
+esac
+# Loopback-only, on ports nothing else tends to want. 3001/4319 are the *development*
+# container's ports, and a dev checkout running beside an install used to mean whichever
+# bound first won — the app would silently attach to the other one's server.
+PORT="${CC_PORT:-7373}"
+RUNNER_PORT="${CC_RUNNER_PORT:-7374}"
 URL="http://localhost:$PORT"
 WAIT_TIMEOUT="${CC_WAIT_TIMEOUT:-180}"
 MIN_NODE_MAJOR=22
@@ -131,7 +139,7 @@ spawn() {
     PLATFORM_DATA_DIR="$DATA_DIR" \
       APP_VERSION="$(installed_version)" \
       RUNNER_PORT="$RUNNER_PORT" \
-      NODE_ENV=development \
+      NODE_ENV=production \
       NEXT_TELEMETRY_DISABLED=1 \
       nohup "$@" >>"$LOG_DIR/$name.log" 2>&1 &
     printf '%s' "$!" >"$RUN_DIR/$name.pid"
@@ -150,7 +158,7 @@ wait_for_http() {
     fi
     sleep 1
     waited=$((waited + 1))
-    [ "$waited" = 5 ] && info "Starting up (a fresh install compiles on demand)…" || :
+    [ "$waited" = 5 ] && info "Starting up…" || :
   done
   return 1
 }
@@ -206,10 +214,10 @@ open_window() {
 hint_install_app() {
   marker="$CC_HOME/.install-hint-shown"
   [ -f "$marker" ] && return 0
-  cat <<'EOF'
+  cat <<EOF
 
   Tip: for the window itself to carry the Control Center icon, install it from Chrome —
-  open http://localhost:3001 in a NORMAL tab (not this app window, which has no menu for
+  open ${URL} in a NORMAL tab (not this app window, which has no menu for
   it) and use the install button in the address bar. This command then launches that
   app instead. "Control Center.app" in your Applications folder already launches
   everything without a terminal.
@@ -273,6 +281,12 @@ apply_update() {
   (cd "$tmp/app" && npx --yes "pnpm@${CC_PNPM_VERSION:-9.12.1}" install --frozen-lockfile) ||
     die "dependency install failed — the existing install is untouched."
 
+  # Build before anything is swapped: `next start` needs `.next`, and a build that fails here
+  # must leave the running install exactly as it was.
+  info "Building the app…"
+  (cd "$tmp/app" && NODE_ENV=production ./node_modules/.bin/next build) ||
+    die "build failed — the existing install is untouched."
+
   stop_all
   # A copy of the pre-update database, distinct from the snapshot the migrator takes: this one
   # is the last good state for *this* version, before any schema change touches it.
@@ -290,6 +304,18 @@ apply_update() {
     sh "$APP_DIR/infra/release/make-app-bundle.sh" >/dev/null 2>&1 &&
       info "Refreshed the Control Center.app bundle." ||
       warn "Couldn't refresh the app bundle — run: control-center install-app"
+  fi
+
+  # Refresh the command itself. It's copied to ~/.local/bin at install time and lives outside
+  # app/, so swapping app/ leaves it on whatever version first installed it — every change to
+  # this script (ports, how the server is started) would never reach anyone who updates.
+  # Written via temp + mv: sh reads a script incrementally, so overwriting the running file in
+  # place feeds it garbage. Rename swaps the directory entry and leaves this inode alone.
+  new_cli="$APP_DIR/infra/release/control-center.sh"
+  if [ -f "$new_cli" ] && [ -w "$(dirname "$SELF")" ]; then
+    cp "$new_cli" "$SELF.new" && chmod +x "$SELF.new" && mv "$SELF.new" "$SELF" &&
+      info "Refreshed the control-center command." ||
+      warn "Couldn't refresh $SELF — re-run install.sh if the command misbehaves."
   fi
 
   info "Updated to $(installed_version). The previous version is kept at $CC_HOME/app.old"
@@ -354,8 +380,17 @@ cmd_start() {
   }
   printf '%s\n' "$migrate_output" | grep -vE 'up to date' || :
 
+  # `next start` needs a production build. install/update make one, but an install updated by
+  # an older control-center never got one — and a `.next` left behind by `next dev` has no
+  # BUILD_ID, which is the only honest marker that a production build is actually there.
+  if [ ! -f "$APP_DIR/.next/BUILD_ID" ]; then
+    info "Building the app (one minute, once)…"
+    (cd "$APP_DIR" && NODE_ENV=production ./node_modules/.bin/next build) ||
+      die "build failed — see the output above."
+  fi
+
   spawn runner "$APP_DIR/node_modules/.bin/tsx" runner/server.ts
-  spawn web "$APP_DIR/node_modules/.bin/next" dev -p "$PORT"
+  spawn web "$APP_DIR/node_modules/.bin/next" start -p "$PORT" -H 127.0.0.1
   if ! wait_for_http; then
     stop_all
     die "$URL never answered. Logs: $LOG_DIR/web.log and $LOG_DIR/runner.log"
@@ -387,7 +422,8 @@ Usage: control-center <command>
                        unless you pass --purge
   help                 This text
 
-Environment: CC_PORT (default 3001), CC_HOME (default ~/.control-center),
+Environment: CC_PORT (default 7373), CC_RUNNER_PORT (default 7374),
+CC_HOME (default ~/.control-center),
 CC_SKIP_UPDATE_CHECK=1 to never check on start, CC_NO_OPEN=1 to not open a window,
 CC_REPO to track a fork.
 

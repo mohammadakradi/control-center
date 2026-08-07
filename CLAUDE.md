@@ -45,11 +45,14 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 - Native dev (no Docker): `pnpm dev:local`  (Next.js + runner directly on the host)
 - Next.js only: `pnpm dev:web`  ·  Runner only: `pnpm dev:runner`
 - Container-only entrypoint: `pnpm dev:container`  (= `dev:local` but binds Next to `0.0.0.0`)
-- Build: `pnpm build`  (baseline: ❌ **pre-existing failure**, unrelated to app code —
-  compiles and typechecks fine, then dies prerendering Next's own `/_global-error` page with
-  `TypeError: Cannot read properties of null (reading 'useContext')`. Confirmed 2026-07-31 to
-  reproduce on a clean tree with no uncommitted work, so don't treat it as a regression from
-  your change. The honest gate is `pnpm test` + `pnpm lint` + `npx tsc --noEmit`.)
+- Build: `pnpm build`  (baseline: ✅ — and it is a real gate again. It used to die prerendering
+  Next's own `/_global-error` with `TypeError: Cannot read properties of null (reading
+  'useContext')`, which looked like an upstream bug and cost this project production builds
+  entirely. It was **`NODE_ENV=development`**: the dev container sets it, so `pnpm build` inside
+  the container built a production bundle under a dev NODE_ENV and Next's own chunks broke.
+  Next says so — `⚠ You are using a non-standard "NODE_ENV" value` — a line that scrolled past
+  above 40 lines of React key warnings. The script now pins `NODE_ENV=production` itself, so it
+  no longer depends on where it runs.)
 - **Host commands that need esbuild hop into the container automatically.** `pnpm dev` installs
   `node_modules` *inside* the Linux container and the named volume means the host sees that
   same Linux build, so `tsx` and `drizzle-kit` die on macOS with "You installed esbuild for
@@ -236,8 +239,9 @@ there is intentionally no published image and no `release` stage in the Dockerfi
 - **The workflow** runs typecheck + lint + test, verifies `drizzle/` covers the schema (it
   re-runs `db:generate` and fails if that produces anything), builds the tarball with
   `infra/release/pack.sh`, asserts the tarball carries no local state, and publishes a release
-  with three assets: `control-center-<version>.tar.gz`, `install.sh`, `SHA256SUMS`. No
-  `pnpm build` — it fails upstream (see the build note above) and releases ship the dev server.
+  with three assets: `control-center-<version>.tar.gz`, `install.sh`, `SHA256SUMS`. It also runs
+  `pnpm build`, so a release can't ship source that doesn't build — the tarball is source, and
+  the build happens on the user's machine where a failure would be theirs to discover.
 - **Shell scripts in `infra/release/` must survive bash 3.2** — that's what `/bin/sh` is on
   macOS, and it swallows a UTF-8 character placed directly after `$VAR` into the variable
   name (`$REPO…` → `REPO…: unbound variable`). It shipped in v0.1.0 and killed the installer
@@ -264,9 +268,39 @@ there is intentionally no published image and no `release` stage in the Dockerfi
   `.env`. The data directory lives outside `app/` precisely so updates can't take it with them;
   `PLATFORM_DATA_DIR` is what points the app at it (`lib/config.ts`, `lib/db`, and
   `drizzle.config.ts` all honour it, so a manual `db:push` can't create a second database).
-- **The app never updates itself.** `lib/updates.ts` + `components/UpdateBanner.tsx` only
-  *report* that a release exists. Applying it means replacing the files of the running process,
-  which is the launcher's job. This is also why there's no Docker socket anywhere.
+- **Installs run a production build, not the dev server.** `install.sh` and `control-center
+  update` run `pnpm build` (in the temp dir, so a failed build leaves the working install
+  untouched), and `start` serves it with `next start`. `start` also builds if `.next/BUILD_ID`
+  is missing — that's the marker for *production* output specifically, since a `.next` left by
+  `next dev` has none, and it's how an install updated by an older `control-center` heals
+  itself. Shipping `next dev` was a workaround for the build being thought unfixable; it cost
+  a dev-tools badge in the window and a compile pause on every first visit to a page.
+- **`update` refreshes `~/.local/bin/control-center` too.** It lives outside `app/`, so
+  replacing `app/` used to leave the command frozen at whatever version first installed it —
+  every change to ports, or to how the server starts, would reach nobody who updates. It's
+  written temp-then-`mv`, because `sh` reads a script incrementally and overwriting the running
+  file in place feeds it garbage.
+- **The dashboard binds `127.0.0.1`, on 7373 (runner 7374).** It was on every interface, so the
+  whole thing — which dispatches agents with your token against your files — was reachable from
+  the local network. The runner had it worse: `@hono/node-server` binds all interfaces when no
+  hostname is passed, and the runner has no auth of its own. Containers set `RUNNER_HOST=0.0.0.0`
+  because binding loopback *inside* a container makes Docker's published port unreachable; the
+  publish itself is 127.0.0.1-only. The ports moved off 3001/4319 so an install and the dev
+  container stop fighting over the same numbers — that clash silently pointed the Mac app at the
+  dev server.
+- **The session cookie's `Secure` flag is keyed to `CC_HTTPS`, not `NODE_ENV`.** It looks wrong
+  and isn't: the dashboard is plain http on loopback, and `Secure` on an http origin means
+  "never send this cookie" in WebKit — so the Mac app's sign-in would have broken silently the
+  moment releases switched to a production build.
+- **The app still doesn't update itself — but the banner has a button.** `POST
+  /api/updates/apply` hands the work to a **detached** `control-center update`, the same shape
+  as uninstall, because applying an update replaces the files of the process that would be
+  applying it. `CC_NO_OPEN=1`, or the restart opens a second window next to the one that asked.
+  The banner then polls `/api/updates` until the reported version *changes* — a liveness check
+  would pass instantly, since the old server is still up for a moment after the request — and
+  reloads. It refuses while a task is running unless forced (the restart ends the session, and
+  the runner fails every non-terminal task it finds on boot), and refuses in a checkout, where
+  `git pull` is the answer. Still no Docker socket anywhere.
 - **Schema migrations are automatic and run before anything serves a request.** `install.sh`
   and every `control-center start` run `runner/migrate.ts` (→ `lib/db/migrate.ts`), which
   applies the versioned SQL in `drizzle/`. Three cases it handles, all covered by
@@ -287,7 +321,7 @@ there is intentionally no published image and no `release` stage in the Dockerfi
 - Migrations are **not** wired into `pnpm dev` on purpose: dev databases here have been corrupt
   before, and a failed `VACUUM INTO` would block the dev server. Run `pnpm db:migrate` by hand
   in a checkout — the first run will adopt your existing `data/platform.db`.
-- **`control-center` env:** `CC_PORT` (3001), `CC_HOME` (`~/.control-center`),
+- **`control-center` env:** `CC_PORT` (7373), `CC_RUNNER_PORT` (7374), `CC_HOME` (`~/.control-center`),
   `CC_SKIP_UPDATE_CHECK=1`, `CC_NO_OPEN=1` (don't open a window — used by smoke tests),
   `CC_REPO` (track a fork).
 
@@ -316,6 +350,11 @@ and on demand via `control-center install-app`. It comes in two forms:
   window. Same Applications entry and icon; the *window* is Chrome's.
 
 Gotchas worth keeping:
+- **The bundle probes two ports (7373, then 3001) rather than insisting on one.** `update`
+  rebuilds the bundle from the new source but only refreshes the `control-center` command on
+  versions that know to, so for exactly one update the window and the server can disagree about
+  the port — and a bundle that insisted would sit on "Starting…" while a healthy server answered
+  next door. `CC_URL` pins it when you know better.
 - **A `WKWebView` has no file chooser of its own.** `<input type="file">` does *nothing* — no
   dialog, no error, nowhere — unless the host app implements
   `WKUIDelegate.webView(_:runOpenPanelWith:initiatedByFrame:completionHandler:)`. It shipped
@@ -337,7 +376,7 @@ Gotchas worth keeping:
 Separately, the *running* dashboard can also be installed from Chrome as a PWA — own window and
 Dock icon, same server. `control-center start` prefers that bundle if it exists. Note the install
 button lives in a **normal tab's** address bar; a `--app=` window has no menu for it.
-- **Install:** open http://localhost:3001 in Chrome → install button in the address bar (or
+- **Install:** open http://localhost:7373 in Chrome → install button in the address bar (or
   ⋮ → Cast, save, and share → Install page as app). That creates a real Mac app bundle under
   `~/Applications/Chrome Apps/` carrying the app's own icon — which is what puts Control Center
   in the Dock under its own logo. A bare `--app=` window is a Chrome window wearing Chrome's

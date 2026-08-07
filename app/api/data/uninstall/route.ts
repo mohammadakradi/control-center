@@ -1,24 +1,13 @@
 import { NextResponse } from "next/server";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { resolve } from "node:path";
 import { count, ne } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { users } from "@/lib/db/schema";
 import { LOCAL_USER_ID } from "@/lib/identity";
 import { installWideDataOpAllowed } from "@/lib/data-transfer";
+import { cliPath } from "@/lib/launcher";
 
 export const dynamic = "force-dynamic";
-
-/** The installed launcher. Absent in a dev checkout, which is why this route refuses there. */
-function cliPath(): string | null {
-  const candidates = [
-    resolve(homedir(), ".local/bin/control-center"),
-    resolve(homedir(), ".control-center/app/infra/release/control-center.sh"),
-  ];
-  return candidates.find((p) => existsSync(p)) ?? null;
-}
 
 /**
  * POST /api/data/uninstall { confirm: "UNINSTALL", purge?: boolean }

@@ -4,6 +4,20 @@ import { resolve } from "node:path";
 /** Port the runner daemon listens on. */
 export const RUNNER_PORT = Number(process.env.RUNNER_PORT ?? 4319);
 
+/**
+ * Interface the runner binds. Loopback by default — the daemon has no authentication of its own
+ * (it is meant to be reachable only through the Next.js proxy routes, which do the auth), so a
+ * default of "every interface" put task dispatch on the local network. It was one: @hono/node-server
+ * binds all interfaces when no hostname is given.
+ *
+ * `RUNNER_HOST=0.0.0.0` is for containers only, where binding loopback *inside* the container
+ * would make Docker's published port unreachable. Compose sets it, and publishes to 127.0.0.1.
+ */
+export function runnerHost(value = process.env.RUNNER_HOST): string {
+  return value?.trim() || "127.0.0.1";
+}
+export const RUNNER_HOST = runnerHost();
+
 /** Base URL the Next.js server uses to reach the daemon. Server-side only — the
  *  browser goes through the authenticated /api/tasks/[id]/* proxy routes. */
 export const RUNNER_URL =
