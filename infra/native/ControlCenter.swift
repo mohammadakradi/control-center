@@ -43,14 +43,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         // Match the dashboard's own light/dark handling rather than forcing one.
         webView.setValue(false, forKey: "drawsBackground")
 
+        // A plain titled window, deliberately: `.fullSizeContentView` + a transparent titlebar
+        // put the web content *under* the traffic lights, which left the dashboard's own header
+        // crammed against them and reduced the drag handle to the same sliver of pixels the
+        // window buttons sit in. The webview is the whole content view, and WebKit consumes the
+        // mouse everywhere it draws, so the titlebar is the only reliable place to grab. Giving
+        // it back its own strip is what makes the window movable — and is the gap between the
+        // Mac chrome and the app's name.
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Agent Control Center"
-        window.titlebarAppearsTransparent = true
         window.contentView = webView
         window.minSize = NSSize(width: 720, height: 480)
         // Remembers size and position between launches, like any Mac app.
