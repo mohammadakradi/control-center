@@ -84,6 +84,13 @@ info "prebuilt SQLite binary for your platform)…"
 (cd "$tmp/app" && npx --yes "pnpm@${CC_PNPM_VERSION:-9.12.1}" install --frozen-lockfile) ||
   die "dependency install failed."
 
+# Build once, here, rather than compiling every page on demand forever. This is what lets the
+# app run `next start` instead of `next dev` — no dev tooling in the window, no first-visit
+# compile pause. It happens in the temp dir, so a failed build never replaces a working install.
+info "Building the app (one minute, once)…"
+(cd "$tmp/app" && NODE_ENV=production ./node_modules/.bin/next build) ||
+  die "build failed."
+
 # ── place it ────────────────────────────────────────────────────────────────────────────
 mkdir -p "$CC_HOME/data" "$CC_HOME/logs" "$CC_HOME/run"
 if [ -d "$CC_HOME/app" ]; then

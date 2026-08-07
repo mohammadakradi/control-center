@@ -61,7 +61,12 @@ export async function createSession(userId: string): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    // NOT keyed to NODE_ENV, which is what it looks like it should be: the dashboard is served
+    // over plain http on loopback, and `Secure` on an http origin means "never send this
+    // cookie" in WebKit — and the Mac app is a WKWebView, so sign-in would silently stop
+    // working the moment releases switched to a production build. There is no transport to
+    // protect on 127.0.0.1; set CC_HTTPS=1 if you actually front the app with TLS.
+    secure: process.env.CC_HTTPS === "1",
     sameSite: "lax",
     path: "/",
     expires: expiresAt,

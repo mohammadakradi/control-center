@@ -51,9 +51,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$pkg" >> "$GITHUB_OUTPUT"
 
-      # Gates. `pnpm build` is deliberately absent: it fails on this Next version while
-      # prerendering Next's own /_global-error page, and releases ship the dev server. See
-      # CLAUDE.md. Adding it here would block every release on an upstream bug.
+      # Gates.
       - name: Install dependencies
         run: npx --yes pnpm@9.12.1 install --frozen-lockfile
 
@@ -65,6 +63,11 @@ jobs:
 
       - name: Test
         run: npx --yes pnpm@9.12.1 test
+
+      # The tarball ships source and every install builds it, so a build break would surface
+      # on the user's machine, mid-update, with the old app already stopped. Fail here instead.
+      - name: Build
+        run: npx --yes pnpm@9.12.1 build
 
       # An installed app upgrades by running the SQL files in drizzle/. If the schema changed
       # without a matching migration, that release would start against a database it can't
@@ -136,7 +139,8 @@ jobs:
           cat > dist/notes.md <<NOTES
           ## Install
 
-          Requires **Node.js 22+**. No Docker, no clone, no build.
+          Requires **Node.js 22+**. No Docker, no clone. The installer builds the app once
+          (about a minute) so it runs as a production build rather than a dev server.
 
           \`\`\`sh
           curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh -o install.sh
