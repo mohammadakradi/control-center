@@ -98,6 +98,32 @@ deliberately not a `TaskList`**: it reads a narrow `TaskSpend` projection (no st
 no tokens), is ranked by cost rather than time, and leads with the cost figure. It shares
 `taskDisplayTitle()` so an untitled task is named the same way, and nothing else.
 
+## `/tasks` — the cross-project task page (2026-08-11)
+`app/(app)/tasks/page.tsx` sits *beside* the existing `[id]/` route in the same folder, so the
+nav entry and the task detail page share a prefix — which is what `isActive` wants
+(`startsWith`), so `/tasks/<id>` keeps Tasks lit. Server component, one `ownedBy()` query,
+grouped in JS by `projectId`; because the query is already `desc(createdAt)`, plain `Map`
+insertion order puts the most recently active project first, no second sort.
+
+Three decisions worth not relitigating:
+- **Unfiltered groups cap at 8 rows and *disclose* the remainder** ("6 older tasks in this
+  project — show all"); filtering to one project lifts the cap entirely. A project with years
+  of history would otherwise bury every other project on a page whose whole job is the view
+  *across* projects — and once you've asked for one project, capping it is just an obstacle
+  (project detail is uncapped too). Same "disclose, never truncate silently" rule as
+  `ProjectSpendCard`.
+- **A stale `?project=` keeps the filter bar and shows a recoverable empty state**, rather
+  than silently falling back to everything. The lenient-parse rule from `/usage` applies to
+  *malformed* input (an array from a repeated param, an empty string) — but an id that simply
+  matches nothing is a real, answerable question, and silently showing all projects would look
+  like the filter is broken.
+- **Only projects with ≥1 task appear in the filter.** Tasks are per-owner while projects are
+  shared, so on a shared install most projects legitimately have none of *your* runs; offering
+  them is offering a guaranteed-empty list.
+
+Verified against a seeded throwaway DB including a task owned by a second user — it does not
+appear, which is the `ownedBy()` contract holding at the one place that could leak history.
+
 ## Verifying a page: `next start` on a throwaway DB, not a second `next dev`
 The documented recipe (`PLATFORM_DB=/tmp/x.db npx next dev --port 3099`) **dies when the dev
 container is already running** — two `next dev` processes fight over `.next/`, and the second

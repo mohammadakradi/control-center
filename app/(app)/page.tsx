@@ -1,13 +1,7 @@
 import Link from "next/link";
 import { desc } from "drizzle-orm";
 import type { ReactNode } from "react";
-import {
-  Activity,
-  ArrowRight,
-  Boxes,
-  FolderGit2,
-  ListChecks,
-} from "lucide-react";
+import { Activity, Boxes, FolderGit2, ListChecks } from "lucide-react";
 import { db } from "@/lib/db";
 import { projects, tasks } from "@/lib/db/schema";
 import { syncAgents } from "@/lib/discovery/agents";
@@ -15,7 +9,7 @@ import { Avatar } from "@/components/AgentAvatar";
 import { AgentContributors } from "@/components/AgentContributors";
 import { TaskList } from "@/components/TaskList";
 import { TokenNudge } from "@/components/TokenNudge";
-import { card, CardSection, PageHeader } from "@/components/ui-cards";
+import { card, CardSection, PageHeader, ViewAll } from "@/components/ui-cards";
 import { getCurrentUser } from "@/lib/auth";
 import { ownedBy } from "@/lib/task-access";
 import { ACTIVE_STATUSES } from "@/lib/ui";
@@ -166,8 +160,9 @@ export default async function Dashboard() {
       </div>
 
       {/* Recent activity — same rows as project detail and agent detail, plus the project
-          each task ran in, since this list spans all of them. */}
-      <CardSection title="Recent activity">
+          each task ran in, since this list spans all of them. Only the 8 most recent, so it
+          points at `/tasks` for the rest. */}
+      <CardSection title="Recent activity" right={<ViewAll href="/tasks" />}>
         <TaskList
           history={recent}
           namespaceById={namespaceById}
@@ -214,18 +209,6 @@ function Stat({
     </Link>
   ) : (
     <div className={cls}>{body}</div>
-  );
-}
-
-/** `CardSection` header link through to the full list. */
-function ViewAll({ href }: { href: string }) {
-  return (
-    <Link
-      href={href}
-      className="inline-flex items-center gap-1 text-xs text-accent hover:text-accent-hover"
-    >
-      View all <ArrowRight className="size-3.5" aria-hidden="true" />
-    </Link>
   );
 }
 

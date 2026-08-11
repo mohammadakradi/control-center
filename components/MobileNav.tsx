@@ -60,9 +60,11 @@ export function MobileTabBar() {
             }`}
           >
             <Icon className="size-5 shrink-0" aria-hidden="true" />
-            {/* Five tabs at 320px leave ~64px each — a hair over "Dashboard". Truncating
-                keeps the bar inside the viewport instead of scrolling it sideways; the
-                full label is still the link's accessible name. */}
+            {/* Six tabs at 320px leave ~53px each, so the longest labels ellipsize there
+                (they fit from ~390px up). Truncating keeps the bar inside the viewport
+                instead of scrolling it sideways, and the full label is still the link's
+                accessible name — but six is the ceiling: a seventh needs a real overflow
+                affordance, not a shorter word. See `nav-links.tsx`. */}
             <span className="max-w-full truncate">{label}</span>
           </Link>
         );

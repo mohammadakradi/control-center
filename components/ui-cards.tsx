@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
+import { ArrowRight } from "lucide-react";
 
 /** Shared card surface used across detail pages. */
 export const card = "rounded-2xl border border-line bg-surface p-6";
@@ -77,6 +79,26 @@ export function CardSection({
       </div>
       {children}
     </section>
+  );
+}
+
+/** The "there is more of this elsewhere" link for a `CardSection` header — a truncated or
+ *  capped list points at the page that holds the whole thing. Lives here rather than in a
+ *  page because the dashboard and the Tasks page both head sections with it. */
+export function ViewAll({
+  href,
+  children = "View all",
+}: {
+  href: string;
+  children?: ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      className="inline-flex items-center gap-1 text-xs text-accent hover:text-accent-hover"
+    >
+      {children} <ArrowRight className="size-3.5" aria-hidden="true" />
+    </Link>
   );
 }
 
