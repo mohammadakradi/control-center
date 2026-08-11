@@ -19,7 +19,12 @@ import { TaskLiveView } from "@/components/TaskLiveView";
 import { RunDuration } from "@/components/RunDuration";
 import { UsageBreakdown } from "@/components/UsageDisplay";
 import { Chip } from "@/components/ui-cards";
-import { ACTIVE_STATUSES, MODEL_DISPLAY, timeAgo } from "@/lib/ui";
+import {
+  ACTIVE_STATUSES,
+  MODEL_DISPLAY,
+  taskDisplayTitle,
+  timeAgo,
+} from "@/lib/ui";
 import { taskUsage } from "@/lib/usage-format";
 
 export const dynamic = "force-dynamic";
@@ -69,7 +74,9 @@ export default async function TaskPage({
         {agent && <Avatar namespace={agent.namespace} size={56} />}
         <div className="min-w-0">
           <h1 className="text-xl font-semibold tracking-tight wrap-break-word text-fg-strong sm:text-2xl">
-            {task.title || task.requestText || `/${agent?.namespace ?? "?"}:${task.command}`}
+            {/* Last resort is the command itself — unlike a list row, this heading has no
+                other cell naming the task. */}
+            {taskDisplayTitle(task) ?? `/${agent?.namespace ?? "?"}:${task.command}`}
           </h1>
           <p className="mt-1 font-mono text-sm text-accent">
             /{agent?.namespace ?? "?"}:{task.command}

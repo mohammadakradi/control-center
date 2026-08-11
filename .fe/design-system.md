@@ -38,7 +38,9 @@ _Maintained by the fe-agent · source of truth for tokens & reusable components 
 | `text-fg-ghost` | **Decorative only** (icons, markers) — below AA | `#8e8e98` | `#6e6e76` |
 
 Everything down to `fg-faint` clears **WCAG AA (4.5:1)** on `surface`, `surface-2`, and
-`canvas`. `fg-ghost` does not — never use it for text a user must read.
+`canvas`. `fg-ghost` does not — never use it for text a user must read. (Task rows broke this
+twice: the `v0.4.0` version label and the "no description" fallback both used `fg-ghost` and
+now use `fg-faint`. `fg-ghost` is for icons and markers.)
 
 ### Accent & focus
 | Utility | Role | Light | Dark |
@@ -121,7 +123,8 @@ keeps the width correct on first paint instead of flashing after hydration.
 | `CardSection` | `components/ui-cards.tsx` | `title`, `right?`, `className?` | `card` + header row (title + optional right slot); has built-in `min-w-0` so it shrinks inside grid/flex parents. Use instead of hand-rolling `<section className={card}><h2>…</h2>` |
 | `AtAGlance` | `components/AtAGlance.tsx` | `total`, `successRate`, `inProgress`, `changedFiles`, `isWorkspace`, `memberCount`, `branchInfo`, `aheadBehind` | Project summary card (stats + git/workspace facts) |
 | `SourceControl` | `components/SourceControl.tsx` | `projectId`, `isWorkspace`, `members`, `branchInfo`, `changes` | Project source-control card; delegates to `WorkspaceSourceControl` or `GitControls`+`ChangesList` |
-| `TaskHistory` | `components/TaskHistory.tsx` | `history`, `namespaceById`, `className?` | Reverse-chron task list; rows wrap, request text truncates |
+| `TaskList` | `components/TaskList.tsx` | `history: TaskRow[]`, `namespaceById`, `projectNameById?`, `emptyMessage?` | **The** task-*history* row: project detail (via `TaskHistory`), dashboard recent activity, agent detail recent runs. (`UsageSummaryCard`'s "Most expensive runs" stays separate on purpose — it's a cost ranking over a narrow `TaskSpend` projection with no status or agent, so it has no badge and leads with cost. It shares the *naming* rule via `taskDisplayTitle()`, not the markup.) **Title-first** — `taskDisplayTitle()` from `lib/ui.ts` prefers `tasks.title` and falls back to `requestText`, then "no description". Row: `/ns:cmd` + version · name (`flex-1 truncate`, visible at every width) · project cell (only when `projectNameById` is passed) · cost + time-ago (`sm+`) · `StatusBadge`. Renders its own empty state; **no card shell** — the hosts head their cards differently, so wrap it in `CardSection`. Slicing is the caller's job. |
+| `TaskHistory` | `components/TaskHistory.tsx` | `history`, `namespaceById`, `className?` | Project detail's "Task history" card: `CardSection` + run count around `TaskList`, with the project cell omitted (every row belongs to the project on screen). |
 | `Chip` | `components/ui-cards.tsx` | `tone: neutral\|ok\|violet\|sky`, `icon?` | Pill badge for metadata/tags; tones map to the semantic tone tokens |
 | `Tile` | `components/ui-cards.tsx` | `value`, `label`, `tone?: ok` | Stat tile (number + label) |
 | `Fact` | `components/ui-cards.tsx` | `icon`, `tag?`, `tagTone?: neutral\|ok\|warn` | Row in a facts list (bordered top) |

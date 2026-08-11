@@ -13,9 +13,8 @@ import {
 import { db } from "@/lib/db";
 import { agents, projectAgents, projects, tasks } from "@/lib/db/schema";
 import { Avatar } from "@/components/AgentAvatar";
-import { StatusBadge } from "@/components/StatusBadge";
-import { card, Chip, Fact, Tile } from "@/components/ui-cards";
-import { timeAgo } from "@/lib/ui";
+import { TaskList } from "@/components/TaskList";
+import { card, CardSection, Chip, Fact, Tile } from "@/components/ui-cards";
 
 export const dynamic = "force-dynamic";
 
@@ -57,6 +56,11 @@ export default async function AgentDetail({
     .where(and(eq(tasks.agentId, id), ownedBy(user.id)))
     .orderBy(desc(tasks.createdAt))
     .all();
+
+  // project id → name for the run rows; the join above already carries every project
+  // this agent has run in.
+  const projectNameById: Record<string, string> = {};
+  for (const r of runs) projectNameById[r.task.projectId] = r.project.name;
 
   const done = runs.filter((r) => r.task.status === "done").length;
   const successRate = runs.length ? Math.round((done / runs.length) * 100) : 0;
@@ -103,10 +107,12 @@ export default async function AgentDetail({
         </p>
       )}
 
-      <div className="mt-6 grid gap-5 lg:grid-cols-2">
+      <div className="mt-6 grid grid-cols-1 gap-5 lg:grid-cols-2">
         {/* At a glance */}
         <section className={card}>
-          <h2 className="mb-4 text-base font-semibold">At a glance</h2>
+          {/* `text-fg-strong` matches what `CardSection` gives the "Recent runs" heading
+              below, so the four card headings on this page stay one weight. */}
+          <h2 className="mb-4 text-base font-semibold text-fg-strong">At a glance</h2>
           <div className="grid grid-cols-2 gap-3">
             <Tile value={String(agent.commands.length)} label="Commands" />
             <Tile value={String(connected.length)} label="Projects" />
@@ -132,7 +138,9 @@ export default async function AgentDetail({
         {/* Connected projects */}
         <section className={card}>
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-base font-semibold">Connected projects</h2>
+            <h2 className="text-base font-semibold text-fg-strong">
+              Connected projects
+            </h2>
             <span className="text-xs text-fg-faint">{connected.length}</span>
           </div>
           {connected.length === 0 ? (
@@ -164,7 +172,7 @@ export default async function AgentDetail({
 
         {/* Commands */}
         <section className={`${card} lg:col-span-2`}>
-          <h2 className="mb-4 inline-flex items-center gap-2 text-base font-semibold">
+          <h2 className="mb-4 inline-flex items-center gap-2 text-base font-semibold text-fg-strong">
             <SquareTerminal className="size-4 text-fg-faint" />
             Commands
           </h2>
@@ -192,51 +200,24 @@ export default async function AgentDetail({
           </div>
         </section>
 
-        {/* Recent runs */}
-        <section className={`${card} lg:col-span-2`}>
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-base font-semibold">Recent runs</h2>
+        {/* Recent runs — the shared rows; the project cell earns its place here because one
+            agent's runs span projects. Capped at 10 while the header counts them all. */}
+        <CardSection
+          title="Recent runs"
+          className="lg:col-span-2"
+          right={
             <span className="text-xs text-fg-faint">
-              {runs.length} run{runs.length === 1 ? "" : "s"}
+              {`${runs.length} run${runs.length === 1 ? "" : "s"}`}
             </span>
-          </div>
-          {runs.length === 0 ? (
-            <p className="py-4 text-sm text-fg-subtle">
-              This agent hasn&apos;t run any tasks yet.
-            </p>
-          ) : (
-            <ul>
-              {runs.slice(0, 10).map(({ task, project }) => (
-                <li
-                  key={task.id}
-                  className="border-t border-line first:border-t-0"
-                >
-                  <Link
-                    href={`/tasks/${task.id}`}
-                    className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg px-2 py-3 hover:bg-hover"
-                  >
-                    <span className="min-w-28 shrink-0 font-mono text-sm text-accent">
-                      /{agent.namespace}:{task.command}
-                    </span>
-                    <span className="hidden min-w-0 flex-1 truncate text-sm text-fg-subtle sm:block">
-                      {task.requestText || (
-                        <span className="text-fg-ghost">no description</span>
-                      )}
-                    </span>
-                    <span className="inline-flex min-w-0 shrink items-center gap-1.5 text-xs text-fg-faint">
-                      <FolderGit2 className="size-3.5 shrink-0" />
-                      <span className="truncate">{project.name}</span>
-                    </span>
-                    <span className="hidden shrink-0 text-xs text-fg-faint md:block">
-                      {timeAgo(task.createdAt)}
-                    </span>
-                    <StatusBadge status={task.status} />
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+          }
+        >
+          <TaskList
+            history={runs.slice(0, 10).map((r) => r.task)}
+            namespaceById={{ [agent.id]: agent.namespace }}
+            projectNameById={projectNameById}
+            emptyMessage="This agent hasn't run any tasks yet."
+          />
+        </CardSection>
       </div>
     </div>
   );

@@ -79,6 +79,38 @@ curl the pages. Fully isolated, and you can seed tasks/spend freely to see popul
 ## Verifying rendered pages without a browser
 There's no Playwright/Puppeteer here. To check real markup: mint a session row directly (`sessions.id = sha256(token)`, see `lib/auth.ts`), `curl -H "Cookie: session=<token>" http://localhost:3001/…`, inspect the HTML, then delete the session row. Client-only branches still render, because App Router SSRs client components — temporarily seeding a `useState` initial value is enough to see them.
 
+## One task row for the whole app — `components/TaskList.tsx` (2026-08-11)
+Task rows had drifted into three implementations, and two of them rendered `requestText`
+while `tasks.title` (generated at dispatch) sat unused — so the same history read as prose on
+the dashboard and as an intent on project detail. `TaskList` is now the only task row;
+`TaskHistory` is a `CardSection` wrapper around it. **Add a task list by composing
+`CardSection` + `TaskList`, never by writing row markup.** The fallback chain lives in
+`taskDisplayTitle()` (`lib/ui.ts`, unit-tested in `lib/ui.test.ts`) precisely because
+inlining it is what let two call sites drop the title; the task detail `<h1>` uses it too.
+The card shell stays out of `TaskList` — the three hosts head their cards differently
+("Task history" + count, "Recent activity", "Recent runs" + count).
+
+Two things reviewers have asked about, so they're settled here: **`v<version>` shows on every
+row, including agent detail** where the agent is the same for all of them — because
+`tasks.agent_version` is a per-run *snapshot* and an agent can be updated between runs, so the
+column genuinely varies down the list. And **`UsageSummaryCard`'s "Most expensive runs" is
+deliberately not a `TaskList`**: it reads a narrow `TaskSpend` projection (no status, no agent,
+no tokens), is ranked by cost rather than time, and leads with the cost figure. It shares
+`taskDisplayTitle()` so an untitled task is named the same way, and nothing else.
+
+## Verifying a page: `next start` on a throwaway DB, not a second `next dev`
+The documented recipe (`PLATFORM_DB=/tmp/x.db npx next dev --port 3099`) **dies when the dev
+container is already running** — two `next dev` processes fight over `.next/`, and the second
+exits silently, so you get connection-refused and no error anywhere. Use the production build
+instead: `pnpm build` once, then
+`docker exec -d platform sh -c 'PLATFORM_DB=/tmp/x.db npx next start -H 0.0.0.0 -p 3099 > /tmp/log 2>&1'`
+and curl from inside the container. `next start` only reads `.next`, so it can't disturb the
+dev server, and it's what installs actually run. Two container gotchas: **`ps`, `pkill` and
+`kill` don't exist** in the image (walk `/proc/*/cmdline` and use the shell builtin via
+`sh -c 'kill <pid>'`), and no session cookie is needed at all — `getCurrentUser()` inserts and
+returns `user_local` when there's no session, so seeding tasks with `user_id = 'user_local'`
+makes them visible.
+
 ## Component library: bespoke only
 No shadcn/ui, Radix, or MUI. All components are handbuilt. Reuse `Chip`, `Tile`, `Fact`, `card`, `CardSection`, `PageHeader`, `EmptyState` (from `ui-cards.tsx`), `StatusBadge`, and the `components/ui/` primitives before writing new ones.
 

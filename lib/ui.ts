@@ -65,6 +65,26 @@ export function timeAgo(ts: number | Date | null | undefined): string {
 }
 
 /**
+ * What to call a task in the UI: its generated title, else the raw request it was
+ * dispatched with, else nothing.
+ *
+ * `tasks.title` is a short human-readable name generated at dispatch (`schema.ts`), so it
+ * is what makes history scannable by intent; `requestText` is the whole prose request and
+ * only a fallback for tasks that predate titling or whose generation failed. Both can be
+ * empty. Callers own the last resort — a list row already shows `/namespace:command`
+ * beside the name, while the task page falls back *to* that command string.
+ *
+ * One definition on purpose: this chain was previously inlined at three call sites and two
+ * of them had silently dropped the title.
+ */
+export function taskDisplayTitle(task: {
+  title?: string | null;
+  requestText?: string | null;
+}): string | null {
+  return task.title?.trim() || task.requestText?.trim() || null;
+}
+
+/**
  * Whether a change/audit report surfaces actionable findings or recommendations
  * worth spinning up a fix task. Completion reports ("Committed… complete") and
  * all-clear audits ("Nothing blocking") return false, so the "Create fix task"

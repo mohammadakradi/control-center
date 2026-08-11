@@ -12,7 +12,7 @@ import {
   rangeLabel,
   totalTokens,
 } from "@/lib/usage-format";
-import { timeAgo } from "@/lib/ui";
+import { taskDisplayTitle, timeAgo } from "@/lib/ui";
 
 /**
  * The signed-in user's own spend, from the totals recorded on each task.
@@ -112,8 +112,12 @@ export function UsageSummaryCard({ spend }: { spend: SpendSummary }) {
                       href={`/tasks/${t.id}`}
                       className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg px-2 py-2.5 hover:bg-hover"
                     >
+                      {/* Named the same way as every other task list (`taskDisplayTitle`),
+                          falling back to the command only when there is nothing else — this
+                          row is a cost ranking, so it keeps its own shape, but an untitled
+                          task must not read differently here than it does on the dashboard. */}
                       <span className="min-w-0 flex-1 truncate text-sm text-fg">
-                        {t.title || (
+                        {taskDisplayTitle(t) ?? (
                           <span className="font-mono text-accent">/{t.command}</span>
                         )}
                       </span>
