@@ -193,6 +193,78 @@ wondering why a rebuilt page still renders the old markup (this cost me a round 
 button kept rendering at its pre-fix size). Match `*next-server*` as well — and take care not to
 kill the container's own dev server, which is the low-PID one of the same name.
 
+## The activity badge — chrome that takes a row, not a floating corner (2026-08-12)
+`ActivityBadge` is the app's only global sign that agents are working. Four decisions in it are
+the ones worth not relitigating:
+
+- **It gets its own sticky row above `<main>`, not `position: fixed` in the corner.** The spec
+  asked for a fixed top-right element; measured against the real pages, that lands on top of
+  `PageHeader`'s `actions` — `/usage`'s `SpendRangeNav` and `/backlog`'s "Add item" — at every
+  width from `md` up, and badly at 768px, where the content column fills its track and there is
+  no right gutter to float in. The row is `sticky top-0 z-30` and carries **no vertical padding
+  of its own** (the pill supplies `my-2`), so with the badge rendering `null` the row collapses
+  to 0px and an idle app is the layout it was before. Cost, accepted: ~48px of content shift
+  when a run starts and again when it ends — the same behaviour `UpdateBanner` already has, and
+  strictly better than covering a control. Below `md` there is no row at all; the badge goes in
+  `MobileTopBar`, because a phone can't spare a second strip of chrome.
+- **Two mounts, one poll.** The desktop strip and the mobile bar are both mounted (CSS decides
+  which is visible), so two `useEffect` pollers would double the request rate to show the same
+  number. `lib/active-tasks.ts` is a module-level store read through `useSyncExternalStore` —
+  the `lib/sidebar.ts` shape — with polling ref-counted to the subscriber set and paused on
+  `document.hidden`. `sameActiveState()` is what stops a re-render every 5s when nothing moved.
+- **A dedicated `GET /api/tasks/active`, not a poll of `GET /api/tasks`.** The latter answers
+  with every column of every task you own: 106 rows / ~150 KB here, growing for the life of the
+  install, from the process that also serves the SSE transcript streams. At 5s that's ~30 KB/s
+  forever to render a number. The new route is `ownedBy`-scoped, filters on the shared
+  `ACTIVE_STATUSES`, and returns five short fields per active run.
+- **The pill is `bg-surface` + `border-warn-line`, not `bg-warn-soft`.** `--warn-soft` is
+  `rgb(245 158 11 / .15)` in dark mode — translucent — and this element floats over scrolling
+  page content. Any *floating* element in this app needs an opaque surface token; let the border
+  and text carry the tone. Worth remembering before reaching for a `*-soft` background again.
+
+**A self-rescheduling poll must `clearTimeout`, never just drop the handle.** `tick()` first
+did `timer = null` at its entry. Hide the tab *during* an in-flight poll and the hidden branch
+found `timer` already null, so its clear was a no-op; the resolving tick then scheduled a fresh
+timeout while still hidden, and the catch-up tick on return orphaned that timeout instead of
+cancelling it — so when it fired, the app had **two** interleaved tick→schedule chains, each
+rescheduling forever. The poll rate doubles, compounds with every further hide/show, and
+nothing on screen looks wrong. Fixed by clearing at entry and refusing to schedule while
+hidden; `lib/active-tasks.test.ts` stubs `document`/`fetch` with `mock.timers` and asserts
+**exactly one request per interval**, which is the only way this class of bug is visible.
+
+**Closing a popover on navigation is a render-time state reset, not a derived value.** The
+first shape derived `open` from `openedAt.path === pathname`. It closed on the way out but
+never *cleared*, so returning to the page it was opened on — Back button, or clicking that nav
+entry again — popped it open again with nobody having touched it. The fix is React's documented
+"adjust state when something changes" pattern (`if (shownFor !== pathname) { setShownFor(...);
+setOpenState(null) }` in the render body), which is explicitly **not** the forbidden `setState`
+in an effect. Both of these were blocking findings from the frontend auditor.
+
+**Say "in progress", not "running".** `ACTIVE_STATUSES` includes `queued` and the two
+`awaiting_*` gates — states where nothing is running and *you* are the hold-up — and the
+dashboard stat tile and `AtAGlance` have always called this set "In progress". The badge said
+"running" and the design reviewer called it drift. A test pins the word.
+
+And **the popover survives its own count reaching zero while open**: unmounting mid-interaction
+would drop keyboard focus to `<body>`, the same failure mode as disabling a focused button (see
+the backlog note), so it stays and says "Nothing in progress now" until the user closes it.
+
+**Put the accessible name in the markup, not in an `aria-label`.** The pill's word is
+`sr-only sm:not-sr-only` (the `MobileTabBar` trick) rather than `hidden sm:inline`, so the name
+is "2 in progress" at *every* width and WCAG 2.5.3 Label in Name holds by construction. With an
+`aria-label` it held only while two separate strings happened to agree — and `display:none`
+would have dropped the word from the name entirely below `sm`, leaving a button called "2".
+
+One knock-on: adding the badge to `MobileTopBar` pushed that row over its width budget at
+320px, so the brand link is now `min-w-0` + `truncate` and the icon cluster `shrink-0`. The
+brand is what gives; the controls aren't allowed to.
+
+Verified against a throwaway DB (`next start` recipe below) seeded with queued /
+awaiting_proposal / building runs, a finished one, and **one owned by a second user** — the API
+returns 3 and omits the other user's, which is the `ownedBy()` contract holding on a route that
+is polled from every page. Markup was inspected by temporarily seeding
+`getServerActiveTasksSnapshot()` + the open state, since the badge SSRs to `null` by design.
+
 ## Component library: bespoke only
 No shadcn/ui, Radix, or MUI. All components are handbuilt. Reuse `Chip`, `Tile`, `Fact`, `card`, `CardSection`, `PageHeader`, `EmptyState` (from `ui-cards.tsx`), `StatusBadge`, and the `components/ui/` primitives before writing new ones.
 

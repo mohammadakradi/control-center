@@ -6,22 +6,26 @@ import { LogIn } from "lucide-react";
 import { ThemeToggleIcon } from "@/components/ThemeToggle";
 import { NAV_LINKS, isActive } from "@/components/nav-links";
 import { SignOutButton } from "@/components/SignOutButton";
+import { ActivityBadge } from "@/components/ActivityBadge";
 
 /** Slim mobile header — carries the brand and the theme control, which live in
  *  the sidebar footer on desktop. Hidden from `md` up. */
 export function MobileTopBar({ userEmail }: { userEmail?: string }) {
   return (
     <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-line bg-canvas/80 px-4 backdrop-blur md:hidden">
+      {/* `min-w-0` + `truncate`: at 320px the brand and the icon cluster together want more
+          than the bar has, and the activity badge (which only appears while work is in
+          flight) is what tips it over. The brand is what gives, not the controls. */}
       <Link
         href="/"
         aria-label="Agent Control Center — dashboard"
-        className="flex items-center gap-2 font-semibold tracking-tight text-fg-strong"
+        className="flex min-w-0 items-center gap-2 font-semibold tracking-tight text-fg-strong"
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/logo.svg" alt="" width={22} height={22} aria-hidden="true" />
-        Agent Control Center
+        <span className="truncate">Agent Control Center</span>
       </Link>
-      <div className="flex items-center gap-1">
+      <div className="flex shrink-0 items-center gap-1">
         <ThemeToggleIcon />
         {userEmail ? (
           <SignOutButton iconOnly className="p-2" />
@@ -34,6 +38,10 @@ export function MobileTopBar({ userEmail }: { userEmail?: string }) {
             <LogIn className="size-4" aria-hidden="true" />
           </Link>
         )}
+        {/* Last in the row on purpose: its popover is anchored to its own right edge, so any
+            icon after it would push the panel left by that much and a 320px screen has none
+            to give. Renders nothing while nothing is running. */}
+        <ActivityBadge />
       </div>
     </header>
   );
