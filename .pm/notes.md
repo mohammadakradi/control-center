@@ -38,6 +38,22 @@ planning decision. Keep entries short and accurate.
   deliberately NO pm-agent changes, (2) an `add_backlog_item` MCP tool on the runner's
   existing in-process `swe-platform` server, (3) manual UI add; run-from-backlog reuses the
   `FileModal.createTask` dispatch shape and stores `linkedTaskId`.
+- 2026-08-12 — planned a fix for `control-center update`/`install.sh` failing mid-build with
+  `SqliteError: database is locked` (`.pm/tasks/20260812-191427-fix-update-build-sqlite-lock/`,
+  3 tasks). Root cause: `lib/db/index.ts` opens SQLite at module load with no `busy_timeout`;
+  ~33 files import `lib/db`, and Next's "Collecting page data" build phase evaluates them
+  across parallel workers that race to create/WAL-convert the same brand-new file in the temp
+  build dir both `install.sh` and `apply_update()` (`control-center.sh`) use. Fix: add a
+  busy_timeout pragma. Also confirmed two developer-reported hardening gaps in the same
+  pipeline: (1) Turbopack auto-infers its project root from the nearest ancestor lockfile, and
+  these builds run deep under `$HOME` — a stray lockfile there could silently mis-trace the
+  build; fix is pinning `turbopack.root` in `next.config.ts`. (2) `running()`/`status` in
+  `control-center.sh` only checks the `web` pid, never `runner` — can misreport a live runner
+  as stopped and let `cmd_start` double-spawn. Explicitly did **not** adopt the suggestion to
+  have the installer stop a running instance before building: `apply_update()`'s build writes
+  to a temp-dir database distinct from the production one, so stopping first wouldn't fix this
+  bug and would regress the deliberate build-before-swap (fail-safe, zero-downtime) ordering —
+  flagged this reasoning back to the user rather than applying it as-is.
 
 ## Constraints & conventions
 <!-- stacks present, who owns what, non-obvious rules to respect when planning -->
