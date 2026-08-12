@@ -6,6 +6,9 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+// Type-only (erased at runtime): the backlog's assignee is the same "which agent takes this"
+// choice a pm spec expresses, so it stays one union rather than two that can drift.
+import type { SpecAssignee } from "../pm-spec";
 
 /** A registered account. */
 export const users = sqliteTable(
@@ -114,6 +117,13 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 
+/** Statuses a task never leaves. Anything else means a session is (or should be) alive. */
+export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = [
+  "done",
+  "failed",
+  "cancelled",
+];
+
 /** A dispatched task / agent run. */
 export const tasks = sqliteTable("tasks", {
   id: text("id").primaryKey(),
@@ -165,6 +175,58 @@ export const tasks = sqliteTable("tasks", {
   endedAt: integer("ended_at", { mode: "timestamp" }),
 });
 
+export type BacklogStatus = "todo" | "in_progress" | "done" | "cancelled";
+
+/** How an item got here. `pm-sync` items mirror a file on disk; the other two are typed in. */
+export type BacklogSource = "pm-sync" | "agent" | "manual";
+
+/**
+ * A planned piece of work on a project — the durable queue the pm agent's `.pm/tasks/` specs
+ * land in, plus anything a user or an agent adds by hand.
+ *
+ * Project-scoped and shared, like the project itself: a backlog describes a folder on the
+ * device, not one person's view of it. The *task* an item dispatches is still private to
+ * whoever ran it (see lib/task-access.ts).
+ */
+export const backlogItems = sqliteTable(
+  "backlog_items",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    // The body handed to the agent when the item is run. For a synced spec that's the
+    // markdown file verbatim, so a run doesn't depend on the file still being readable.
+    description: text("description").notNull().default(""),
+    assignee: text("assignee").$type<SpecAssignee>(), // null → derived at dispatch
+    status: text("status").notNull().$type<BacklogStatus>().default("todo"),
+    priority: text("priority"), // free-form, as the spec frontmatter writes it (e.g. "P1")
+    // Project-relative path of the `.pm/tasks/` spec this mirrors. Unique per project so sync
+    // is idempotent; null for hand-added items (SQLite treats NULLs as distinct in a unique
+    // index, so any number of them coexist).
+    sourcePath: text("source_path"),
+    source: text("source").notNull().$type<BacklogSource>().default("manual"),
+    // The task most recently dispatched from this item. `set null` so deleting a task's
+    // history doesn't take the backlog item with it.
+    linkedTaskId: text("linked_task_id").references(() => tasks.id, {
+      onDelete: "set null",
+    }),
+    // Set once a human has chosen this status explicitly. Sync and the linked-task
+    // reflection both refuse to move an item after that — a manual call always wins.
+    statusOverride: integer("status_override", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+    updatedAt: integer("updated_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => [uniqueIndex("backlog_source_path_unq").on(t.projectId, t.sourcePath)],
+);
+
 export type TaskEventType =
   | "message"
   | "partial"
@@ -188,6 +250,7 @@ export const taskEvents = sqliteTable("task_events", {
 });
 
 export type Agent = typeof agents.$inferSelect;
+export type BacklogItem = typeof backlogItems.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskEvent = typeof taskEvents.$inferSelect;

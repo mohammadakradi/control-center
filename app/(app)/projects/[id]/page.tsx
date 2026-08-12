@@ -3,9 +3,17 @@ import { notFound } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { ownedBy } from "@/lib/task-access";
 import { and, desc, eq } from "drizzle-orm";
-import { ArrowLeft, Boxes, FolderGit2, GitBranch, Users } from "lucide-react";
+import {
+  ArrowLeft,
+  Boxes,
+  ClipboardList,
+  FolderGit2,
+  GitBranch,
+  Users,
+} from "lucide-react";
 import { db } from "@/lib/db";
 import { tasks } from "@/lib/db/schema";
+import { backlogItemCount } from "@/lib/backlog";
 import { syncAgents } from "@/lib/discovery/agents";
 import { isAgentOnboarded, refreshProject } from "@/lib/discovery/projects";
 import { gitBranchInfo, gitChanges } from "@/lib/git";
@@ -19,6 +27,7 @@ import { ProjectName } from "@/components/ProjectName";
 import { ProjectActions } from "@/components/ProjectActions";
 import { TokenNudge } from "@/components/TokenNudge";
 import { CardSection, Chip } from "@/components/ui-cards";
+import { buttonClasses } from "@/components/ui/button";
 import { ACTIVE_STATUSES } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
@@ -85,6 +94,10 @@ export default async function ProjectDetail({
     ? members.reduce((s, m) => s + (m.changes?.files.length ?? 0), 0)
     : (changes?.files.length ?? 0);
 
+  // Open items only, straight from the database — the `.pm/tasks/` scan belongs to the
+  // backlog page itself, so opening a project never pays for one.
+  const backlogOpen = backlogItemCount(project.id);
+
   const aheadBehind = branchInfo
     ? branchInfo.ahead || branchInfo.behind
       ? `${branchInfo.ahead ? `↑${branchInfo.ahead}` : ""}${branchInfo.behind ? ` ↓${branchInfo.behind}` : ""}`.trim()
@@ -127,7 +140,29 @@ export default async function ProjectDetail({
             )}
           </div>
         </div>
-        <ProjectActions projectId={project.id} />
+        <div className="flex shrink-0 flex-wrap items-start justify-end gap-2">
+          <Link
+            href={`/backlog?project=${encodeURIComponent(project.id)}`}
+            className={buttonClasses("secondary", "md")}
+            title={`Planned work for ${project.name}`}
+          >
+            <ClipboardList className="size-4" aria-hidden="true" />
+            Backlog
+            {backlogOpen > 0 && (
+              <>
+                {/* Bare number, so it's hidden and said in words for a screen reader —
+                    same treatment as the project pills. */}
+                <span aria-hidden="true" className="text-fg-faint">
+                  {backlogOpen}
+                </span>
+                <span className="sr-only">
+                  {`, ${backlogOpen} open item${backlogOpen === 1 ? "" : "s"}`}
+                </span>
+              </>
+            )}
+          </Link>
+          <ProjectActions projectId={project.id} />
+        </div>
       </div>
 
       <div className="mt-6">

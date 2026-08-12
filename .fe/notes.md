@@ -124,6 +124,54 @@ Three decisions worth not relitigating:
 Verified against a seeded throwaway DB including a task owned by a second user — it does not
 appear, which is the `ownedBy()` contract holding at the one place that could leak history.
 
+## `/backlog` — one project at a time, and the nav's label budget ran out (2026-08-12)
+The seventh nav entry is the one the tab bar couldn't label: seven `flex-1` tracks at 320px are
+~45px, narrower than "Dashboard", "Projects" or "Backlog" itself. The label is now
+`sr-only sm:not-sr-only` — **icons only below 640px** — with `py-3 sm:py-2.5` keeping the
+icon-only target at 44px. The word never stops being the link's accessible name, so nothing is
+lost to a screen reader. The rejected alternative was an iOS "More" tab: two destinations behind
+a second tap, plus a sheet with its own focus management, to save a label that the `sm`
+breakpoint gives back anyway.
+
+The page itself is a **server component with `?project=` in the URL**, like `/tasks` and
+`/usage` — but for one extra reason beyond bookmarkability: `GET /api/projects/:id/backlog`
+performs the `.pm/tasks/` scan, and that scan is a documented DoS budget *per project*. Showing
+every project's backlog on one page would multiply it by the project count on an unauthenticated
+route, so the page shows one project and pays for exactly one scan, same as the API. Both go
+through `loadProjectBacklog()` in `lib/backlog.ts`; the route is now a 3-line translation of it.
+A second implementation would have dropped the same two things — the sync that makes the list
+current, and the `warnings` that stop "nothing imported" reading like "nothing to import".
+
+Three decisions worth not relitigating:
+- **The status control renders `item.status` straight from the server, with no optimistic
+  copy.** Both the spec sync and the linked-task reflection can move a row from underneath the
+  client, so a local value would need reconciling with the props — which is `setState` in an
+  effect, a hard error in this build (see the React lint note above). The `Select` value simply
+  changes when `router.refresh()` lands.
+- **"Open task" only appears on a run the viewer owns.** The backlog is shared install-wide but
+  `/tasks/<id>` is `ownedBy`-scoped, so linking every `linkedTask` would hand half the rows on a
+  shared install a guaranteed 404. The page resolves ownership server-side and passes a boolean;
+  the badge still shows for everyone, because *that this ran* isn't private — the transcript is.
+- **A synced item's `description` is the spec file verbatim**, frontmatter included, so
+  `specBody()` (`lib/pm-spec.ts`) strips it for the preview. Without that, the first 160
+  characters of every imported item are `--- title: … stack: … assignee: …`, which is the least
+  informative part of the file.
+
+**Guard the handler, don't disable the control that has focus.** Both mutating rows here refuse
+a second request with `if (busy) return` rather than a `disabled` prop. `Select`'s trigger *is*
+the focused element the instant its `onChange` fires (`choose()` calls `triggerRef.focus()`), and
+disabling a focused button makes the browser move focus to `<body>` — dumping a keyboard user
+back to the top of the page for the ~200ms a PATCH takes. Same reasoning for the Add-item
+dialog's `close()`: Escape, the backdrop and the header ✕ all route through `Modal`'s single
+`onClose`, so guarding that one function is what stops a request outliving the dialog and
+clearing fields the user has since retyped. (Both were blocking findings from the frontend
+auditor; the shapes above are the fixes.)
+
+Verified against a throwaway DB seeded with this repo's own `.pm/tasks/` (18 synced items), an
+agent-filed item, a done item linked to the viewer's task, and one linked to another user's —
+the last renders its badge with no link, which is the ownership rule holding. The 50-row section
+cap and its `?all=1` disclosure were checked with 60 seeded items.
+
 ## Verifying a page: `next start` on a throwaway DB, not a second `next dev`
 The documented recipe (`PLATFORM_DB=/tmp/x.db npx next dev --port 3099`) **dies when the dev
 container is already running** — two `next dev` processes fight over `.next/`, and the second
@@ -136,6 +184,14 @@ dev server, and it's what installs actually run. Two container gotchas: **`ps`, 
 `sh -c 'kill <pid>'`), and no session cookie is needed at all — `getCurrentUser()` inserts and
 returns `user_local` when there's no session, so seeding tasks with `user_id = 'user_local'`
 makes them visible.
+
+**Killing that server needs the right pattern, or you verify a stale build.** `next start`
+renames its process to `next-server (v16.2.9)` — the port is *gone* from its cmdline — so
+walking `/proc/*/cmdline` for the port number only finds the `sh`/`npm exec` wrappers. Kill
+those and the real server keeps the port, the next launch can't bind, and you spend a while
+wondering why a rebuilt page still renders the old markup (this cost me a round trip: a Run
+button kept rendering at its pre-fix size). Match `*next-server*` as well — and take care not to
+kill the container's own dev server, which is the low-PID one of the same name.
 
 ## Component library: bespoke only
 No shadcn/ui, Radix, or MUI. All components are handbuilt. Reuse `Chip`, `Tile`, `Fact`, `card`, `CardSection`, `PageHeader`, `EmptyState` (from `ui-cards.tsx`), `StatusBadge`, and the `components/ui/` primitives before writing new ones.

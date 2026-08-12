@@ -1,5 +1,6 @@
 import {
   Boxes,
+  ClipboardList,
   FolderGit2,
   Gauge,
   LayoutDashboard,
@@ -13,18 +14,21 @@ export type NavLink = { href: string; label: string; Icon: LucideIcon };
 /**
  * The primary nav, in one place — `Sidebar` and `MobileTabBar` both render this list.
  *
- * Tasks sits with the other work entities (agents, projects) rather than beside Usage and
- * Settings. `isActive` matches by prefix, so `/tasks/<id>` keeps the Tasks entry lit.
+ * Backlog and Tasks sit with the other work entities (agents, projects) rather than beside
+ * Usage and Settings, in the order work moves through them: planned, then run. `isActive`
+ * matches by prefix, so `/tasks/<id>` keeps the Tasks entry lit.
  *
- * **Six entries is the mobile tab bar's practical ceiling.** Each tab is `flex-1`, so at
- * 320px six tracks are ~53px and the longest labels ("Dashboard", "Projects", "Settings")
- * ellipsize — survivable, because the icon carries recognition and the full label is still
- * the link's accessible name. A seventh needs a real overflow affordance, not a shorter word.
+ * **Seven entries is past what the mobile tab bar can label.** Each tab is `flex-1`, so at
+ * 320px seven tracks are ~45px — too narrow for any of these words. Rather than abbreviate,
+ * `MobileTabBar` drops to icons below `sm` and shows the labels again from 640px up; the
+ * label stays the link's accessible name at every width. Adding an eighth is fine for the
+ * sidebar, but check the icon row still reads on a phone.
  */
 export const NAV_LINKS: NavLink[] = [
   { href: "/", label: "Dashboard", Icon: LayoutDashboard },
   { href: "/agents", label: "Agents", Icon: Boxes },
   { href: "/projects", label: "Projects", Icon: FolderGit2 },
+  { href: "/backlog", label: "Backlog", Icon: ClipboardList },
   { href: "/tasks", label: "Tasks", Icon: ListChecks },
   { href: "/usage", label: "Usage", Icon: Gauge },
   { href: "/settings", label: "Settings", Icon: Settings },

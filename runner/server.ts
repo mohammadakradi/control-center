@@ -3,7 +3,13 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import { db } from "../lib/db";
-import { taskEvents, tasks, type Attachment, type TaskStatus } from "../lib/db/schema";
+import {
+  taskEvents,
+  tasks,
+  TERMINAL_TASK_STATUSES,
+  type Attachment,
+  type TaskStatus,
+} from "../lib/db/schema";
 import { RUNNER_HOST, RUNNER_PORT } from "../lib/config";
 import {
   continueTask,
@@ -15,8 +21,6 @@ import {
   type StreamEvent,
 } from "./session-manager";
 import { usageSnapshot } from "./usage-snapshot";
-
-const TERMINAL: TaskStatus[] = ["done", "failed", "cancelled"];
 
 // No CORS on purpose: the browser never calls the runner. Only the Next.js server
 // does (same host), via the session-gated /api/tasks/[id]/* proxy routes.
@@ -102,7 +106,7 @@ app.get("/tasks/:id/stream", (c) => {
       // from the authoritative DB status so a reconnecting client stops waiting.
       if (!sawEnd) {
         const t = db.select().from(tasks).where(eq(tasks.id, id)).get();
-        if (t && TERMINAL.includes(t.status)) {
+        if (t && TERMINAL_TASK_STATUSES.includes(t.status)) {
           const ts = Date.now();
           await send({ type: "status", payload: { status: t.status, error: t.error ?? undefined }, ts });
           await send({ type: "end", payload: { status: t.status }, ts });

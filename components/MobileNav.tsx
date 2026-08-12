@@ -55,17 +55,20 @@ export function MobileTabBar() {
             key={href}
             href={href}
             aria-current={active ? "page" : undefined}
-            className={`flex min-w-0 flex-1 flex-col items-center gap-1 px-1 py-2.5 text-xs font-medium transition-colors ${
+            className={`flex min-w-0 flex-1 flex-col items-center gap-1 px-1 py-3 text-xs font-medium transition-colors sm:py-2.5 ${
               active ? "text-accent" : "text-fg-faint hover:text-fg-muted"
             }`}
           >
             <Icon className="size-5 shrink-0" aria-hidden="true" />
-            {/* Six tabs at 320px leave ~53px each, so the longest labels ellipsize there
-                (they fit from ~390px up). Truncating keeps the bar inside the viewport
-                instead of scrolling it sideways, and the full label is still the link's
-                accessible name — but six is the ceiling: a seventh needs a real overflow
-                affordance, not a shorter word. See `nav-links.tsx`. */}
-            <span className="max-w-full truncate">{label}</span>
+            {/* Seven tabs at 320px leave ~45px each — narrower than any of these words, so
+                below `sm` the bar is icons only and the label is carried by `sr-only`
+                (still the link's accessible name, and still what a screen reader announces).
+                From 640px the label comes back and truncates if it must. `py-3` below `sm`
+                keeps the icon-only target at 44px; with the label out of flow the `gap-1`
+                contributes nothing. See `nav-links.tsx`. */}
+            <span className="sr-only sm:not-sr-only sm:max-w-full sm:truncate">
+              {label}
+            </span>
           </Link>
         );
       })}

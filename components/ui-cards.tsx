@@ -106,19 +106,26 @@ export function Chip({
   children,
   icon,
   tone = "neutral",
+  title,
 }: {
   children: ReactNode;
   icon?: ReactNode;
-  tone?: "neutral" | "ok" | "violet" | "sky";
+  tone?: "neutral" | "ok" | "violet" | "sky" | "warn";
+  /** Native tooltip — for a chip whose one word needs a sentence behind it. */
+  title?: string;
 }) {
   const tones = {
     neutral: "border-muted-line bg-muted-soft text-muted",
     ok: "border-ok-line bg-ok-soft text-ok",
     violet: "border-violet-line bg-violet-soft text-violet",
     sky: "border-info-line bg-info-soft text-info",
+    // Caution rather than failure — used for the "agent-filed" backlog marker, where the
+    // point is that nobody has reviewed the text yet.
+    warn: "border-warn-line bg-warn-soft text-warn",
   };
   return (
     <span
+      title={title}
       className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium ${tones[tone]}`}
     >
       {icon}

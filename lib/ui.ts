@@ -1,4 +1,4 @@
-import type { TaskStatus } from "@/lib/db/schema";
+import type { BacklogStatus, TaskStatus } from "@/lib/db/schema";
 
 export const STATUS_LABEL: Record<TaskStatus, string> = {
   queued: "Queued",
@@ -30,6 +30,49 @@ export function statusColor(status: string): string {
       return "bg-warn-soft text-warn border-warn-line";
     default:
       return "bg-info-soft text-info border-info-line";
+  }
+}
+
+/** A backlog item's status, in words. Sentence case like `STATUS_LABEL`, so the two
+ *  vocabularies read the same when they sit in one row (an item and the task it ran as). */
+export const BACKLOG_STATUS_LABEL: Record<BacklogStatus, string> = {
+  todo: "To do",
+  in_progress: "In progress",
+  done: "Done",
+  cancelled: "Cancelled",
+};
+
+/**
+ * Which statuses close an item out.
+ *
+ * The single definition of "open": the backlog page groups by it, and `lib/backlog.ts`
+ * counts against `MAX_ITEMS_PER_PROJECT` by it — and those two disagreeing would mean a
+ * project whose cap says "full" while the page shows an empty Open section.
+ */
+export const CLOSED_BACKLOG_STATUSES = ["done", "cancelled"] as const;
+
+export const isOpenBacklogStatus = (status: BacklogStatus): boolean =>
+  !CLOSED_BACKLOG_STATUSES.includes(status as (typeof CLOSED_BACKLOG_STATUSES)[number]);
+
+/**
+ * The status dot beside a backlog item — a solid tone fill, which the design system allows
+ * only for small non-text marks like this one. It is decorative on purpose: the status is
+ * also written out in the control next to it, so nothing here is carried by colour alone.
+ *
+ * Tones match the task statuses they correspond to, so a backlog row and a task row don't
+ * mean different things by the same colour: not-started is `info` (like `queued`), running
+ * is `warn`, `done` is `ok`, `cancelled` is `muted`.
+ */
+export function backlogStatusDot(status: BacklogStatus): string {
+  switch (status) {
+    case "done":
+      return "bg-ok";
+    case "cancelled":
+      return "bg-muted";
+    case "in_progress":
+      return "bg-warn";
+    default:
+      return "bg-info";
   }
 }
 

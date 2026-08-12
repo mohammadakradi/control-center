@@ -1,12 +1,14 @@
 import Link from "next/link";
 
-/** The page this control filters. Its own `?project=` is the only state it has. */
-const TASKS_PATH = "/tasks";
-
-export type ProjectFilterOption = { id: string; name: string; count: number };
+export type ProjectFilterOption = {
+  id: string;
+  name: string;
+  /** Shown beside the name. Omit where there is no number worth showing. */
+  count?: number;
+};
 
 /**
- * Project filter for the Tasks page.
+ * Pick a project — the filter on `/tasks`, and the project switcher on `/backlog`.
  *
  * Links rather than buttons, for the same reasons as `SpendRangeNav`: the selection
  * lives in the URL, so the page stays a server component (no fetch, no loading flash, no
@@ -15,42 +17,58 @@ export type ProjectFilterOption = { id: string; name: string; count: number };
  *
  * Wrapping pills rather than that component's fixed segmented control, because the number of
  * projects is unbounded — a segmented bar would either overflow the viewport or squeeze names
- * to nothing. The default ("All projects") carries no query param, so `/tasks` and the
- * unfiltered view are the same URL.
+ * to nothing.
  *
- * Only projects that actually have tasks are worth offering: a filter that leads to a
- * guaranteed empty list is a dead end, and this page is scoped to one owner's runs, so most
- * projects on a shared device may legitimately have none of them. By the same argument the
- * control **self-guards** — with fewer than two projects there is no choice to make, so it
+ * The control **self-guards**: with fewer than two projects there is no choice to make, so it
  * renders nothing rather than leaving every caller to remember the check.
+ *
+ * The two callers differ in ways that are all data, not markup — which is why this is one
+ * component and not two. `/tasks` filters, so it offers "All projects" (no query param, so
+ * the default view and `/tasks` are the same URL) and lists only projects that have tasks,
+ * since a filter leading to a guaranteed-empty list is a dead end. `/backlog` shows one
+ * project at a time, so there is no "all", and it lists **every** project — a project with
+ * nothing recorded yet is exactly where you'd go to import or add the first item.
  */
 export function ProjectFilterNav({
   projects,
   selected,
+  basePath = "/tasks",
+  showAll = true,
+  unit = "task",
+  ariaLabel = "Filter tasks by project",
 }: {
-  /** Projects with at least one task, in the order the groups are rendered. */
   projects: ProjectFilterOption[];
   /** Selected project id, or null for "All projects". */
   selected: string | null;
+  /** Page the pills navigate within. */
+  basePath?: string;
+  /** Offer an unfiltered "All projects" pill. */
+  showAll?: boolean;
+  /** What a count counts, for the screen-reader text ("…, 3 items"). */
+  unit?: string;
+  ariaLabel?: string;
 }) {
   if (projects.length < 2) return null;
 
-  const total = projects.reduce((sum, p) => sum + p.count, 0);
+  const counted = projects.filter(
+    (p): p is ProjectFilterOption & { count: number } => p.count !== undefined,
+  );
+  const total = counted.length > 0 ? counted.reduce((sum, p) => sum + p.count, 0) : undefined;
 
   return (
-    <nav
-      aria-label="Filter tasks by project"
-      className="flex flex-wrap items-center gap-1.5"
-    >
-      <FilterPill href={TASKS_PATH} active={selected === null} count={total}>
-        All projects
-      </FilterPill>
+    <nav aria-label={ariaLabel} className="flex flex-wrap items-center gap-1.5">
+      {showAll && (
+        <FilterPill href={basePath} active={selected === null} count={total} unit={unit}>
+          All projects
+        </FilterPill>
+      )}
       {projects.map((p) => (
         <FilterPill
           key={p.id}
-          href={`${TASKS_PATH}?project=${encodeURIComponent(p.id)}`}
+          href={`${basePath}?project=${encodeURIComponent(p.id)}`}
           active={selected === p.id}
           count={p.count}
+          unit={unit}
         >
           {p.name}
         </FilterPill>
@@ -63,11 +81,13 @@ function FilterPill({
   href,
   active,
   count,
+  unit,
   children,
 }: {
   href: string;
   active: boolean;
-  count: number;
+  count?: number;
+  unit: string;
   children: string;
 }) {
   return (
@@ -85,10 +105,14 @@ function FilterPill({
       {/* The bare number is ambiguous read aloud ("Platform 12"), so it's hidden and the
           sr-only span says it in words. `fg-faint`, not `fg-ghost` — this is real text a
           sighted user reads, and `fg-ghost` is decorative-only by contract (sub-AA). */}
-      <span aria-hidden="true" className="shrink-0 text-fg-faint">
-        {count}
-      </span>
-      <span className="sr-only">{`, ${count} task${count === 1 ? "" : "s"}`}</span>
+      {count !== undefined && (
+        <>
+          <span aria-hidden="true" className="shrink-0 text-fg-faint">
+            {count}
+          </span>
+          <span className="sr-only">{`, ${count} ${unit}${count === 1 ? "" : "s"}`}</span>
+        </>
+      )}
     </Link>
   );
 }

@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { agents, projectAgents, tasks, type Attachment } from "@/lib/db/schema";
+import { tasks, type Attachment } from "@/lib/db/schema";
 import { getCurrentUser } from "@/lib/auth";
 import { ownedBy } from "@/lib/task-access";
-import { canRunTasks, secretsConfigured } from "@/lib/secrets";
-import { daemonStartTask } from "@/lib/daemon-client";
+import { createAndStartTask, dispatchRefusal } from "@/lib/dispatch";
 import { saveAttachments } from "@/lib/uploads";
 import { newId } from "@/lib/util";
 
@@ -44,17 +43,11 @@ export async function POST(request: Request) {
   // their uploads, create a task row, and immediately fail it — the user's first
   // experience of the app being a cryptic runner error. Checked here AND in the
   // runner (which is authoritative); this is the friendly early exit.
-  if (!canRunTasks(user.id)) {
-    // Distinguish "this user hasn't added a token" from "the server can't read any
-    // token" — same refusal, but only one of them is the user's to fix.
+  const refused = dispatchRefusal(user.id);
+  if (refused) {
     return NextResponse.json(
-      {
-        error: secretsConfigured()
-          ? "Add your Anthropic token under Settings before dispatching tasks — each user runs on their own credential."
-          : "The server is missing SECRETS_MASTER_KEY, so stored tokens can't be read. Ask whoever runs this instance to set it (see .env.example).",
-        needsToken: true,
-      },
-      { status: 412 },
+      { error: refused.error, needsToken: refused.needsToken },
+      { status: refused.status },
     );
   }
 
@@ -84,65 +77,22 @@ export async function POST(request: Request) {
     );
   }
 
-  // "sonnet"/"opus"/"sonnet-4.6" are legacy aliases — the router maps them to the
-  // current equivalents (Sonnet 4.6 is retired → Sonnet 5).
-  const ALLOWED_MODELS = new Set([
-    "auto",
-    "fable-5",
-    "opus-5",
-    "sonnet-5",
-    "opus-4.8",
-    "sonnet",
-    "opus",
-    "sonnet-4.6",
-  ]);
-  const model = ALLOWED_MODELS.has(fields.model ?? "")
-    ? (fields.model as string)
-    : "auto";
+  const outcome = await createAndStartTask({
+    taskId: id, // already used to name the upload folder
+    projectId: fields.projectId,
+    agentId: fields.agentId,
+    command: fields.command,
+    userId: user.id,
+    requestText: fields.requestText,
+    model: fields.model,
+    attachments,
+  });
 
-  // Snapshot the agent's current version so history records which version ran this task.
-  const agent = db
-    .select({ version: agents.version })
-    .from(agents)
-    .where(eq(agents.id, fields.agentId))
-    .get();
-
-  db.insert(tasks)
-    .values({
-      id,
-      projectId: fields.projectId,
-      agentId: fields.agentId,
-      userId: user.id,
-      command: fields.command,
-      agentVersion: agent?.version ?? null,
-      requestText: fields.requestText ?? "",
-      status: "queued",
-      model,
-      attachments,
-    })
-    .run();
-
-  // Ensure the agent is linked to the project.
-  db.insert(projectAgents)
-    .values({ projectId: fields.projectId, agentId: fields.agentId })
-    .onConflictDoNothing()
-    .run();
-
-  try {
-    await daemonStartTask(id);
-  } catch (err) {
-    db.update(tasks)
-      .set({ status: "failed", error: (err as Error).message })
-      .where(eq(tasks.id, id))
-      .run();
+  if (!outcome.ok) {
     return NextResponse.json(
-      { error: (err as Error).message, taskId: id },
-      { status: 502 },
+      { error: outcome.error, needsToken: outcome.needsToken, taskId: outcome.taskId },
+      { status: outcome.status },
     );
   }
-
-  return NextResponse.json(
-    db.select().from(tasks).where(eq(tasks.id, id)).get(),
-    { status: 201 },
-  );
+  return NextResponse.json(outcome.task, { status: 201 });
 }
