@@ -600,3 +600,72 @@ update after every change.
   Verified in the compiled CSS (`rail:w-16` emitted after `w-60`).
 - Tailwind v4 **does** support fractional spacing like `size-4.5` (dynamic spacing scale) —
   it compiles to `1.125rem`. Grepping the built CSS for it needs the escaped form `size-4\\.5`.
+
+- **2026-08-12 — explicit `busy_timeout` on the shared SQLite connection** (pm task
+  `01-backend-sqlite-busy-timeout`, `.pm/tasks/20260812-191427-fix-update-build-sqlite-lock/`).
+  `control-center update` / a fresh `install.sh` install could fail mid-`next build` with
+  `SqliteError: database is locked`: both scripts run `next build` *before*
+  `runner/migrate.ts`, so at build time `platform.db` doesn't exist yet, and Next's parallel
+  build workers all import `lib/db` (33+ route modules) during "Collecting page data" —
+  several race to create/WAL-convert the same brand-new file at once.
+  - Fix: `lib/db/index.ts`'s `createConnection()` now sets `sqlite.pragma("busy_timeout =
+    8000")` before `journal_mode = WAL`. **Nuance found while investigating:** `better-sqlite3`
+    (pinned `^12.11.1`) already applies an *implicit* `sqlite3_busy_timeout(db, 5000)` at
+    connection-open by default (`node_modules/better-sqlite3/lib/database.js:34`,
+    `src/objects/database.cpp:172`) — confirmed empirically too: 20 concurrent opens against a
+    fresh file, unpatched, produced zero SQLITE_BUSY failures inside the dev container. So the
+    fix's value is making the timeout an explicit, visible, intentional setting in our own
+    code (and picking a value provably above the library default, so a test can actually catch
+    the pragma being dropped) rather than silently depending on an undocumented default that
+    could change with a dependency bump.
+  - Verified against the spec's exact repro: `NODE_ENV=production PLATFORM_DATA_DIR=<fresh
+    dir> next build` inside the container completed cleanly (7 workers, 6/6 static pages, exit
+    0) against a directory with no pre-existing `platform.db`.
+  - New test `lib/db.test.ts` — **not** `lib/db/index.test.ts`: the `test` script's globs
+    (`lib/*.test.ts`, not `lib/db/*.test.ts`) are exact, so a spec under `lib/db/` would
+    silently never run (this exact trap is already documented in CLAUDE.md). Asserts
+    `db.$client.pragma("busy_timeout", { simple: true }) > 5000` — deliberately above the
+    library default so the test fails if the pragma line is ever deleted, not a tautology that
+    passes either way.
+  - **Both independent reviews (reviewer + security-auditor) passed with no blocking
+    findings**, and both surfaced the same non-blocking trade-off worth recording: the pragma
+    applies to the one shared singleton connection every request and the runner's task
+    subprocess use, not only the one-time build path. better-sqlite3 is fully synchronous, so
+    a busy-wait blocks the whole Node main thread — raising the ceiling from the previous
+    implicit ~5s to 8s means any live lock contention (e.g. the runner writing task_events
+    while a web request reads, or a `VACUUM INTO` backup snapshot in flight) now stalls the
+    *entire* server for up to 3s longer than before. Accepted as-is, not scoped to
+    build-time-only: the app is loopback-only, the increase is modest, and this stall class
+    already existed pre-fix. Flagged here rather than fixed, per both reviewers' non-blocking
+    verdict.
+
+- **2026-08-12 — `control-center status`/`running()` now checks both `web` and `runner`**
+  (pm task `03-devops-status-liveness-check`, same
+  `.pm/tasks/20260812-191427-fix-update-build-sqlite-lock/` epic as the busy_timeout fix above,
+  independent — `depends_on: []`). `running()` used to be `pid_of web` only, so `status` could
+  print "Stopped" while `runner` (holding its own connection to the production database) was
+  still alive, and `cmd_start`'s already-running guard could spawn a duplicate `web`+`runner`
+  pair alongside an orphaned live `runner`.
+  - Fix: `running()` is now `pid_of web || pid_of runner`. `status` reports each process
+    independently (`Running` / `Partially running — <which one>` / `Stopped`). `cmd_start`'s
+    guard only no-ops when *both* are alive; if only one is, it `die`s naming which pid is up
+    and telling the operator to `stop` then `start`, instead of silently double-spawning.
+  - **`wait_for_http` deliberately was *not* switched to the broadened `running()`** — it's
+    waiting specifically for the just-spawned `web` process to answer HTTP, and checks
+    `pid_of web` directly. Broadening it there would have been a silent regression: a dead
+    `web` next to a live orphaned `runner` would then wait the full `$WAIT_TIMEOUT` (180s)
+    instead of failing fast with the web log tail.
+  - The broadened `running()` also fixes two latent bugs at its other call sites for free:
+    `import` now correctly `stop_all`s (and thus closes the DB) when only `runner` was
+    orphaned, instead of running `runner/import.ts` while the live runner still held the
+    connection open; `update`'s `was_running` bookkeeping no longer misses a runner-only state
+    and skips restarting after applying an update.
+  - No automated test harness covers this script (`infra/release/*.sh` is outside `pnpm
+    test`'s globs). Verified manually: fake pid files pointing at real backgrounded `sleep`
+    PIDs (alive) and a nonexistent pid (dead), covering all four states, against `status` and
+    `start --no-update`; both independent reviews (reviewer + security-auditor) reproduced the
+    same manual verification independently and passed with no blocking findings. Non-blocking
+    notes from both, left as-is per their own verdict: `pid_of`'s `kill -0` check doesn't
+    verify process *identity* (pre-existing, not introduced here — a stale pid file whose
+    number gets reused by an unrelated process would still read as "alive"); `status` always
+    exits 0 regardless of state (matches prior behavior, not a regression).

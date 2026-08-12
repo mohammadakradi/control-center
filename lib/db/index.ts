@@ -17,6 +17,13 @@ declare global {
 function createConnection(): Database.Database {
   mkdirSync(dirname(DB_PATH), { recursive: true });
   const sqlite = new Database(DB_PATH);
+  // Next's parallel build workers all import lib/db, so several of them can race to
+  // create/WAL-convert a brand-new platform.db at once (e.g. a fresh install or
+  // `control-center update`, both of which run `next build` before the database exists).
+  // better-sqlite3 already applies its own undocumented 5s busy_timeout by default, but set
+  // it explicitly (and ahead of the WAL pragma, which is itself lock-contended) rather than
+  // depending on that default silently.
+  sqlite.pragma("busy_timeout = 8000");
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
   return sqlite;

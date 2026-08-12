@@ -103,7 +103,11 @@ pid_of() {
   printf '%s' "$pid"
 }
 
-running() { pid_of web >/dev/null 2>&1; }
+# Either process counts as "running" — the runner holds its own connection to the production
+# database, so a dead `web` next to a live `runner` is not "stopped". Callers that specifically
+# care about the web process (e.g. wait_for_http, which is waiting on it to answer HTTP) check
+# `pid_of web` directly instead of this.
+running() { pid_of web >/dev/null 2>&1 || pid_of runner >/dev/null 2>&1; }
 
 stop_one() {
   pid=$(pid_of "$1" 2>/dev/null) || return 0
@@ -151,7 +155,7 @@ wait_for_http() {
   while [ "$waited" -lt "$WAIT_TIMEOUT" ]; do
     # Any answer counts — `/` redirects to /signin when signed out.
     curl -s -o /dev/null --max-time 2 "$URL" 2>/dev/null && return 0
-    if ! running; then
+    if ! pid_of web >/dev/null 2>&1; then
       warn "The web process exited. Last lines of $LOG_DIR/web.log:"
       tail -20 "$LOG_DIR/web.log" >&2 2>/dev/null || :
       return 1
@@ -344,9 +348,14 @@ cmd_start() {
   [ "${CC_SKIP_UPDATE_CHECK:-}" = 1 ] || [ "${1:-}" = --no-update ] || check_and_update
 
   if running; then
-    info "Already running on $URL"
-    open_window
-    return 0
+    web_pid=$(pid_of web 2>/dev/null) || web_pid=
+    runner_pid=$(pid_of runner 2>/dev/null) || runner_pid=
+    if [ -n "$web_pid" ] && [ -n "$runner_pid" ]; then
+      info "Already running on $URL"
+      open_window
+      return 0
+    fi
+    die "partially running (web pid: ${web_pid:-none}, runner pid: ${runner_pid:-none}) — not starting a second pair. Run 'control-center stop' then 'start' to recover cleanly."
   fi
 
   mkdir -p "$DATA_DIR" "$LOG_DIR" "$RUN_DIR"
@@ -530,8 +539,14 @@ EOF
     fi
     ;;
   status)
-    if running; then
-      info "Running — v$(installed_version) on $URL (web pid $(pid_of web))"
+    web_pid=$(pid_of web 2>/dev/null) || web_pid=
+    runner_pid=$(pid_of runner 2>/dev/null) || runner_pid=
+    if [ -n "$web_pid" ] && [ -n "$runner_pid" ]; then
+      info "Running — v$(installed_version) on $URL (web pid $web_pid, runner pid $runner_pid)"
+    elif [ -n "$web_pid" ]; then
+      warn "Partially running — web is up (pid $web_pid) but the runner is not. v$(installed_version) on $URL"
+    elif [ -n "$runner_pid" ]; then
+      warn "Partially running — the runner is up (pid $runner_pid) but web is not. v$(installed_version) installed at $APP_DIR"
     else
       info "Stopped — v$(installed_version) installed at $APP_DIR"
     fi
