@@ -79,6 +79,192 @@ curl the pages. Fully isolated, and you can seed tasks/spend freely to see popul
 ## Verifying rendered pages without a browser
 There's no Playwright/Puppeteer here. To check real markup: mint a session row directly (`sessions.id = sha256(token)`, see `lib/auth.ts`), `curl -H "Cookie: session=<token>" http://localhost:3001/…`, inspect the HTML, then delete the session row. Client-only branches still render, because App Router SSRs client components — temporarily seeding a `useState` initial value is enough to see them.
 
+## One task row for the whole app — `components/TaskList.tsx` (2026-08-11)
+Task rows had drifted into three implementations, and two of them rendered `requestText`
+while `tasks.title` (generated at dispatch) sat unused — so the same history read as prose on
+the dashboard and as an intent on project detail. `TaskList` is now the only task row;
+`TaskHistory` is a `CardSection` wrapper around it. **Add a task list by composing
+`CardSection` + `TaskList`, never by writing row markup.** The fallback chain lives in
+`taskDisplayTitle()` (`lib/ui.ts`, unit-tested in `lib/ui.test.ts`) precisely because
+inlining it is what let two call sites drop the title; the task detail `<h1>` uses it too.
+The card shell stays out of `TaskList` — the three hosts head their cards differently
+("Task history" + count, "Recent activity", "Recent runs" + count).
+
+Two things reviewers have asked about, so they're settled here: **`v<version>` shows on every
+row, including agent detail** where the agent is the same for all of them — because
+`tasks.agent_version` is a per-run *snapshot* and an agent can be updated between runs, so the
+column genuinely varies down the list. And **`UsageSummaryCard`'s "Most expensive runs" is
+deliberately not a `TaskList`**: it reads a narrow `TaskSpend` projection (no status, no agent,
+no tokens), is ranked by cost rather than time, and leads with the cost figure. It shares
+`taskDisplayTitle()` so an untitled task is named the same way, and nothing else.
+
+## `/tasks` — the cross-project task page (2026-08-11)
+`app/(app)/tasks/page.tsx` sits *beside* the existing `[id]/` route in the same folder, so the
+nav entry and the task detail page share a prefix — which is what `isActive` wants
+(`startsWith`), so `/tasks/<id>` keeps Tasks lit. Server component, one `ownedBy()` query,
+grouped in JS by `projectId`; because the query is already `desc(createdAt)`, plain `Map`
+insertion order puts the most recently active project first, no second sort.
+
+Three decisions worth not relitigating:
+- **Unfiltered groups cap at 8 rows and *disclose* the remainder** ("6 older tasks in this
+  project — show all"); filtering to one project lifts the cap entirely. A project with years
+  of history would otherwise bury every other project on a page whose whole job is the view
+  *across* projects — and once you've asked for one project, capping it is just an obstacle
+  (project detail is uncapped too). Same "disclose, never truncate silently" rule as
+  `ProjectSpendCard`.
+- **A stale `?project=` keeps the filter bar and shows a recoverable empty state**, rather
+  than silently falling back to everything. The lenient-parse rule from `/usage` applies to
+  *malformed* input (an array from a repeated param, an empty string) — but an id that simply
+  matches nothing is a real, answerable question, and silently showing all projects would look
+  like the filter is broken.
+- **Only projects with ≥1 task appear in the filter.** Tasks are per-owner while projects are
+  shared, so on a shared install most projects legitimately have none of *your* runs; offering
+  them is offering a guaranteed-empty list.
+
+Verified against a seeded throwaway DB including a task owned by a second user — it does not
+appear, which is the `ownedBy()` contract holding at the one place that could leak history.
+
+## `/backlog` — one project at a time, and the nav's label budget ran out (2026-08-12)
+The seventh nav entry is the one the tab bar couldn't label: seven `flex-1` tracks at 320px are
+~45px, narrower than "Dashboard", "Projects" or "Backlog" itself. The label is now
+`sr-only sm:not-sr-only` — **icons only below 640px** — with `py-3 sm:py-2.5` keeping the
+icon-only target at 44px. The word never stops being the link's accessible name, so nothing is
+lost to a screen reader. The rejected alternative was an iOS "More" tab: two destinations behind
+a second tap, plus a sheet with its own focus management, to save a label that the `sm`
+breakpoint gives back anyway.
+
+The page itself is a **server component with `?project=` in the URL**, like `/tasks` and
+`/usage` — but for one extra reason beyond bookmarkability: `GET /api/projects/:id/backlog`
+performs the `.pm/tasks/` scan, and that scan is a documented DoS budget *per project*. Showing
+every project's backlog on one page would multiply it by the project count on an unauthenticated
+route, so the page shows one project and pays for exactly one scan, same as the API. Both go
+through `loadProjectBacklog()` in `lib/backlog.ts`; the route is now a 3-line translation of it.
+A second implementation would have dropped the same two things — the sync that makes the list
+current, and the `warnings` that stop "nothing imported" reading like "nothing to import".
+
+Three decisions worth not relitigating:
+- **The status control renders `item.status` straight from the server, with no optimistic
+  copy.** Both the spec sync and the linked-task reflection can move a row from underneath the
+  client, so a local value would need reconciling with the props — which is `setState` in an
+  effect, a hard error in this build (see the React lint note above). The `Select` value simply
+  changes when `router.refresh()` lands.
+- **"Open task" only appears on a run the viewer owns.** The backlog is shared install-wide but
+  `/tasks/<id>` is `ownedBy`-scoped, so linking every `linkedTask` would hand half the rows on a
+  shared install a guaranteed 404. The page resolves ownership server-side and passes a boolean;
+  the badge still shows for everyone, because *that this ran* isn't private — the transcript is.
+- **A synced item's `description` is the spec file verbatim**, frontmatter included, so
+  `specBody()` (`lib/pm-spec.ts`) strips it for the preview. Without that, the first 160
+  characters of every imported item are `--- title: … stack: … assignee: …`, which is the least
+  informative part of the file.
+
+**Guard the handler, don't disable the control that has focus.** Both mutating rows here refuse
+a second request with `if (busy) return` rather than a `disabled` prop. `Select`'s trigger *is*
+the focused element the instant its `onChange` fires (`choose()` calls `triggerRef.focus()`), and
+disabling a focused button makes the browser move focus to `<body>` — dumping a keyboard user
+back to the top of the page for the ~200ms a PATCH takes. Same reasoning for the Add-item
+dialog's `close()`: Escape, the backdrop and the header ✕ all route through `Modal`'s single
+`onClose`, so guarding that one function is what stops a request outliving the dialog and
+clearing fields the user has since retyped. (Both were blocking findings from the frontend
+auditor; the shapes above are the fixes.)
+
+Verified against a throwaway DB seeded with this repo's own `.pm/tasks/` (18 synced items), an
+agent-filed item, a done item linked to the viewer's task, and one linked to another user's —
+the last renders its badge with no link, which is the ownership rule holding. The 50-row section
+cap and its `?all=1` disclosure were checked with 60 seeded items.
+
+## Verifying a page: `next start` on a throwaway DB, not a second `next dev`
+The documented recipe (`PLATFORM_DB=/tmp/x.db npx next dev --port 3099`) **dies when the dev
+container is already running** — two `next dev` processes fight over `.next/`, and the second
+exits silently, so you get connection-refused and no error anywhere. Use the production build
+instead: `pnpm build` once, then
+`docker exec -d platform sh -c 'PLATFORM_DB=/tmp/x.db npx next start -H 0.0.0.0 -p 3099 > /tmp/log 2>&1'`
+and curl from inside the container. `next start` only reads `.next`, so it can't disturb the
+dev server, and it's what installs actually run. Two container gotchas: **`ps`, `pkill` and
+`kill` don't exist** in the image (walk `/proc/*/cmdline` and use the shell builtin via
+`sh -c 'kill <pid>'`), and no session cookie is needed at all — `getCurrentUser()` inserts and
+returns `user_local` when there's no session, so seeding tasks with `user_id = 'user_local'`
+makes them visible.
+
+**Killing that server needs the right pattern, or you verify a stale build.** `next start`
+renames its process to `next-server (v16.2.9)` — the port is *gone* from its cmdline — so
+walking `/proc/*/cmdline` for the port number only finds the `sh`/`npm exec` wrappers. Kill
+those and the real server keeps the port, the next launch can't bind, and you spend a while
+wondering why a rebuilt page still renders the old markup (this cost me a round trip: a Run
+button kept rendering at its pre-fix size). Match `*next-server*` as well — and take care not to
+kill the container's own dev server, which is the low-PID one of the same name.
+
+## The activity badge — chrome that takes a row, not a floating corner (2026-08-12)
+`ActivityBadge` is the app's only global sign that agents are working. Four decisions in it are
+the ones worth not relitigating:
+
+- **It gets its own sticky row above `<main>`, not `position: fixed` in the corner.** The spec
+  asked for a fixed top-right element; measured against the real pages, that lands on top of
+  `PageHeader`'s `actions` — `/usage`'s `SpendRangeNav` and `/backlog`'s "Add item" — at every
+  width from `md` up, and badly at 768px, where the content column fills its track and there is
+  no right gutter to float in. The row is `sticky top-0 z-30` and carries **no vertical padding
+  of its own** (the pill supplies `my-2`), so with the badge rendering `null` the row collapses
+  to 0px and an idle app is the layout it was before. Cost, accepted: ~48px of content shift
+  when a run starts and again when it ends — the same behaviour `UpdateBanner` already has, and
+  strictly better than covering a control. Below `md` there is no row at all; the badge goes in
+  `MobileTopBar`, because a phone can't spare a second strip of chrome.
+- **Two mounts, one poll.** The desktop strip and the mobile bar are both mounted (CSS decides
+  which is visible), so two `useEffect` pollers would double the request rate to show the same
+  number. `lib/active-tasks.ts` is a module-level store read through `useSyncExternalStore` —
+  the `lib/sidebar.ts` shape — with polling ref-counted to the subscriber set and paused on
+  `document.hidden`. `sameActiveState()` is what stops a re-render every 5s when nothing moved.
+- **A dedicated `GET /api/tasks/active`, not a poll of `GET /api/tasks`.** The latter answers
+  with every column of every task you own: 106 rows / ~150 KB here, growing for the life of the
+  install, from the process that also serves the SSE transcript streams. At 5s that's ~30 KB/s
+  forever to render a number. The new route is `ownedBy`-scoped, filters on the shared
+  `ACTIVE_STATUSES`, and returns five short fields per active run.
+- **The pill is `bg-surface` + `border-warn-line`, not `bg-warn-soft`.** `--warn-soft` is
+  `rgb(245 158 11 / .15)` in dark mode — translucent — and this element floats over scrolling
+  page content. Any *floating* element in this app needs an opaque surface token; let the border
+  and text carry the tone. Worth remembering before reaching for a `*-soft` background again.
+
+**A self-rescheduling poll must `clearTimeout`, never just drop the handle.** `tick()` first
+did `timer = null` at its entry. Hide the tab *during* an in-flight poll and the hidden branch
+found `timer` already null, so its clear was a no-op; the resolving tick then scheduled a fresh
+timeout while still hidden, and the catch-up tick on return orphaned that timeout instead of
+cancelling it — so when it fired, the app had **two** interleaved tick→schedule chains, each
+rescheduling forever. The poll rate doubles, compounds with every further hide/show, and
+nothing on screen looks wrong. Fixed by clearing at entry and refusing to schedule while
+hidden; `lib/active-tasks.test.ts` stubs `document`/`fetch` with `mock.timers` and asserts
+**exactly one request per interval**, which is the only way this class of bug is visible.
+
+**Closing a popover on navigation is a render-time state reset, not a derived value.** The
+first shape derived `open` from `openedAt.path === pathname`. It closed on the way out but
+never *cleared*, so returning to the page it was opened on — Back button, or clicking that nav
+entry again — popped it open again with nobody having touched it. The fix is React's documented
+"adjust state when something changes" pattern (`if (shownFor !== pathname) { setShownFor(...);
+setOpenState(null) }` in the render body), which is explicitly **not** the forbidden `setState`
+in an effect. Both of these were blocking findings from the frontend auditor.
+
+**Say "in progress", not "running".** `ACTIVE_STATUSES` includes `queued` and the two
+`awaiting_*` gates — states where nothing is running and *you* are the hold-up — and the
+dashboard stat tile and `AtAGlance` have always called this set "In progress". The badge said
+"running" and the design reviewer called it drift. A test pins the word.
+
+And **the popover survives its own count reaching zero while open**: unmounting mid-interaction
+would drop keyboard focus to `<body>`, the same failure mode as disabling a focused button (see
+the backlog note), so it stays and says "Nothing in progress now" until the user closes it.
+
+**Put the accessible name in the markup, not in an `aria-label`.** The pill's word is
+`sr-only sm:not-sr-only` (the `MobileTabBar` trick) rather than `hidden sm:inline`, so the name
+is "2 in progress" at *every* width and WCAG 2.5.3 Label in Name holds by construction. With an
+`aria-label` it held only while two separate strings happened to agree — and `display:none`
+would have dropped the word from the name entirely below `sm`, leaving a button called "2".
+
+One knock-on: adding the badge to `MobileTopBar` pushed that row over its width budget at
+320px, so the brand link is now `min-w-0` + `truncate` and the icon cluster `shrink-0`. The
+brand is what gives; the controls aren't allowed to.
+
+Verified against a throwaway DB (`next start` recipe below) seeded with queued /
+awaiting_proposal / building runs, a finished one, and **one owned by a second user** — the API
+returns 3 and omits the other user's, which is the `ownedBy()` contract holding on a route that
+is polled from every page. Markup was inspected by temporarily seeding
+`getServerActiveTasksSnapshot()` + the open state, since the badge SSRs to `null` by design.
+
 ## Component library: bespoke only
 No shadcn/ui, Radix, or MUI. All components are handbuilt. Reuse `Chip`, `Tile`, `Fact`, `card`, `CardSection`, `PageHeader`, `EmptyState` (from `ui-cards.tsx`), `StatusBadge`, and the `components/ui/` primitives before writing new ones.
 

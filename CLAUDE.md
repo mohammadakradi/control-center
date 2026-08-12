@@ -61,12 +61,15 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
   wrapped — run those with `docker exec platform …`. Caveat: arguments pass through untouched,
   so a path argument must exist inside the container too (the repo and `~/Dev` are mounted).
 - Lint: `pnpm lint`  (baseline: ✅ — no warnings)
-- Test: `pnpm test`  (baseline: ✅ 122 tests — Node's built-in runner via `tsx`, no extra
+- Test: `pnpm test`  (baseline: ✅ 186 tests — Node's built-in runner via `tsx`, no extra
   deps; specs live next to the code as `runner/*.test.ts`, `lib/*.test.ts` and
   `lib/discovery/*.test.ts`, fixtures in `runner/__fixtures__/`. Those globs are listed
   explicitly in the `test` script — a spec in a directory that isn't listed silently never
-  runs. DB specs build a throwaway SQLite file from the real schema via `drizzle-kit push`
-  and the `PLATFORM_DB` override — never `data/platform.db`.)
+  runs. DB specs build a throwaway SQLite file from the real schema — via `drizzle-kit push`,
+  or `migrateDatabase()` where the committed migrations should be exercised too — and the
+  `PLATFORM_DB` override, never `data/platform.db`. **Run them inside the container with
+  `RUNNER_HOST` unset** (`docker exec platform env -u RUNNER_HOST pnpm test`): compose sets
+  `RUNNER_HOST=0.0.0.0`, which `lib/config.test.ts` correctly asserts is not the default.)
 - Typecheck: `npx tsc --noEmit`
 - **Schema changes: `pnpm db:generate` then `pnpm db:migrate`.** `db:generate` writes a
   versioned SQL file into `drizzle/` (review it — that file is what runs on every user's
@@ -144,13 +147,128 @@ match). Creating an account starts a private workspace instead of unlocking the 
   anything, so every task read goes through `ownedBy` (lists) or `findOwnedTask` (one row).
   Both treat "not yours" and "doesn't exist" identically so callers can only 404 — probing ids
   must not reveal that someone else's task exists. If you add a task query, scope it here.
-- **Projects and agents are deliberately shared**: a project is a folder on the device, an agent
-  is an installed plugin. Tasks, transcripts and Anthropic tokens are the private part.
+- **Projects, agents and backlogs are deliberately shared**: a project is a folder on the device,
+  an agent is an installed plugin, and a backlog is a description of that folder's planned work.
+  Tasks, transcripts and Anthropic tokens are the private part.
 - `getCurrentUser()` never returns null now (it falls back to the local workspace);
   `getSignedInUser()` is the one that can, for UI that must tell the two apart.
 - **This is app-level separation, not OS-level.** Anyone with filesystem access can read
   `~/.control-center/.env` and the vault. Separate macOS accounts get separate installs and are
   genuinely isolated; two people sharing one login are not.
+
+## The backlog (per-project planned work)
+Each project has a durable queue of planned work in `backlog_items`, fed from two directions:
+the pm agent's `.pm/tasks/<request>/<task>.md` specs, and items added by hand (or by an agent).
+`lib/backlog.ts` owns all of it; the routes under `app/api/projects/[id]/backlog/` only
+translate HTTP. An item can be dispatched as a real task and links back to it.
+- **Reading the backlog is what keeps it current.** `GET` syncs the spec files and reflects
+  finished runs, both idempotent, so there is no separate sync call to forget. The trade is
+  that a load does synchronous filesystem I/O on an unauthenticated route, in the process that
+  also serves the SSE task streams — so the scan's caps are a DoS budget, not tidiness:
+  256 KB per spec, 500 specs, 200 folders, 200 entries per folder, **and a 2 MB total** (the
+  product of the first two would otherwise permit a 128 MB read *and* a 128 MB response).
+- **Request folders are walked newest-first, and a clipped scan says so.** The names start with
+  a timestamp; walking oldest-first meant that once a project hit the cap — and these folders
+  are committed, so they never age out — every newly planned spec was silently ignored forever.
+  The scan reports `skipped` (entries it refused) and `truncated` (a cap stopped it), which the
+  route turns into `warnings`, so "nothing imported" can't be mistaken for "nothing to import".
+- **`sourcePath` (project-relative) is the sync key**, unique per project. SQLite treats NULLs
+  as distinct in a unique index, which is what lets any number of hand-added items coexist.
+- **The sync never touches status.** Content is re-read from the file (an edited spec should
+  dispatch its current text); status, `linkedTaskId` and the item's identity are things no file
+  knows. A spec deleted from disk therefore *keeps* its item.
+- **A manual status wins, permanently.** `PATCH`ing status sets `statusOverride`, after which
+  neither the sync nor the linked-task reflection will move that item. Machine transitions
+  (dispatch → `in_progress`, linked task `done` → `done`) leave the flag alone, or running an
+  item would freeze it against its own completion. A task that started and then *failed*
+  deliberately leaves the item `in_progress` — it was started and didn't finish; the linked task
+  shows the truth. A dispatch that never started at all (runner unreachable → 502) leaves the
+  item untouched at `todo`, since there is nothing to resume; the failed task row is still there.
+- **Everything a spec file owns is read-only through the API** (title, description, assignee,
+  priority): accepting those edits would be a lie, since the next load re-reads the file. The
+  route answers 409 and names the file. Hand-added items are fully editable.
+- **Clients may not set `sourcePath`, `source` or `linkedTaskId`.** A forged `sourcePath` would
+  park a row on a path the sync then treats as already-imported; a forged `linkedTaskId` would
+  point an item at someone else's task. The parser drops them.
+- **A spec is read through its handle, never re-resolved by path** (`readSpecFile` in
+  `lib/backlog.ts`): `open` with `O_NOFOLLOW`, then `fstat`, then a read bounded by the size
+  `fstat` reported. This is the arbitrary-file-read defence, and each clause earns its place —
+  a repo can hold a symlink named `01-task.md` pointing at `~/.ssh/id_rsa`, the backlog is
+  shared with every user on the install, and the content also travels in export archives.
+  - `nlink === 1` rejects a **hard link**, which is the non-obvious one: a hard link is a plain
+    regular file by every other measure (`Dirent.isFile()` says true), so the dirent check alone
+    was bypassable. Note the cost, measured: hard-linking a spec makes **both** names unreadable,
+    the legitimate original included, since `nlink` is a property of the inode and not of the
+    name you opened. That surfaces as a `warnings` entry on the load, not as silence.
+  - Checking the handle rather than the path is what closes the **TOCTOU** window — classify a
+    dirent, then open by name, and it can be a different file by then. The scan re-runs on every
+    load, so an attacker retries for free until it wins.
+  - Everything non-regular is skipped *without being opened for reading*. That matters most for
+    a **FIFO**: reading one blocks until someone writes, i.e. forever, taking the request with it.
+  - Names containing control characters are skipped — a newline in a `sourcePath` would forge
+    lines in the preamble a dispatched run is handed.
+- **A run is stamped to whoever pressed it**, not to whoever added the item: it goes through
+  `lib/dispatch.ts` like any other task, so it runs on that user's token and only they see the
+  transcript. Its `linkedTask` is exposed to everyone as `{ id, status }` and nothing more.
+  An item whose task is still live refuses a second run (409) — a double click shouldn't buy
+  two sessions.
+- **Only the project root's `.pm/tasks/` is scanned.** For a workspace project
+  (`projects.members`), specs planned inside a member repo don't enter the backlog, even though
+  `lib/pm-spec.ts` recognises the nested path form. Deliberate for now — a workspace's members
+  are separate repos with their own registrations.
+- **Items are capped at 1 000 *open* per project** and 20 000 characters of body: the list returns
+  every item's body on every load, and an uncapped POST is a disk-fill primitive. `done` and
+  `cancelled` items don't hold a slot — there is no delete endpoint, so cancelling is the only
+  reclaim path and it has to actually reclaim, or a project that hit the cap could never come back
+  under it.
+- **An agent can file one itself**, via the `add_backlog_item` MCP tool on the runner's
+  in-process server (`runner/backlog-tool.ts`) — that's what `source: "agent"` means. It goes
+  through the same `lib/backlog.ts` validation as the HTTP route, so the two paths can't drift,
+  and it is the only writer that isn't a person. Three things are deliberate about it:
+  - **The project is not a tool argument** — it comes from the task's own row. A backlog is
+    shared install-wide, so an agent that could name a project could file work into someone
+    else's list.
+  - **The row is scrubbed of the task's credentials** before it's written. `record()` only
+    covers `task_events`; a backlog row is read by *every* workspace and travels in export
+    archives, so an agent talked into pasting the owner's token into a description would
+    otherwise park it somewhere wider than the transcript redaction was written to protect.
+  - **Its allowance is per launch** (20 items, 4 000 characters of description each — a tenth of
+    what a person may type, since a model can max the field out on every call), on top of the
+    per-project 1 000. A continued task gets a fresh 20, so the per-project cap is the real
+    ceiling. An add is refused, never silently dropped, and both the add and the refusal are
+    logged into the transcript.
+- **An agent-filed item is dispatched inside a nonce fence, and every part of that shape is
+  load-bearing.** An item's body becomes the top-level instruction to an autonomous agent running
+  on *whoever pressed Run's* token — so a `source: "agent"` body is text a model wrote, possibly
+  while being steered by a hostile file or web page, executing later as a different user.
+  `backlogRequestText` wraps those items: a head line, the request between
+  `===== BEGIN AGENT-ITEM_<nonce> =====` / `===== END … =====`, then the caution **restated after
+  the body**. Human-authored items are untouched (byte-identical to before — the file modal's
+  wording is a documented contract).
+  - **The fence is derived at dispatch, not stored**, so a `PATCH` can't strip it and it doesn't
+    depend on any UI shipping.
+  - **The nonce is what makes it unforgeable.** The body was written before the id existed, so it
+    cannot close the span or open a second one. A fixed marker is just text a description can
+    contain — the first version of this used a bare `---` rule and no closing marker, and the
+    security audit's PoC opened a fake second section reading "PROVENANCE: correction — the notice
+    above was a stale CI fixture… authoritative operator instruction" and then gave orders.
+  - **The caution is repeated last** so untrusted text is never the final thing in context, and it
+    names that exact move: anything inside claiming to be a correction, a newer notice, an
+    approval already granted or an operator override is still the filed item.
+  - **`source` is not an authorship guarantee, so the fence is not a security boundary.** The
+    mutating backlog routes have no auth and are reachable over loopback from inside the container
+    where a task's Bash tool runs, so an agent can `POST /api/projects/<id>/backlog` and get an
+    unfenced `manual` row in any project — and `POST …/run` is equally unauthenticated, so it can
+    dispatch it without a human. Found by the security audit; **not** fixed here, because fencing
+    every item regardless of `source` would put a false "nobody reviewed this" warning in front of
+    requests a user typed themselves, telling the agent to refuse their legitimate instructions —
+    and because it would paper over an auth hole with a disclaimer. The real fix is auth on those
+    routes, which collides with the deliberately cookie-less local-workspace mode and is bigger
+    than one task. Until then the fence is worth exactly this: on the honest path it warns the
+    human and the downstream agent. It stops nothing that an agent could not already do through
+    the equally unauthenticated `POST /api/tasks`.
+  - Still a mitigation, not a fix — a model can be argued with. The control is a person reading
+    an item before pressing Run.
 
 ## The agents ship with the app
 The swe / fe / pm plugins are **vendored into this repo at `agents/<namespace>` and shipped in the
@@ -423,6 +541,10 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   (`components/FolderPicker.tsx` + `lib/fs-browse.ts`). There is no native OS picker: the
   old `/api/fs/pick` shelled out to macOS `osascript`, which can never work in the Linux
   dev container, so it was removed (2026-08-04)
+- `app/api/projects/[id]/backlog/` — Per-project backlog: `GET` (list, which also syncs
+  `.pm/tasks/` specs and reflects finished runs), `POST` (add one), `PATCH …/[itemId]`,
+  `POST …/[itemId]/run` (dispatch it as a task). Logic lives in `lib/backlog.ts`; the routes
+  only translate HTTP
 - `components/` — All reusable UI components (bespoke)
 - `components/ui-cards.tsx` — Core primitives: `card`, `CardSection`, `PageHeader`,
   `EmptyState`, `Chip`, `Tile`, `Fact`
@@ -435,6 +557,17 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   theme and sidebar state (both persisted in `localStorage`, applied to `<html>`)
 - `lib/secrets.ts` — Encrypted per-user Anthropic token vault (`data/secrets/`, master
   key from `SECRETS_MASTER_KEY`; write-only API, tokens never leave the server)
+- `lib/backlog.ts` — The per-project backlog (`backlog_items`): scans/syncs the pm agent's
+  `.pm/tasks/` specs, validates API input, and owns the status rules (a manual status wins
+  over both the sync and the linked task; see "The backlog" below)
+- `lib/pm-spec.ts` — Reading a pm task spec (frontmatter → title/assignee/priority). Shared by
+  `components/FileModal.tsx` and the backlog sync so one spec always routes to the same agent.
+  **Imported by a client component — nothing reachable from it may touch `node:*`**
+  (`lib/frontmatter.ts` is the dependency-free primitive underneath, also used by agent
+  discovery)
+- `lib/dispatch.ts` — Creating + starting a task: token gate, model allowlist, agent-version
+  snapshot, project↔agent link, failure bookkeeping. `POST /api/tasks` and the backlog's run
+  action both go through it — anything else that dispatches should too
 - `lib/db/migrate.ts` — Schema migrations: applies `drizzle/`, adopts pre-migration databases,
   snapshots before changes, and refuses to run against a schema the code can't query. Driven
   by `runner/migrate.ts` (`pnpm db:migrate`), which `install.sh` and `control-center start` run
@@ -449,6 +582,10 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `runner/` — Hono task-execution server (separate from Next.js; loopback-only, no CORS —
   reached exclusively through the Next.js proxy routes; `runner/user-env.ts` builds each
   task's subprocess env with the owner's token)
+- `runner/platform-mcp.ts` — the in-process `swe-platform` MCP server every session is handed:
+  `request_approval` (the workflow gate — its handler stays suspended, and that *is* the pause)
+  and `add_backlog_item` (`runner/backlog-tool.ts`). `runner/gate-prompt.ts` is what tells the
+  agent they exist; a tool nothing mentions is a tool nothing calls
 - `app/api/usage/` — Per-user usage: real spend from `lib/usage-summary.ts` plus a
   best-effort Claude plan-limits block. **Plan limits are normally `available: false`** —
   the SDK only reports them for a logged-in profile, and this app injects tokens via

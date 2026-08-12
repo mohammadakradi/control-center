@@ -40,6 +40,8 @@ const EXPORTED_TABLES = [
   "project_agents",
   "tasks",
   "task_events",
+  // After `tasks`: a backlog item can point at the task it was dispatched as.
+  "backlog_items",
 ] as const;
 
 /** Rows per read. Small enough that one corrupt page costs little, big enough to be quick. */

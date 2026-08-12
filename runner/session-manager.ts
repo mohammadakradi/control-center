@@ -13,10 +13,10 @@ import {
 import { classifyTurnEnd, type PauseReason } from "./completion";
 import { GATE_PROMPT } from "./gate-prompt";
 import {
-  makeApprovalServer,
+  makePlatformServer,
   type GateDecision,
   type GateKind,
-} from "./approval-tool";
+} from "./platform-mcp";
 import { generateTitle, resolveModel, type ModelChoice } from "./model-router";
 import { buildTaskEnv, sensitiveEnvValues, type TaskEnv } from "./user-env";
 import {
@@ -495,7 +495,24 @@ function runTask(
           permissionMode: "bypassPermissions",
           systemPrompt: { type: "preset", preset: "claude_code", append: GATE_PROMPT },
           includePartialMessages: true,
-          mcpServers: { "swe-platform": makeApprovalServer(onGate) },
+          mcpServers: {
+            "swe-platform": makePlatformServer({
+              onGate,
+              backlog: {
+                // Taken from the task's own row, never from the agent's arguments: backlogs
+                // are shared install-wide, so a project id an agent could supply would let
+                // one session file work into another project's list.
+                projectId: project.id,
+                // Through `record`, so an item filed mid-task shows up in the transcript
+                // (and is redaction-scrubbed) like everything else the run did.
+                onLog: (message) => record(handle, "log", { message }),
+                // The row itself doesn't go through `record`, and it lands somewhere wider
+                // than a transcript — every workspace can read a backlog, and it travels in
+                // export archives — so it gets the same scrubbing explicitly.
+                redact: (text) => String(redactPayload(text, handle.secrets)),
+              },
+            }),
+          },
           ...(canResume ? { resume: task.sessionId! } : {}),
         },
       });

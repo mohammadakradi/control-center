@@ -6,28 +6,7 @@ import { Check, Copy, Loader2, Send } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
-
-/** A pm task spec lives at `.pm/tasks/<timestamp>/<task>.md`. */
-const isPmTaskPath = (p: string) => /(^|\/)\.pm\/tasks\//.test(p);
-
-/** Pull a few fields out of a task file's YAML-ish frontmatter (best-effort). */
-function parseFrontmatter(content: string): Record<string, string> {
-  const m = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!m) return {};
-  const out: Record<string, string> = {};
-  for (const line of m[1].split("\n")) {
-    const kv = line.match(/^([A-Za-z_]+):\s*(.*)$/);
-    if (kv) out[kv[1].toLowerCase()] = kv[2].trim().replace(/^["']|["']$/g, "");
-  }
-  return out;
-}
-
-/** Which agent a task should go to: explicit `assignee`, else derive from `stack`. */
-function targetNamespace(fm: Record<string, string>): "fe" | "swe" {
-  const a = (fm.assignee || "").toLowerCase();
-  if (a === "fe" || a === "swe") return a;
-  return (fm.stack || "").toLowerCase() === "frontend" ? "fe" : "swe";
-}
+import { isPmTaskSpec, parseFrontmatter, targetNamespace } from "@/lib/pm-spec";
 
 type Agent = { id: string; namespace: string };
 
@@ -67,7 +46,7 @@ export function FileModal({
 
   const isMarkdown = path.endsWith(".md") || path.endsWith(".markdown");
   // Only individual task files are hand-offable — not the request's index/summary.
-  const isTask = isPmTaskPath(path) && !/\/index\.md$/i.test(path);
+  const isTask = isPmTaskSpec(path);
 
   async function copy() {
     if (!content) return;

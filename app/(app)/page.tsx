@@ -1,25 +1,18 @@
 import Link from "next/link";
 import { desc } from "drizzle-orm";
 import type { ReactNode } from "react";
-import {
-  Activity,
-  ArrowRight,
-  Boxes,
-  Clock,
-  FolderGit2,
-  ListChecks,
-} from "lucide-react";
+import { Activity, Boxes, FolderGit2, ListChecks } from "lucide-react";
 import { db } from "@/lib/db";
 import { projects, tasks } from "@/lib/db/schema";
 import { syncAgents } from "@/lib/discovery/agents";
 import { Avatar } from "@/components/AgentAvatar";
 import { AgentContributors } from "@/components/AgentContributors";
-import { StatusBadge } from "@/components/StatusBadge";
+import { TaskList } from "@/components/TaskList";
 import { TokenNudge } from "@/components/TokenNudge";
-import { card, PageHeader } from "@/components/ui-cards";
+import { card, CardSection, PageHeader, ViewAll } from "@/components/ui-cards";
 import { getCurrentUser } from "@/lib/auth";
 import { ownedBy } from "@/lib/task-access";
-import { ACTIVE_STATUSES, timeAgo } from "@/lib/ui";
+import { ACTIVE_STATUSES } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -57,10 +50,11 @@ export default async function Dashboard() {
     ...(contributors.get(projectId) ?? []),
   ];
 
-  const agentName = (id: string) =>
-    agentList.find((a) => a.id === id)?.namespace ?? "?";
-  const projectName = (id: string) =>
-    projectList.find((p) => p.id === id)?.name ?? "?";
+  // Lookups for the shared task rows: agent id → namespace, project id → name.
+  const namespaceById: Record<string, string> = {};
+  for (const a of agentList) namespaceById[a.id] = a.namespace;
+  const projectNameById: Record<string, string> = {};
+  for (const p of projectList) projectNameById[p.id] = p.name;
 
   return (
     <div className="space-y-6">
@@ -72,7 +66,7 @@ export default async function Dashboard() {
       <TokenNudge />
 
       {/* Stats */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat
           icon={<Boxes className="size-5" />}
           value={agentList.length}
@@ -98,10 +92,9 @@ export default async function Dashboard() {
         />
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         {/* Agents */}
-        <section className={card}>
-          <CardHead title="Agents" href="/agents" linkLabel="View all" />
+        <CardSection title="Agents" right={<ViewAll href="/agents" />}>
           {agentList.length === 0 ? (
             <Empty>No agents discovered. Install a Claude Code plugin.</Empty>
           ) : (
@@ -136,11 +129,10 @@ export default async function Dashboard() {
               ))}
             </ul>
           )}
-        </section>
+        </CardSection>
 
         {/* Projects */}
-        <section className={card}>
-          <CardHead title="Projects" href="/projects" linkLabel="View all" />
+        <CardSection title="Projects" right={<ViewAll href="/projects" />}>
           {projectList.length === 0 ? (
             <Empty>No projects yet. Add a local folder to get started.</Empty>
           ) : (
@@ -164,48 +156,20 @@ export default async function Dashboard() {
               ))}
             </ul>
           )}
-        </section>
+        </CardSection>
       </div>
 
-      {/* Recent activity */}
-      <section className={card}>
-        <CardHead title="Recent activity" />
-        {recent.length === 0 ? (
-          <Empty>No tasks yet. Add a project and dispatch one.</Empty>
-        ) : (
-          <ul>
-            {recent.map((t) => (
-              <li
-                key={t.id}
-                className="border-t border-line first:border-t-0"
-              >
-                <Link
-                  href={`/tasks/${t.id}`}
-                  className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg px-2 py-3 hover:bg-hover"
-                >
-                  <span className="min-w-28 shrink-0 font-mono text-sm text-accent">
-                    /{agentName(t.agentId)}:{t.command}
-                  </span>
-                  <span className="hidden min-w-0 flex-1 truncate text-sm text-fg-muted sm:block">
-                    {t.requestText || (
-                      <span className="text-fg-ghost">no description</span>
-                    )}
-                  </span>
-                  <span className="inline-flex min-w-0 shrink items-center gap-1.5 text-xs text-fg-faint">
-                    <FolderGit2 className="size-3.5 shrink-0" />
-                    <span className="truncate">{projectName(t.projectId)}</span>
-                  </span>
-                  <span className="hidden shrink-0 items-center gap-1 text-xs text-fg-faint md:inline-flex">
-                    <Clock className="size-3.5" />
-                    {timeAgo(t.createdAt)}
-                  </span>
-                  <StatusBadge status={t.status} />
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      {/* Recent activity — same rows as project detail and agent detail, plus the project
+          each task ran in, since this list spans all of them. Only the 8 most recent, so it
+          points at `/tasks` for the rest. */}
+      <CardSection title="Recent activity" right={<ViewAll href="/tasks" />}>
+        <TaskList
+          history={recent}
+          namespaceById={namespaceById}
+          projectNameById={projectNameById}
+          emptyMessage="No tasks yet. Add a project and dispatch one."
+        />
+      </CardSection>
     </div>
   );
 }
@@ -245,30 +209,6 @@ function Stat({
     </Link>
   ) : (
     <div className={cls}>{body}</div>
-  );
-}
-
-function CardHead({
-  title,
-  href,
-  linkLabel,
-}: {
-  title: string;
-  href?: string;
-  linkLabel?: string;
-}) {
-  return (
-    <div className="mb-4 flex items-center justify-between">
-      <h2 className="text-base font-semibold">{title}</h2>
-      {href && (
-        <Link
-          href={href}
-          className="inline-flex items-center gap-1 text-xs text-accent hover:text-accent-hover"
-        >
-          {linkLabel ?? "View all"} <ArrowRight className="size-3.5" />
-        </Link>
-      )}
-    </div>
   );
 }
 

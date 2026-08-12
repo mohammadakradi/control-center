@@ -8,7 +8,7 @@ import {
   INSTALLED_PLUGINS_JSON,
   KNOWN_MARKETPLACES_JSON,
 } from "../config";
-import { parseFrontmatter } from "../util";
+import { parseFrontmatter } from "../frontmatter";
 
 type InstalledEntry = {
   scope?: string;

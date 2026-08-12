@@ -28,6 +28,16 @@ planning decision. Keep entries short and accurate.
   just needs to move with the page, not be rebuilt — it usually renders nothing because plan
   limits report unavailable for this app's env-injected tokens, a known prior limitation, not
   a gap to fix.
+- 2026-08-11 — planned title-first task lists, Tasks menu, per-project Backlog, and a
+  running-tasks activity badge (`.pm/tasks/20260811-113836-tasks-backlog-activity/`,
+  6 tasks). Verdict PARTIAL: `tasks.title` + project-detail display already existed; only
+  Dashboard/agent-detail lists showed raw request text. User-approved direction: extract ONE
+  shared task-list component (modeled on `components/TaskHistory.tsx`) instead of patching
+  each list. Backlog decisions: DB table `backlog_items` (shared per project, like projects
+  themselves), fed by (1) idempotent sync of `.pm/tasks/` spec files keyed by `sourcePath` —
+  deliberately NO pm-agent changes, (2) an `add_backlog_item` MCP tool on the runner's
+  existing in-process `swe-platform` server, (3) manual UI add; run-from-backlog reuses the
+  `FileModal.createTask` dispatch shape and stores `linkedTaskId`.
 
 ## Constraints & conventions
 <!-- stacks present, who owns what, non-obvious rules to respect when planning -->

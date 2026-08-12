@@ -3,6 +3,7 @@ import { APP_VERSION } from "@/lib/version";
 import { Sidebar } from "@/components/Sidebar";
 import { MobileTabBar, MobileTopBar } from "@/components/MobileNav";
 import { UpdateBanner } from "@/components/UpdateBanner";
+import { ActivityBadge } from "@/components/ActivityBadge";
 
 export default async function AppLayout({
   children,
@@ -20,6 +21,15 @@ export default async function AppLayout({
         <MobileTopBar userEmail={signedIn?.email} />
         {/* Renders nothing unless a packaged install is behind a published release. */}
         <UpdateBanner />
+        {/* The running-task badge gets its own sticky row on desktop rather than floating in
+            the corner: pinned to the corner it would cover `PageHeader`'s actions (/usage's
+            range switcher, /backlog's "Add item") at every width from `md` up. It renders
+            nothing while nothing is running, and this row has no padding of its own, so an
+            idle app is byte-for-byte the layout it was before. Below `md` the badge lives in
+            `MobileTopBar` instead — a phone can't spare a second strip of chrome. */}
+        <div className="sticky top-0 z-30 mx-auto hidden w-full max-w-6xl justify-end px-4 sm:px-6 md:flex">
+          <ActivityBadge className="my-2" />
+        </div>
         <main className="mx-auto w-full max-w-6xl px-4 pt-6 pb-24 sm:px-6 sm:py-8 md:pb-14">
           {children}
         </main>

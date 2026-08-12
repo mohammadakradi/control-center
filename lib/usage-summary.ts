@@ -29,6 +29,9 @@ export function parseRange(value: string | null): SpendRange | null {
 export type TaskSpend = {
   id: string;
   title: string | null;
+  /** Only to feed `taskDisplayTitle()`: an untitled task should name itself here the same way
+   *  it does in every other task list, rather than dropping straight to its command. */
+  requestText: string;
   command: string;
   projectId: string;
   /** Null only if the project row is gone (the FK is cascade-on-paper but unenforced). */
@@ -113,6 +116,7 @@ export function spendForUser(
     .select({
       id: tasks.id,
       title: tasks.title,
+      requestText: tasks.requestText,
       command: tasks.command,
       projectId: tasks.projectId,
       projectName: projects.name,

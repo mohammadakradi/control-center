@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
+import { ArrowRight } from "lucide-react";
 
 /** Shared card surface used across detail pages. */
 export const card = "rounded-2xl border border-line bg-surface p-6";
@@ -80,23 +82,50 @@ export function CardSection({
   );
 }
 
+/** The "there is more of this elsewhere" link for a `CardSection` header — a truncated or
+ *  capped list points at the page that holds the whole thing. Lives here rather than in a
+ *  page because the dashboard and the Tasks page both head sections with it. */
+export function ViewAll({
+  href,
+  children = "View all",
+}: {
+  href: string;
+  children?: ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      className="inline-flex items-center gap-1 text-xs text-accent hover:text-accent-hover"
+    >
+      {children} <ArrowRight className="size-3.5" aria-hidden="true" />
+    </Link>
+  );
+}
+
 export function Chip({
   children,
   icon,
   tone = "neutral",
+  title,
 }: {
   children: ReactNode;
   icon?: ReactNode;
-  tone?: "neutral" | "ok" | "violet" | "sky";
+  tone?: "neutral" | "ok" | "violet" | "sky" | "warn";
+  /** Native tooltip — for a chip whose one word needs a sentence behind it. */
+  title?: string;
 }) {
   const tones = {
     neutral: "border-muted-line bg-muted-soft text-muted",
     ok: "border-ok-line bg-ok-soft text-ok",
     violet: "border-violet-line bg-violet-soft text-violet",
     sky: "border-info-line bg-info-soft text-info",
+    // Caution rather than failure — used for the "agent-filed" backlog marker, where the
+    // point is that nobody has reviewed the text yet.
+    warn: "border-warn-line bg-warn-soft text-warn",
   };
   return (
     <span
+      title={title}
       className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium ${tones[tone]}`}
     >
       {icon}
