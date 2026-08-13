@@ -213,7 +213,7 @@ export function NewTaskForm({
               <div className="flex items-center gap-1.5 font-mono text-xs text-fg-faint">
                 /{a.namespace}
                 {a.version && (
-                  <span className="text-fg-ghost">v{a.version}</span>
+                  <span className="text-fg-faint">v{a.version}</span>
                 )}
               </div>
               <div className="flex items-center gap-1.5 text-sm font-medium text-fg-strong">
@@ -268,14 +268,14 @@ export function NewTaskForm({
             <span className="font-mono">/{agent?.namespace}:onboard</span> first
             so it learns the codebase.
           </span>
-          <button
-            type="button"
+          <Button
+            variant="warn"
+            size="sm"
             onClick={() => setCommand("onboard")}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-warn-line bg-warn-soft px-3 py-1.5 text-xs font-medium text-warn hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+            icon={<Sparkles className="size-3.5" aria-hidden="true" />}
           >
-            <Sparkles className="size-3.5" />
             Onboard /{agent?.namespace}
-          </button>
+          </Button>
         </div>
       )}
 

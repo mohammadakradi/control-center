@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Check, Download, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { CardSection } from "@/components/ui-cards";
 
 type ExportResult = {
@@ -246,12 +247,15 @@ export function DataSettings() {
               <label className="sr-only" htmlFor="uninstall-confirm">
                 Type UNINSTALL to confirm
               </label>
-              <input
+              {/* `max-w-*`, not `w-44` — the field is `w-full` by default, and two
+                  same-specificity width utilities would race in the output CSS. */}
+              <Input
+                tone="danger"
                 id="uninstall-confirm"
                 value={confirmText}
                 onChange={(e) => setConfirmText(e.target.value)}
                 placeholder="Type UNINSTALL"
-                className="w-44 rounded-lg border border-line-strong bg-surface-2 px-3 py-2 font-mono text-sm text-fg outline-none focus:border-danger-line"
+                className="max-w-44 font-mono"
               />
               <Button
                 variant="danger"

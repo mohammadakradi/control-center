@@ -140,7 +140,7 @@ export function AddBacklogItem({
                   maxLength={MAX_DESCRIPTION_LENGTH}
                   rows={6}
                   placeholder="Context, acceptance criteria, links…"
-                  className={`${fieldClasses} min-h-32 resize-y leading-relaxed`}
+                  className={fieldClasses("md", "default", "min-h-32 resize-y leading-relaxed")}
                 />
               </div>
 

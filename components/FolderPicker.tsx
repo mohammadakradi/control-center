@@ -10,6 +10,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 
 type Entry = {
@@ -157,7 +158,8 @@ export function FolderPicker({
         <label htmlFor={gotoId} className="sr-only">
           Go to folder path
         </label>
-        <input
+        <Input
+          size="sm"
           id={gotoId}
           value={goto}
           onChange={(e) => setGoto(e.target.value)}
@@ -171,7 +173,7 @@ export function FolderPicker({
           placeholder="/absolute/path/to/folder"
           spellCheck={false}
           autoComplete="off"
-          className="min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-fg outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-ring/40"
+          className="min-w-0 flex-1 font-mono"
         />
         <Button size="sm" onClick={jump} disabled={!goto.trim()}>
           Go

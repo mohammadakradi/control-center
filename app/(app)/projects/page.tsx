@@ -7,7 +7,7 @@ import { AddProjectForm } from "@/components/AddProjectForm";
 import { AgentContributors } from "@/components/AgentContributors";
 import { getCurrentUser } from "@/lib/auth";
 import { ownedBy } from "@/lib/task-access";
-import { EmptyState, PageHeader } from "@/components/ui-cards";
+import { Chip, EmptyState, PageHeader } from "@/components/ui-cards";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +37,7 @@ export default async function ProjectsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Projects"
-        description="Local folders the agent can work in. Add one by absolute path."
+        description="A project is a folder on this device that agents can work in. Add one by absolute path."
       />
 
       <div className="rounded-xl border border-line bg-surface p-4">
@@ -66,9 +66,7 @@ export default async function ProjectsPage() {
               </div>
               <div className="flex shrink-0 items-center gap-3 text-xs">
                 {p.isWorkspace && (
-                  <span className="rounded-full border border-violet-line bg-violet-soft px-2 py-0.5 text-violet">
-                    workspace · {p.members.length}
-                  </span>
+                  <Chip tone="violet">workspace · {p.members.length}</Chip>
                 )}
                 <AgentContributors
                   namespaces={contributors.get(p.id) ?? []}

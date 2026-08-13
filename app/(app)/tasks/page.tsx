@@ -89,7 +89,7 @@ export default async function TasksPage({
   const description = filteredTo
     ? `${filteredTo[1].length} task${filteredTo[1].length === 1 ? "" : "s"} in ${projectById.get(filteredTo[0])!.name}.`
     : taskCount === 0
-      ? "Every task you dispatch, grouped by the project it ran in."
+      ? "A task is one agent command run against a project. Every one you dispatch shows up here, grouped by project."
       : `${taskCount} task${taskCount === 1 ? "" : "s"} across ${projectCount} project${projectCount === 1 ? "" : "s"}.`;
 
   return (

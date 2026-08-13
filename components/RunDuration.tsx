@@ -27,7 +27,7 @@ export function RunDuration({
   if (!elapsed) return null;
 
   return (
-    <Chip icon={<Timer className="size-3" />} tone={endedAt ? "neutral" : "sky"}>
+    <Chip icon={<Timer className="size-3" />} tone={endedAt ? "muted" : "info"}>
       {elapsed}
     </Chip>
   );

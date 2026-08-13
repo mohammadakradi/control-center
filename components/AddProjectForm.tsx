@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { FolderOpen } from "lucide-react";
 import { FolderPicker } from "@/components/FolderPicker";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 export function AddProjectForm() {
   const inputId = useId();
@@ -41,12 +42,12 @@ export function AddProjectForm() {
           Project folder
         </label>
         <div className="flex flex-col gap-2 sm:flex-row">
-          <input
+          <Input
             id={inputId}
             value={path}
             onChange={(e) => setPath(e.target.value)}
             placeholder="/Users/moh/Dev/my-project"
-            className="min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-3 py-2 font-mono text-sm text-fg outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-ring/40"
+            className="min-w-0 flex-1 font-mono"
           />
           <Button
             type="button"

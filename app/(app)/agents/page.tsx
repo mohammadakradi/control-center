@@ -27,7 +27,7 @@ export default function AgentsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Agents"
-        description="Auto-discovered from your installed Claude Code plugins."
+        description="An agent is an installed Claude Code plugin, auto-discovered from this device. Its commands are the workflows you can dispatch."
       />
 
       {agents.length === 0 ? (
@@ -55,7 +55,7 @@ export default function AgentsPage() {
               </div>
               <div className="mt-2 flex items-center gap-3">
                 <Avatar namespace={a.namespace} size={48} />
-                <h2 className="flex items-center gap-2 text-lg font-medium">
+                <h2 className="flex items-center gap-2 text-base font-semibold text-fg-strong">
                   {a.name}
                   {a.version && (
                     <span className="rounded-md border border-line-strong bg-surface-3 px-1.5 py-0.5 font-mono text-xs font-normal text-fg-subtle">

@@ -38,9 +38,22 @@ _Maintained by the fe-agent · source of truth for tokens & reusable components 
 | `text-fg-ghost` | **Decorative only** (icons, markers) — below AA | `#8e8e98` | `#6e6e76` |
 
 Everything down to `fg-faint` clears **WCAG AA (4.5:1)** on `surface`, `surface-2`, and
-`canvas`. `fg-ghost` does not — never use it for text a user must read. (Task rows broke this
-twice: the `v0.4.0` version label and the "no description" fallback both used `fg-ghost` and
-now use `fg-faint`. `fg-ghost` is for icons and markers.)
+`canvas`. `fg-ghost` does not — never use it for text a user must read. `fg-ghost` is for
+icons and markers.
+
+This is the single most-repeated regression in the project, now caught **three** times — task
+rows (the `v0.4.0` version label and the "no description" fallback), and then a 2026-08-13
+audit that found ten more: the task-detail project path, a workspace member path, the
+attachment hint + file sizes, `AgentContributors`' "no runs yet", `NewTaskForm`'s agent
+version, `TaskLiveView`'s continue-session helper, the sidebar's "Navigate" eyebrow and
+`v{version}` footer, and `DiffModal`'s diff-header lines. All now `fg-faint`.
+
+**The rule of thumb that would have prevented every one of them:** if it is rendered as a
+character a sighted user could want to read — a path, a size, a version, a label, a fallback
+sentence — it is text, however deliberately de-emphasised, and `fg-ghost` is wrong. `fg-ghost`
+is legitimate only where the element carries no information on its own: an `aria-hidden` icon,
+a list marker, a status dot (`bg-fg-ghost`). A grep for `text-fg-ghost` should return icons
+and nothing else.
 
 ### Accent & focus
 | Utility | Role | Light | Dark |
@@ -72,6 +85,12 @@ as a surface behind text, since the tone colours are tuned for text-on-soft cont
 All tone text/background pairs were contrast-checked: **AA or better in both themes.**
 `statusColor()` in `lib/ui.ts` is the single choke point mapping task status → tone.
 
+**`text-{t}/80` is the established "secondary line inside a toned block"** — a tone-tinted
+equivalent of dropping from `fg` to `fg-subtle`. Used by `TokenNudge` and `GettingStarted`'s
+blocking step for the explanatory sentence under a warn-toned heading. Only ever on top of the
+matching `bg-{t}-soft`, and only for a supporting line; a *primary* string in a toned block
+stays at full `text-{t}`.
+
 ### Sidebar collapse variant
 `@custom-variant rail` (keyed off `data-sidebar="collapsed"` on `<html>`) styles the
 collapsed rail in pure CSS — `w-60 rail:w-16`, `rail:hidden`, `rail:justify-center`. This
@@ -81,6 +100,18 @@ keeps the width correct on first paint instead of flashing after hydration.
 - Font families: `--font-sans: var(--font-geist-sans)` · `--font-mono: var(--font-geist-mono)` (both loaded via `next/font/google` in `app/layout.tsx`)
 - Type scale: Tailwind v4 defaults (`text-xs`→`text-2xl`+); no custom scale
 - Common patterns: `text-sm text-fg-subtle` (metadata), `text-xs text-fg-faint` (labels), `text-2xl font-bold tracking-tight text-fg-strong` (stat values)
+- **Headings always carry `text-fg-strong`.** `PageHeader` and `CardSection` do it for you;
+  a hand-rolled `<h1>`/`<h2>` must say it, or it inherits body `fg` and sits a step light of
+  every other heading. Sizes: `text-2xl font-bold tracking-tight` for a page `<h1>`,
+  `text-base font-semibold` for a card `<h2>` — the same values the two primitives use, so a
+  bespoke heading beside a `CardSection` doesn't read as a different level.
+- **Micro scale — `text-[11px]` and `text-[10px]`.** Two arbitrary values below `text-xs`
+  (12px), used deliberately and sparingly: the sidebar's "Navigate" eyebrow and `v{version}`
+  footer, `Fact`'s mono tag, `WorkspaceSourceControl`, `FolderPicker`. Kept as arbitrary
+  values rather than promoted to tokens *or* folded into `text-xs`: folding would visibly
+  loosen the collapsed rail and the fact tags, and a two-value scale used in four places
+  doesn't earn `@theme` entries. Don't reach for them for anything a user reads at length —
+  they exist for eyebrows, tags and version stamps.
 - Mono font used for: file paths, git hashes, code content, tag labels in `Fact`
 
 ## Spacing & layout
@@ -115,21 +146,22 @@ keeps the width correct on first paint instead of flashing after hydration.
 | Component | Location | Variants / key props | Notes |
 |-----------|----------|----------------------|-------|
 | `card` (string const) | `components/ui-cards.tsx` | — | Apply with `className={card}` for the standard card surface (`rounded-2xl border-line bg-surface p-6`) |
-| `Button` / `buttonClasses()` | `components/ui/button.tsx` | `variant: primary\|success\|secondary\|ghost\|danger\|accent`, `size: sm\|md\|icon`, `loading?`, `icon?` | **The** button. Replaced 11 drifted treatments. `loading` renders the spinner, disables, and sets `aria-busy`. Built-in focus ring + `disabled:opacity-50`. Use `buttonClasses()` for `<Link>`s. Gradients are dark-stopped so white text clears AA — don't lighten them. |
+| `Button` / `buttonClasses()` | `components/ui/button.tsx` | `variant: primary\|success\|secondary\|ghost\|danger\|warn\|accent`, `size: sm\|md\|icon`, `loading?`, `icon?` | **The** button. Replaced 11 drifted treatments, then 6 more in 2026-08-13 (`GitControls`' local `syncBtn` string ×4, `AttachmentPicker`'s attach button, `NewTaskForm`'s onboard nudge). `warn` is caution rather than failure — the action that clears a warning you're being shown; it exists for the not-onboarded-yet notice. `loading` renders the spinner, disables, and sets `aria-busy`. Built-in focus ring + `disabled:opacity-50`. Use `buttonClasses()` for `<Link>`s. Gradients are dark-stopped so white text clears AA — don't lighten them. |
 | `Modal` | `components/ui/modal.tsx` | `label`, `header?`, `actions?`, `onClose`, `className?` | Dialog shell: `role="dialog"` + `aria-modal` + accessible name, Escape-to-close, focus trap, focus restore, body-scroll lock. `DiffModal`/`FileModal` build on it — never hand-roll an overlay. |
 | `PageHeader` | `components/ui-cards.tsx` | `title`, `description?`, `actions?` | Standard page title block. Carries **no** outer margin — place it inside the page's own `space-y-6`. |
 | `EmptyState` | `components/ui-cards.tsx` | `icon?`, `title`, `hint?`, `action?` | Dashed-border placeholder for empty lists/sections. |
 | `Select` | `components/ui/select.tsx` | `value`, `onChange`, `options: {value,label,description?,icon?}[]`, `searchable?`, `mono?`, `placeholder?`, `disabled?`, `className?`, `ariaLabel?` | **Searchable** bespoke combobox (popover + filter + keyboard nav). Use instead of native `<select>` or per-file wrappers. Search auto-enables past 7 options (force with `searchable`). `className` is for width/layout (e.g. `w-full`, `min-w-48`). Full combobox/listbox ARIA + keyboard. |
 | `CardSection` | `components/ui-cards.tsx` | `title`, `right?`, `className?` | `card` + header row (title + optional right slot); has built-in `min-w-0` so it shrinks inside grid/flex parents. Use instead of hand-rolling `<section className={card}><h2>…</h2>` |
 | `ViewAll` | `components/ui-cards.tsx` | `href`, `children?` (default "View all") | The "there is more of this elsewhere" link for a `CardSection` `right` slot — accent text + `ArrowRight`. Used by the dashboard's Agents / Projects / Recent-activity cards and by each `/tasks` project group ("Open project"). Was page-local in `app/(app)/page.tsx`; shared the moment a second page capped a list. |
-| `Input` / `fieldClasses` | `components/ui/input.tsx` | native `<input>` props | The form field. `fieldClasses` is the same border/focus/placeholder treatment as a string, so a `<textarea>` can match an `<input>` exactly instead of a second copy drifting (`AddBacklogItem` uses it). Not for the composer textareas in `NewTaskForm`/`TaskLiveView` — those are deliberately `bg-transparent` inside a bordered drop zone. |
-| `BacklogItemRow` | `components/BacklogItemRow.tsx` | `projectId`, `item: BacklogRowItem`, `canOpenLinkedTask` | One row of `/backlog`: status dot + title + provenance (priority `Chip`, `/assignee`, spec path, "agent-filed" warn chip) + `ExpandableRequest` preview, with a `Select` for status and a Run button that dispatches and navigates to `/tasks/<id>`. Renders `item.status` straight from the server rather than holding an optimistic copy — the sync and the linked-task reflection can both move a row, and reconciling that would need `setState` in an effect, which this build forbids. `canOpenLinkedTask` is decided server-side: the backlog is shared but tasks are private, so a link to someone else's run would be a guaranteed 404. |
+| `Input` / `fieldClasses()` | `components/ui/input.tsx` | `size: sm\|md\|lg`, `tone: default\|danger`, + native `<input>` props | **The** form field, and the only one — five hand-rolled inputs were folded into it (2026-08-13), each of which had drifted its own focus ring (`ring-ring/40` vs the canonical `ring-accent/30`). `size`: `sm` = dense inline (`FolderPicker`'s go-to-path bar), `md` = default, `lg` = heading-sized so `ProjectName`'s rename-in-place doesn't resize the title. `tone="danger"` turns the focus border/ring danger-toned for a destructive confirmation (`DataSettings`' type-UNINSTALL field). `fieldClasses(size, tone, className)` is the same treatment as a string — shaped exactly like `buttonClasses()` — so a `<textarea>` matches an `<input>` instead of a second copy drifting (`AddBacklogItem`). **The field is `w-full`**, so a caller wanting a fixed width must use `max-w-*`, not `w-*`: two same-specificity width utilities race in the output CSS. Not for the composer textareas in `NewTaskForm`/`TaskLiveView` — those are deliberately `bg-transparent` inside a bordered drop zone. |
+| `GettingStarted` | `components/GettingStarted.tsx` | `hasProject`, `hasTask`, `firstProjectId?` | First-run checklist on the dashboard: **token → project → first task**, rendering `null` once all three hold, so it costs an established user nothing. Defines the app's three nouns in one place (agent = installed plugin, project = folder on this device, task = one agent command run against a project) — the audit's finding was that a new user had to reverse-engineer all three. **Subsumes `TokenNudge` on the dashboard**: the token is step 1, and two banners saying it on one screen is the duplication this was meant to fix. Exactly **one CTA at a time**, on the first incomplete step — a checklist whose point is the obvious next thing shouldn't offer three competing buttons. State is spoken (`sr-only` "Done/Next/To do"), never colour-or-icon alone. The token step is marked `blocking`, which warn-tones **that row** — the tone sits on the row rather than on the card because `card` already sets `border-line` and a conditional `border-warn-line` on the same element is two same-specificity border colours racing in the emitted CSS. Rows are `flex-wrap` with the text column on `min-w-40` (not `min-w-0`): with `flex-1` and no floor the text collapses to a sliver beside the CTA instead of letting the CTA wrap, which at 390px wrapped the explainer one word per line. Server component; reads the vault directly like `TokenNudge` and takes the counts from the caller, which already queried them. |
+| `BacklogItemRow` | `components/BacklogItemRow.tsx` | `projectId`, `item: BacklogRowItem`, `canOpenLinkedTask` | One row of `/backlog`: status dot + title + provenance (priority `Chip`, `/assignee`, spec path, "agent-filed" warn chip) + `ExpandableRequest` preview, with a `Select` for status and a Run button that dispatches and navigates to `/tasks/<id>`. The Run button reports the item's state rather than always offering the same action: **Run** → **Re-run** once it has a linked task → **Running** (disabled) while that task is live → **Done** (green `success`, disabled) once `item.status` is `done`. `item.status`, not the linked task's, so a run that finished and an item a person ticked off read identically. Re-running a done item is deliberately one step away — set the status control back to *To do* — because a disabled button gets `pointer-events-none`, so a `title` explaining how would never show on hover; the control that does it is the one sitting next to it. Renders `item.status` straight from the server rather than holding an optimistic copy — the sync and the linked-task reflection can both move a row, and reconciling that would need `setState` in an effect, which this build forbids. `canOpenLinkedTask` is decided server-side: the backlog is shared but tasks are private, so a link to someone else's run would be a guaranteed 404. |
 | `AddBacklogItem` | `components/AddBacklogItem.tsx` | `projectId`, `projectName` | "Add item" button + `Modal` form (title / description / agent). Fields are cleared only after the row exists, so a failed submit doesn't lose what was typed. |
 | `AtAGlance` | `components/AtAGlance.tsx` | `total`, `successRate`, `inProgress`, `changedFiles`, `isWorkspace`, `memberCount`, `branchInfo`, `aheadBehind` | Project summary card (stats + git/workspace facts) |
 | `SourceControl` | `components/SourceControl.tsx` | `projectId`, `isWorkspace`, `members`, `branchInfo`, `changes` | Project source-control card; delegates to `WorkspaceSourceControl` or `GitControls`+`ChangesList` |
 | `TaskList` | `components/TaskList.tsx` | `history: TaskRow[]`, `namespaceById`, `projectNameById?`, `emptyMessage?` | **The** task-*history* row: project detail (via `TaskHistory`), dashboard recent activity, agent detail recent runs. (`UsageSummaryCard`'s "Most expensive runs" stays separate on purpose — it's a cost ranking over a narrow `TaskSpend` projection with no status or agent, so it has no badge and leads with cost. It shares the *naming* rule via `taskDisplayTitle()`, not the markup.) **Title-first** — `taskDisplayTitle()` from `lib/ui.ts` prefers `tasks.title` and falls back to `requestText`, then "no description". Row: `/ns:cmd` + version · name (`flex-1 truncate`, visible at every width) · project cell (only when `projectNameById` is passed) · cost + time-ago (`sm+`) · `StatusBadge`. Renders its own empty state; **no card shell** — the hosts head their cards differently, so wrap it in `CardSection`. Slicing is the caller's job. |
 | `TaskHistory` | `components/TaskHistory.tsx` | `history`, `namespaceById`, `className?` | Project detail's "Task history" card: `CardSection` + run count around `TaskList`, with the project cell omitted (every row belongs to the project on screen). |
-| `Chip` | `components/ui-cards.tsx` | `tone: neutral\|ok\|violet\|sky\|warn`, `icon?`, `title?` | Pill badge for metadata/tags; tones map to the semantic tone tokens. `warn` means *caution*, not failure — it exists for the backlog's "agent-filed" marker, where the point is that no person has read the text yet. `title` is for a chip whose one word needs a sentence behind it. |
+| `Chip` | `components/ui-cards.tsx` | `tone: muted\|ok\|violet\|info\|warn`, `icon?`, `title?` | Pill badge for metadata/tags; tones map to the semantic tone tokens. **Tone names match the tokens they render** — they used to be `neutral` and `sky` while quietly emitting `bg-muted-soft` and `text-info`, so reading a call site told you the wrong colour; renamed 2026-08-13. There is deliberately **no `danger` tone**: nothing needs one, and an unused variant is its own debt — add it with its first call site. `warn` means *caution*, not failure — it exists for the backlog's "agent-filed" marker, where the point is that no person has read the text yet. `title` is for a chip whose one word needs a sentence behind it. |
 | `Tile` | `components/ui-cards.tsx` | `value`, `label`, `tone?: ok` | Stat tile (number + label) |
 | `Fact` | `components/ui-cards.tsx` | `icon`, `tag?`, `tagTone?: neutral\|ok\|warn` | Row in a facts list (bordered top) |
 | `StatusBadge` | `components/StatusBadge.tsx` | `status: TaskStatus` | Icon + label badge; spinner on active |

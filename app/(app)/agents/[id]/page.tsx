@@ -78,7 +78,7 @@ export default async function AgentDetail({
       <div className="mt-3 flex flex-wrap items-center gap-5">
         <Avatar namespace={agent.namespace} size={80} />
         <div className="min-w-0">
-          <h1 className="flex flex-wrap items-center gap-2.5 text-3xl font-bold tracking-tight">
+          <h1 className="flex flex-wrap items-center gap-2.5 text-2xl font-bold tracking-tight text-fg-strong">
             {agent.name}
             {agent.version && (
               <span className="rounded-md border border-line-strong bg-surface-3 px-2 py-0.5 font-mono text-sm font-normal text-fg-subtle">
@@ -87,7 +87,7 @@ export default async function AgentDetail({
             )}
           </h1>
           <div className="mt-2 flex flex-wrap items-center gap-2.5 text-xs">
-            <Chip icon={<Hash className="size-3" />} tone="sky">
+            <Chip icon={<Hash className="size-3" />} tone="info">
               /{agent.namespace}
             </Chip>
             <Chip icon={<SquareTerminal className="size-3" />}>

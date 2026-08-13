@@ -12,7 +12,7 @@ export function AgentContributors({
   ringClass?: string;
 }) {
   if (namespaces.length === 0)
-    return <span className="text-xs text-fg-ghost">no runs yet</span>;
+    return <span className="text-xs text-fg-faint">no runs yet</span>;
 
   const label = `${namespaces.length} contributing agent${
     namespaces.length === 1 ? "" : "s"

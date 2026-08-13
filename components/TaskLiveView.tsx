@@ -612,7 +612,7 @@ export function TaskLiveView({
               <AttachmentPicker files={changeFiles} setFiles={setChangeFiles} />
             </div>
             <div className="flex items-center justify-between gap-3 border-t border-line px-3 py-2">
-              <span className="text-xs text-fg-ghost">
+              <span className="text-xs text-fg-faint">
                 Continues the same session — edits its prior work, doesn&apos;t restart.
               </span>
               <Button
@@ -719,7 +719,7 @@ function BubbleView({
             {bubble.attachments.map((a, i) => (
               <span
                 key={`${a.name}-${i}`}
-                className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-lg border border-line-strong bg-surface-2 px-2 py-1 text-xs text-fg-muted"
+                className="inline-flex max-w-64 items-center gap-1.5 rounded-lg border border-line-strong bg-surface-2 px-2 py-1 text-xs text-fg-muted"
               >
                 {a.type.startsWith("image/") ? (
                   <ImageIcon className="size-3.5 shrink-0 text-accent" />

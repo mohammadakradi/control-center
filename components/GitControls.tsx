@@ -7,11 +7,12 @@ import {
   ArrowUpFromLine,
   Check,
   GitBranch,
-  Loader2,
   Plus,
   X,
 } from "lucide-react";
 import type { BranchInfo } from "@/lib/git";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 
 export function GitControls({
@@ -52,8 +53,6 @@ export function GitControls({
   }
 
   const disabled = busy !== null;
-  const syncBtn =
-    "inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface-2 px-3 py-1.5 text-sm text-fg hover:bg-surface-3 disabled:opacity-50";
 
   return (
     <div className="space-y-3">
@@ -73,34 +72,33 @@ export function GitControls({
             }}
             className="flex flex-1 items-center gap-2"
           >
-            <input
+            <Input
               autoFocus
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder="new-branch-name"
               aria-label="New branch name"
-              className="min-w-0 flex-1 rounded-lg border border-line-strong bg-surface-2 px-3 py-2 font-mono text-sm text-fg outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-ring/40"
+              className="min-w-0 flex-1 font-mono"
             />
-            <button
+            <Button
               type="submit"
               disabled={disabled}
-              className={syncBtn}
               aria-label="Create branch"
+              icon={<Check className="size-4" aria-hidden="true" />}
             >
-              <Check className="size-4" />
               Create
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={() => {
                 setCreating(false);
                 setNewName("");
               }}
-              className="p-1.5 text-fg-faint hover:text-fg-muted"
               aria-label="Cancel"
             >
-              <X className="size-4" />
-            </button>
+              <X className="size-4" aria-hidden="true" />
+            </Button>
           </form>
         ) : (
           <>
@@ -119,14 +117,13 @@ export function GitControls({
                 ...info.branches.map((b) => ({ value: b, label: b })),
               ]}
             />
-            <button
+            <Button
               onClick={() => setCreating(true)}
               disabled={disabled}
-              className={syncBtn}
+              icon={<Plus className="size-4" aria-hidden="true" />}
             >
-              <Plus className="size-4" />
               New branch
-            </button>
+            </Button>
           </>
         )}
       </div>
@@ -164,32 +161,24 @@ export function GitControls({
         </div>
 
         <div className="flex shrink-0 gap-2">
-          <button
+          <Button
             onClick={() => call("pull")}
             disabled={disabled || !info.hasRemote}
-            className={syncBtn}
+            loading={busy === "pull"}
             title={info.hasRemote ? "git pull --ff-only" : "No remote configured"}
+            icon={<ArrowDownToLine className="size-4" aria-hidden="true" />}
           >
-            {busy === "pull" ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <ArrowDownToLine className="size-4" />
-            )}
             Pull
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={() => call("push")}
             disabled={disabled || !info.hasRemote}
-            className={syncBtn}
+            loading={busy === "push"}
             title={info.hasRemote ? "git push origin HEAD" : "No remote configured"}
+            icon={<ArrowUpFromLine className="size-4" aria-hidden="true" />}
           >
-            {busy === "push" ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <ArrowUpFromLine className="size-4" />
-            )}
             Push
-          </button>
+          </Button>
         </div>
       </div>
 

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Pencil, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 /** The project title, editable in place. Click the pencil to rename; the name is
  *  cosmetic (the on-disk path is the project's stable identity) and survives rescans. */
@@ -55,7 +56,7 @@ export function ProjectName({
 
   if (!editing) {
     return (
-      <h1 className="group flex items-center gap-2 text-2xl font-bold tracking-tight break-words sm:text-3xl">
+      <h1 className="group flex items-center gap-2 text-2xl font-bold tracking-tight break-words text-fg-strong sm:text-3xl">
         <span className="min-w-0 break-words">{name}</span>
         <button
           type="button"
@@ -73,7 +74,8 @@ export function ProjectName({
   return (
     <div>
       <div className="flex flex-wrap items-center gap-2">
-        <input
+        <Input
+          size="lg"
           autoFocus
           value={value}
           maxLength={100}
@@ -83,7 +85,7 @@ export function ProjectName({
             if (e.key === "Escape") setEditing(false);
           }}
           aria-label="Project name"
-          className="min-w-0 flex-1 rounded-lg border border-line-strong bg-sunken px-3 py-1.5 text-2xl font-bold tracking-tight text-fg-strong outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-ring/40 sm:text-3xl"
+          className="min-w-0 flex-1"
         />
         <Button
           variant="primary"
