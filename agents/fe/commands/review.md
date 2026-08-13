@@ -28,3 +28,8 @@ read `.fe/design-system.md` for the project's tokens and reuse catalog. This com
 4. **Report** findings grouped by severity (blocking / should-fix / nit). For each, give the
    `file:line`, what's wrong, and a concrete fix (name the token/component to use). If it
    looks good, say so plainly.
+5. **Anything worth keeping is filed, not just reported.** Blocking items belong in this diff.
+   For should-fix findings that are out of scope for it, use `add_backlog_item` (if available)
+   so they survive — one item per piece of work — and name what you filed. A finding you can
+   see but can't scope goes in with `assignee: "pm"` for investigation and breakdown. Nits
+   stay in the report.

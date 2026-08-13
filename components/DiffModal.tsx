@@ -22,7 +22,7 @@ function DiffView({ diff }: { diff: string }) {
           line.startsWith("new file") ||
           line.startsWith("deleted file")
         )
-          cls = "text-fg-ghost";
+          cls = "text-fg-faint";
         return (
           <div key={i} className={`whitespace-pre-wrap px-2 ${cls}`}>
             {line || " "}

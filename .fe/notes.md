@@ -265,6 +265,82 @@ returns 3 and omits the other user's, which is the `ownedBy()` contract holding 
 is polled from every page. Markup was inspected by temporarily seeding
 `getServerActiveTasksSnapshot()` + the open state, since the badge SSRs to `null` by design.
 
+## `fg-ghost` is the regression this project keeps having (2026-08-13)
+Third time. A design audit found **ten** more uses of `text-fg-ghost` on real text after the
+token doc already recorded fixing it twice. All ten are now `fg-faint`; a grep for
+`text-fg-ghost` should return `aria-hidden` icons, `Markdown` list markers and one
+`bg-fg-ghost` status dot, and nothing else.
+
+Why it keeps happening: `fg-ghost` *looks* right for anything you want to de-emphasise, and
+every one of these was a deliberate de-emphasis — a path, a file size, a version stamp, a
+"no runs yet" fallback. **De-emphasised is not decorative.** The test isn't "is this
+important", it's "is this a character a sighted user could want to read" — if yes it's text,
+and `fg-ghost` (≈3.25:1 in light) fails AA for it. Two of the ten were in `Sidebar`, which the
+audit itself had filed under "consistent micro-typography, not a violation", so it's worth
+grepping the whole tree rather than trusting a component's reputation.
+
+## One field primitive, one button primitive — check before hand-rolling (2026-08-13)
+`components/ui/input.tsx` now carries `size` (`sm|md|lg`) and `tone` (`default|danger`), which
+was the whole reason five inputs had been hand-rolled: the defaults didn't fit, so each call
+site rebuilt the treatment and drifted its focus ring (`focus-visible:ring-ring/40` against the
+canonical `focus:ring-accent/30`). Extending the primitive was ~15 lines and deleted all five
+copies. Same for `Button`, which gained a `warn` variant and absorbed six more hand-rolled
+treatments including `GitControls`' local `syncBtn` class string.
+
+Two gotchas from doing it:
+- **`fieldClasses` is a function now**, not a string (`fieldClasses("md", "default", extra)`),
+  matching `buttonClasses()`. Its one existing caller (`AddBacklogItem`'s textarea) was updated.
+- **The field is `w-full`, so a fixed width needs `max-w-*`, not `w-*`.** Two width utilities of
+  the same specificity race in the generated CSS and Tailwind's output order — not the class
+  attribute's order — decides. `DataSettings`' UNINSTALL field is `max-w-44` for this reason.
+- `Button` spreads `{...rest}` *after* its own `type="button"`, so `type="submit"` still works
+  when you need a real submit button (`GitControls`' Create).
+
+**Two deliberate visual side effects of adopting the primitive** — recorded so neither gets
+rediscovered later as a regression:
+- `ProjectName`'s rename-in-place field went from `bg-sunken` to the primitive's `bg-surface-2`.
+  Kept: `surface-2` sits further from `canvas` than `sunken` does in *both* themes, so the
+  field reads more clearly as editable than the thing it replaced.
+- `AddProjectForm`'s field went from `border-line` to `border-line-strong`. That's the
+  design system's own stated rule for inputs (`border-line-strong`), so the migration
+  *removed* drift rather than introducing it.
+
+## The dashboard is the onboarding surface (2026-08-13)
+`components/GettingStarted.tsx` — token → project → first task, `null` once all three hold.
+Decisions worth not re-litigating:
+- **It replaces `TokenNudge` on the dashboard**, and only there. The token is step 1, so
+  rendering both put the same sentence on screen twice. `TokenNudge` still stands alone on
+  project detail and backlog, where a full checklist would be off-topic.
+- **One CTA at a time**, on the first incomplete step. Three buttons is not a checklist.
+- **The three nouns are defined in the card's own intro**, not spread across three pages —
+  that was the actual audit finding (a new user had to reverse-engineer what an "agent" was).
+  The page headers on `/agents`, `/projects` and `/tasks` now each restate their own noun.
+- State is `sr-only` text ("Done: ", "Next: ", "To do: ") before each step title, because a
+  green check and a tinted row are colour-only signals.
+- It takes `hasProject`/`hasTask` as props rather than querying — the dashboard has already
+  run both queries, and a server component doing them again is two wasted round-trips.
+  (`getCurrentUser()` *is* called twice, but it's `cache()`-wrapped in `lib/auth.ts`, so it
+  dedupes per request.)
+
+Two layout traps this hit, both worth knowing generally:
+- **The warn tone had to go on the row, not the card.** `card` already contains
+  `border border-line`, so `${card} border-warn-line` puts two same-specificity border-colour
+  utilities on one element and the *emitted CSS order* decides — not the class attribute's
+  order. It happened to render correctly, which is worse than failing. Tone an element whose
+  classes you own end to end.
+- **`flex-wrap` doesn't wrap anything if a sibling can shrink to nothing.** The step rows are
+  `flex flex-wrap` with a `min-w-0 flex-1` text column and a `shrink-0` button. Rather than
+  wrapping the button, flexbox collapsed the text to a sliver — at 390px the explainer wrapped
+  one word per line. The floor (`min-w-40`) is what forces the wrap; `min-w-0` is only right
+  when the child is *supposed* to truncate.
+
+## Headless Chrome screenshots of this app need `--virtual-time-budget` (2026-08-13)
+`--headless=new --screenshot` waits for the load event, and pages here hold open connections
+(`ActivityBadge` polls, `UpdateBanner` fetches `/api/updates`, which reaches out to the GitHub
+Releases API and can hang for minutes offline). Chrome then never exits and the shell call
+times out with no file written. Add `--virtual-time-budget=5000` and background the process
+with a hard `kill -9` fallback. macOS has no `timeout(1)` — that's coreutils' `gtimeout`.
+
 ## Component library: bespoke only
 No shadcn/ui, Radix, or MUI. All components are handbuilt. Reuse `Chip`, `Tile`, `Fact`, `card`, `CardSection`, `PageHeader`, `EmptyState` (from `ui-cards.tsx`), `StatusBadge`, and the `components/ui/` primitives before writing new ones.
 

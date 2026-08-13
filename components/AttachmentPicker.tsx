@@ -2,6 +2,7 @@
 
 import { useRef, useState, type ReactNode } from "react";
 import { FileText, ImageIcon, Paperclip, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 export const MAX_FILES = 10;
 export const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB each
@@ -116,24 +117,23 @@ export function AttachmentPicker({
           e.target.value = ""; // allow re-selecting the same file
         }}
       />
-      <button
-        type="button"
+      <Button
+        size="sm"
         onClick={() => input.current?.click()}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-line-strong px-2.5 py-1 text-xs text-fg-muted hover:bg-surface-3"
         title="Attach documents or photos"
+        icon={<Paperclip className="size-3.5" aria-hidden="true" />}
       >
-        <Paperclip className="size-3.5" />
         Attach files
-      </button>
+      </Button>
       {files.length === 0 ? (
-        <span className="text-xs text-fg-ghost">{hint}</span>
+        <span className="text-xs text-fg-faint">{hint}</span>
       ) : (
         files.map((f, i) => {
           const isImg = f.type.startsWith("image/");
           return (
             <span
               key={`${f.name}-${i}`}
-              className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-lg border border-line-strong bg-surface-2 px-2 py-1 text-xs text-fg-muted"
+              className="inline-flex max-w-64 items-center gap-1.5 rounded-lg border border-line-strong bg-surface-2 px-2 py-1 text-xs text-fg-muted"
             >
               {isImg ? (
                 <ImageIcon className="size-3.5 shrink-0 text-accent" />
@@ -141,7 +141,7 @@ export function AttachmentPicker({
                 <FileText className="size-3.5 shrink-0 text-violet" />
               )}
               <span className="truncate">{f.name}</span>
-              <span className="shrink-0 text-fg-ghost">{fmtSize(f.size)}</span>
+              <span className="shrink-0 text-fg-faint">{fmtSize(f.size)}</span>
               <button
                 type="button"
                 onClick={() => setFiles(files.filter((_, idx) => idx !== i))}

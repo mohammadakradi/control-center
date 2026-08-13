@@ -80,7 +80,26 @@ export type DispatchInput = {
   /** Pre-allocated id, for callers that had to name the task before the row existed
    *  (uploads land in `data/uploads/<taskId>/`). */
   taskId?: string;
+  /**
+   * A title the caller already knows, which suppresses the runner's naming call.
+   *
+   * The runner only names a task when the row has no title (`nameTask` in
+   * `runner/session-manager.ts`), and naming costs a real Haiku round-trip on the owner's
+   * token. A backlog item was titled by whoever planned or filed it, so summarising its own
+   * request text back into a worse title is a call nobody needs to pay for.
+   */
+  title?: string | null;
 };
+
+/** Titles are shown in lists and are not free-form input — cap them like the generated ones
+ *  (`generateTitle` caps at 80) and drop anything that would render as a blank row. Cut by
+ *  code point, not by `slice`: a title ending in an emoji would otherwise be truncated
+ *  mid-surrogate-pair and render as a replacement character. */
+function cleanTitle(title: string | null | undefined): string | null {
+  const collapsed = (title ?? "").replace(/\s+/g, " ").trim();
+  const t = [...collapsed].slice(0, 80).join("");
+  return t || null;
+}
 
 /** The installed agent for a namespace (`swe`, `fe`), or null if none is installed.
  *  Prefers a CLI-registered plugin over the copy bundled with the app, matching
@@ -119,6 +138,7 @@ export async function createAndStartTask(input: DispatchInput): Promise<Dispatch
       command: input.command,
       agentVersion: agent?.version ?? null,
       requestText: input.requestText ?? "",
+      title: cleanTitle(input.title),
       status: "queued",
       model: resolveModel(input.model),
       attachments: input.attachments ?? [],

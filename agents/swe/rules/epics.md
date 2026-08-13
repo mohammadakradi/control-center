@@ -49,5 +49,15 @@ _Status: active | done · created <date> · updated <date>_
 - **Keep it honest:** the epic reflects reality. Don't check off a task that isn't actually
   done and reviewed; do add tasks you discover are necessary.
 
+## Epics and the project backlog
+
+An epic is the *plan*; the backlog is where planned work gets *picked up*. Where the
+`add_backlog_item` tool is available (a Control Center run), an approved epic's tasks are filed
+as backlog items — one per task, carrying the context an implementer needs — and each returned
+id is recorded beside its task in the epic. Keep the two consistent as you go: check the task
+off in the epic when it's done, and note which item you were running. An epic with no backlog
+items is a plan invisible from where people choose their work; a backlog item with no epic
+behind it has lost its sequencing.
+
 Epics are for genuinely multi-step work. A one-shot change doesn't need one — the normal
 per-request plan is enough.

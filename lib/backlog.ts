@@ -34,10 +34,11 @@ import {
   type TaskStatus,
 } from "./db/schema";
 import {
-  isSpecAssignee,
+  isBacklogAssignee,
   parseFrontmatter,
   specTitle,
   targetNamespace,
+  type BacklogAssignee,
   type SpecAssignee,
 } from "./pm-spec";
 import { CLOSED_BACKLOG_STATUSES } from "./ui";
@@ -393,7 +394,7 @@ export function findBacklogItem(projectId: string, itemId: string): BacklogItem 
 export type NewBacklogItem = {
   title: string;
   description?: string;
-  assignee?: SpecAssignee | null;
+  assignee?: BacklogAssignee | null;
   priority?: string | null;
   status?: BacklogStatus;
   source: Extract<BacklogSource, "manual" | "agent">;
@@ -520,7 +521,7 @@ export function loadProjectBacklog(project: Pick<Project, "id" | "path">): Backl
 export type BacklogEdit = {
   title?: string;
   description?: string;
-  assignee?: SpecAssignee | null;
+  assignee?: BacklogAssignee | null;
   priority?: string | null;
   status?: BacklogStatus;
 };
@@ -634,8 +635,8 @@ export function parseBacklogEdit(body: unknown): ParseResult<BacklogEdit> {
 
   if (raw.assignee !== undefined) {
     if (raw.assignee === null || raw.assignee === "") edit.assignee = null;
-    else if (isSpecAssignee(raw.assignee)) edit.assignee = raw.assignee;
-    else return { ok: false, error: 'assignee must be "fe", "swe" or null' };
+    else if (isBacklogAssignee(raw.assignee)) edit.assignee = raw.assignee;
+    else return { ok: false, error: 'assignee must be "fe", "swe", "pm" or null' };
   }
 
   if (raw.priority !== undefined) {

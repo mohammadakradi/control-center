@@ -92,7 +92,7 @@ export default async function TaskPage({
               <Chip icon={<GitBranch className="size-3" />}>{task.branch}</Chip>
             )}
             {task.model && task.model !== "auto" && (
-              <Chip icon={<Cpu className="size-3" />} tone="sky">
+              <Chip icon={<Cpu className="size-3" />} tone="info">
                 {MODEL_DISPLAY[task.model] ?? task.model}
               </Chip>
             )}
@@ -112,7 +112,7 @@ export default async function TaskPage({
             />
           </div>
           {project && (
-            <p className="mt-1.5 font-mono text-xs break-all text-fg-ghost">
+            <p className="mt-1.5 font-mono text-xs break-all text-fg-faint">
               {project.path}
             </p>
           )}

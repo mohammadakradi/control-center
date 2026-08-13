@@ -127,6 +127,32 @@ test("stores description and assignee, and leaves assignee unset when omitted", 
   assert.equal(rotate.description, "");
 });
 
+test("an unscopable finding can be filed to pm for investigation", async () => {
+  // The escalation path: an agent that knows something is wrong but not what the fix is hands
+  // it to pm rather than inventing a task nobody can act on. The run route dispatches a
+  // pm-assigned item as `/pm:plan`.
+  const { call, def } = session();
+  // Asked of the schema itself: the enum is the only thing standing between the model and an
+  // assignee the backlog can't route to.
+  const assignee = (def.inputSchema as Record<string, { safeParse(v: unknown): { success: boolean } }>)
+    .assignee;
+  for (const ok of ["fe", "swe", "pm", undefined]) {
+    assert.equal(assignee.safeParse(ok).success, true, `${ok} must be accepted`);
+  }
+  for (const bad of ["dba", "PM", "pm ", ""]) {
+    assert.equal(assignee.safeParse(bad).success, false, `${bad} must be rejected`);
+  }
+
+  await call({
+    title: "Uploads intermittently fail on the installed app",
+    description: "Seen twice; couldn't reproduce. Needs someone to scope it properly.",
+    assignee: "pm",
+  });
+  const [item] = itemsIn("p1").filter((i) => i.assignee === "pm");
+  assert.ok(item, "pm must be storable as an assignee");
+  assert.equal(item.status, "todo");
+});
+
 test("takes no project argument — a forged one cannot redirect the write", async () => {
   // The schema is the contract the model sees: if a project key ever appears in it, an agent
   // can file work into a backlog that isn't the one it's working in.

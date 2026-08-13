@@ -278,6 +278,10 @@ export function TaskLiveView({
   const [gate, setGate] = useState<Gate | null>(seed.gate);
   const [live, setLive] = useState("");
   const [feedback, setFeedback] = useState("");
+  // Files attached to a gate answer. A gate is the only moment a live task is listening, so
+  // it's where "look at this screenshot" belongs — the after-the-fact composer below can't
+  // reach a task that is still running.
+  const [gateFiles, setGateFiles] = useState<File[]>([]);
   const [connected, setConnected] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
   const [reconnectKey, setReconnectKey] = useState(0);
@@ -389,19 +393,58 @@ export function TaskLiveView({
 
   async function respond(allow: boolean) {
     const fb = feedback.trim() || undefined;
+    const files = gateFiles;
+    const answered = gate; // kept so a failed answer can be put back in front of the user
     setGate(null);
     setFeedback("");
+    setGateFiles([]);
+    const filesNote = files.length
+      ? ` (+${files.length} file${files.length === 1 ? "" : "s"})`
+      : "";
     const note = allow
       ? fb
-        ? `Approved with changes: ${fb}`
-        : "Approved"
-      : `Rejected${fb ? `: ${fb}` : " — revise and present again"}`;
-    setBubbles((prev) => [...prev, { kind: "decision", text: note, allow }]);
-    await fetch(`/api/tasks/${taskId}/respond`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ allow, feedback: fb }),
-    });
+        ? `Approved with changes: ${fb}${filesNote}`
+        : `Approved${filesNote}`
+      : `Rejected${fb ? `: ${fb}` : " — revise and present again"}${filesNote}`;
+    const decision: Bubble = { kind: "decision", text: note, allow };
+    setBubbles((prev) => [...prev, decision]);
+    // Multipart only when there are files: an empty FormData is a body with nothing in it,
+    // and JSON is what every other gate answer has always sent.
+    const init: RequestInit = files.length
+      ? {
+          method: "POST",
+          body: (() => {
+            const fd = new FormData();
+            fd.set("allow", String(allow));
+            if (fb) fd.set("feedback", fb);
+            for (const f of files) fd.append("files", f);
+            return fd;
+          })(),
+        }
+      : {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ allow, feedback: fb }),
+        };
+    const res = await fetch(`/api/tasks/${taskId}/respond`, init).catch(() => null);
+    if (!res?.ok) {
+      // The answer never landed, so put the user back exactly where they were: the gate card
+      // returns with their words and files still in it. Anything less loses typed feedback and
+      // an attached screenshot to a failed request, while the decision bubble on screen would
+      // read as "sent".
+      const body = res ? ((await res.json().catch(() => ({}))) as { error?: string }) : {};
+      setBubbles((prev) => prev.filter((b) => b !== decision));
+      setGate(answered);
+      setFeedback(fb ?? "");
+      setGateFiles(files);
+      setBubbles((prev) => [
+        ...prev,
+        {
+          kind: "log",
+          text: `⚠️ That answer didn't reach the agent — ${body.error ?? "the server didn't take it"}. Nothing was sent; the gate below is still waiting.`,
+        },
+      ]);
+    }
   }
 
   const [stopping, setStopping] = useState(false);
@@ -433,14 +476,25 @@ export function TaskLiveView({
     if (withChanges && !message && files.length === 0) return;
     setContinuing(true);
     setContinueError(null);
-    // FormData when there are files; the continue API accepts multipart and JSON.
-    const fd = new FormData();
-    if (message) fd.set("message", message);
-    for (const f of files) fd.append("files", f);
-    const res = await fetch(`/api/tasks/${taskId}/continue`, {
-      method: "POST",
-      body: fd,
-    }).catch(() => null);
+    // Multipart only when there are files. The plain "Continue" button used to post a
+    // completely empty FormData — a body whose only content is a boundary, for a request that
+    // has nothing to say — and the API accepts JSON perfectly well for that.
+    const init: RequestInit = files.length
+      ? {
+          method: "POST",
+          body: (() => {
+            const fd = new FormData();
+            if (message) fd.set("message", message);
+            for (const f of files) fd.append("files", f);
+            return fd;
+          })(),
+        }
+      : {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: message || undefined }),
+        };
+    const res = await fetch(`/api/tasks/${taskId}/continue`, init).catch(() => null);
     setContinuing(false);
     if (!res?.ok) {
       const body = res
@@ -545,6 +599,8 @@ export function TaskLiveView({
                 gate={b.gate}
                 feedback={feedback}
                 setFeedback={setFeedback}
+                files={gateFiles}
+                setFiles={setGateFiles}
                 onRespond={respond}
               />
             ) : (
@@ -612,7 +668,7 @@ export function TaskLiveView({
               <AttachmentPicker files={changeFiles} setFiles={setChangeFiles} />
             </div>
             <div className="flex items-center justify-between gap-3 border-t border-line px-3 py-2">
-              <span className="text-xs text-fg-ghost">
+              <span className="text-xs text-fg-faint">
                 Continues the same session — edits its prior work, doesn&apos;t restart.
               </span>
               <Button
@@ -651,11 +707,15 @@ function GateCard({
   gate,
   feedback,
   setFeedback,
+  files,
+  setFiles,
   onRespond,
 }: {
   gate: Gate;
   feedback: string;
   setFeedback: (v: string) => void;
+  files: File[];
+  setFiles: (f: File[]) => void;
   onRespond: (allow: boolean) => void;
 }) {
   return (
@@ -671,16 +731,31 @@ function GateCard({
       <div className="mb-3 max-h-72 overflow-auto rounded-lg bg-sunken p-3">
         <Markdown>{gate.summary}</Markdown>
       </div>
-      <textarea
-        value={feedback}
-        onChange={(e) => setFeedback(e.target.value)}
-        placeholder="Optional feedback (sent with Approve-with-changes or Reject)"
-        rows={2}
-        className="mb-2 w-full rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm text-fg outline-none focus:border-warn focus-visible:ring-2 focus-visible:ring-warn-line"
-      />
+      {/* Feedback + files travel together: a screenshot is usually the *reason* for the
+          feedback, and this is the only composer a running task can be reached through. */}
+      <FileDropZone
+        files={files}
+        setFiles={setFiles}
+        className="mb-2 overflow-hidden rounded-lg border bg-surface-2 focus-within:border-warn focus-within:ring-2 focus-within:ring-warn-line"
+      >
+        <textarea
+          value={feedback}
+          onChange={(e) => setFeedback(e.target.value)}
+          placeholder="Optional feedback (sent with Approve-with-changes or Reject)"
+          rows={2}
+          className="w-full resize-y bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-fg-faint"
+        />
+        <div className="border-t border-line px-3 py-2">
+          <AttachmentPicker
+            files={files}
+            setFiles={setFiles}
+            hint="or drop a screenshot here"
+          />
+        </div>
+      </FileDropZone>
       <div className="flex flex-wrap gap-2">
         <Button variant="success" onClick={() => onRespond(true)}>
-          {feedback.trim() ? "Approve with changes" : "Approve"}
+          {feedback.trim() || files.length ? "Approve with changes" : "Approve"}
         </Button>
         <Button variant="danger" onClick={() => onRespond(false)}>
           Reject &amp; revise
@@ -719,7 +794,7 @@ function BubbleView({
             {bubble.attachments.map((a, i) => (
               <span
                 key={`${a.name}-${i}`}
-                className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-lg border border-line-strong bg-surface-2 px-2 py-1 text-xs text-fg-muted"
+                className="inline-flex max-w-64 items-center gap-1.5 rounded-lg border border-line-strong bg-surface-2 px-2 py-1 text-xs text-fg-muted"
               >
                 {a.type.startsWith("image/") ? (
                   <ImageIcon className="size-3.5 shrink-0 text-accent" />

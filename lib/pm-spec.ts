@@ -32,11 +32,27 @@ export function parseFrontmatter(content: string): Record<string, string> {
   return out;
 }
 
-/** The agents a spec can be handed to. */
+/** The agents a *spec* can be handed to. pm is deliberately absent: a pm spec is the output of
+ *  planning, so routing one back to the planner is a loop, and `targetNamespace` must always
+ *  land on someone who implements. */
 export type SpecAssignee = "fe" | "swe";
 
 export function isSpecAssignee(v: unknown): v is SpecAssignee {
   return v === "fe" || v === "swe";
+}
+
+/**
+ * The agents a *backlog item* can be handed to — the implementers plus pm.
+ *
+ * An item assigned to pm is a problem, not a task: something an agent (or a person) hit and
+ * couldn't scope, where the next step is investigation and a breakdown rather than a fix. It
+ * dispatches as `/pm:plan`, which is what turns it into specs the sync then imports as real
+ * items (see the run route).
+ */
+export type BacklogAssignee = SpecAssignee | "pm";
+
+export function isBacklogAssignee(v: unknown): v is BacklogAssignee {
+  return isSpecAssignee(v) || v === "pm";
 }
 
 /** Which agent a spec should go to: explicit `assignee`, else derived from `stack`. */

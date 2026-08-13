@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Bot, FileText, Play } from "lucide-react";
+import { Bot, Check, FileText, Play } from "lucide-react";
 import { ExpandableRequest } from "@/components/ExpandableRequest";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -71,6 +71,13 @@ export function BacklogItemRow({
   const [errorLink, setErrorLink] = useState<{ href: string; label: string } | null>(null);
 
   const running = item.linkedTask !== null && ACTIVE_STATUSES.has(item.linkedTask.status);
+  // Finished work doesn't offer a Run button — it says so instead. `item.status`, not the
+  // linked task's: an item is `done` both when its run finished and when a person marked it
+  // done by hand, and those should read identically. Re-running stays one click away via the
+  // status control beside it (set it back to To do), which is also the only honest place to
+  // put that affordance — a disabled button gets `pointer-events-none`, so a `title`
+  // explaining how to re-run would never appear on hover.
+  const completed = item.status === "done";
   // The stored description is the spec file verbatim, so the preview has to skip the
   // frontmatter or every synced item opens with `--- title: … stack: …`.
   const body = specBody(item.description).trim();
@@ -202,26 +209,38 @@ export function BacklogItemRow({
           {/* `md`, not `sm`: `Select`'s trigger is a `py-2 text-sm` control with no size
               prop, and a small button beside it sits visibly short of its height. */}
           <Button
-            variant="accent"
+            variant={completed ? "success" : "accent"}
             onClick={run}
             loading={busy === "run"}
-            disabled={running || busy !== null}
-            icon={<Play className="size-4" aria-hidden="true" />}
+            disabled={completed || running || busy !== null}
+            icon={
+              completed ? (
+                <Check className="size-4" aria-hidden="true" />
+              ) : (
+                <Play className="size-4" aria-hidden="true" />
+              )
+            }
             title={
-              running
-                ? "This item is already running as a task"
-                : item.assignee
-                  ? `Dispatch this item to the ${item.assignee} agent`
-                  : "Dispatch this item as a task"
+              completed
+                ? "This item is done — set its status back to To do to run it again"
+                : running
+                  ? "This item is already running as a task"
+                  : item.assignee === "pm"
+                    ? "Hand this to the pm agent to investigate and break into tasks"
+                    : item.assignee
+                      ? `Dispatch this item to the ${item.assignee} agent`
+                      : "Dispatch this item as a task"
             }
           >
             {busy === "run"
               ? "Starting…"
-              : running
-                ? "Running"
-                : item.linkedTask
-                  ? "Re-run"
-                  : "Run"}
+              : completed
+                ? "Done"
+                : running
+                  ? "Running"
+                  : item.linkedTask
+                    ? "Re-run"
+                    : "Run"}
           </Button>
         </div>
       </div>

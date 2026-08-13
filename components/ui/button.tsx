@@ -12,6 +12,9 @@ export type ButtonVariant =
   | "ghost"
   /** Destructive or stop action. */
   | "danger"
+  /** Caution, not failure — the action that clears a warning you're being shown
+   *  (e.g. "Onboard /swe" inside the not-onboarded-yet notice). */
+  | "warn"
   /** Tinted, low-emphasis accent action (e.g. "Create fix task"). */
   | "accent";
 
@@ -33,6 +36,7 @@ const VARIANTS: Record<ButtonVariant, string> = {
     "border-transparent text-fg-subtle hover:bg-hover hover:text-fg-strong",
   danger:
     "border-danger-line bg-danger-soft text-danger hover:brightness-110",
+  warn: "border-warn-line bg-warn-soft text-warn hover:brightness-110",
   accent: "border-info-line bg-info-soft text-info hover:brightness-110",
 };
 

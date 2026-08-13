@@ -10,6 +10,7 @@ import {
   type Attachment,
   type TaskStatus,
 } from "../lib/db/schema";
+import { attachmentNote } from "../lib/uploads";
 import { classifyTurnEnd, type PauseReason } from "./completion";
 import { GATE_PROMPT } from "./gate-prompt";
 import {
@@ -415,12 +416,10 @@ function runTask(
   const attachSet = resume
     ? extraAttachments
     : ((task.attachments ?? []) as Attachment[]);
-  const attachNote = attachSet.length
-    ? `\n\nThe user attached ${attachSet.length} file(s)${resume ? " with this follow-up" : " to this request"}. Read each with the Read tool before acting on it (images render visually; PDFs and docs are parsed):\n` +
-      attachSet
-        .map((a) => `- ${a.path}  (${a.type}, ${Math.round(a.size / 1024)} KB)`)
-        .join("\n")
-    : "";
+  const attachNote = attachmentNote(
+    attachSet,
+    resume ? "with this follow-up" : "to this request",
+  );
   const resumePrompt = changeMessage
     ? changesPrompt(agent.namespace, changeMessage)
     : extraAttachments.length

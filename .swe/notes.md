@@ -669,3 +669,92 @@ update after every change.
     verify process *identity* (pre-existing, not introduced here — a stale pid file whose
     number gets reused by an unrelated process would still read as "alive"); `status` always
     exits 0 regardless of state (matches prior behavior, not a regression).
+
+- **2026-08-13 — five requests in one task: backlog titles, uploads, skills, skill order, and
+  agent-filed work.** The interesting half is the upload one, because the reported bug did not
+  reproduce and the investigation is worth more than the fix.
+  - **Backlog runs no longer pay for a title.** `DispatchInput.title` → the row, and the runner
+    only names a task whose row has none (`if (!resume && !task.title)`), so passing the item's
+    own title through suppresses the Haiku call by construction rather than by a new flag.
+  - **"I can't send a request after attaching a photo" could not be reproduced, and here is
+    what was tried** (all against the *installed* app on :7373, since that's what the user
+    runs — `~/.control-center` is a different database and a production build):
+    - `curl` multipart at 18 B / 1 MB / 8 MB / 24 MB → all parsed and saved. No body-size limit,
+      no permission problem, no `PLATFORM_DATA_DIR` issue.
+    - Chrome driven over CDP against the *real* project page: attached a 1.8 MB PNG via
+      `DOM.setFileInputFiles`, the chip rendered, pressed **Run task**, and intercepted the
+      request with the `Fetch` domain — a correct
+      `multipart/form-data; boundary=----WebKitFormBoundary…`, then aborted so nothing
+      dispatched. This is the cheapest way to inspect what the real UI sends without paying for
+      a run; keep `/tmp/wk-test/cdp.mjs`'s shape in mind next time.
+    - A **WKWebView replica of the Mac app**, compiled with `swiftc` (~40 lines, same
+      `runOpenPanelWith` delegate, auto-answering with a file URL): the open panel fires for a
+      `display:none` input, the chip appears on the real page, and a separate probe posted a
+      disk-backed 1.8 MB photo with a proper boundary. So WebKit is not the problem — including
+      the two things that looked most suspicious (a hidden input, and a File backed by a real
+      file rather than constructed in JS).
+  - **What the logs did show: 7 × `TypeError: Failed to parse body as FormData` → `no boundary
+    found in multipart body`** in `~/.control-center/logs/web.log`. An unhandled throw in a
+    route handler is an HTML 500, so the composer's `res.json()` yielded `{}` and the user saw
+    a bare "Failed to dispatch task". The cause of *those seven* is unknown — possibly an
+    earlier agent's hand-written `curl -H 'Content-Type: multipart/form-data'`, since a browser
+    always emits a boundary. Note the production server (`next start`) logs no request lines,
+    so there is nothing to correlate them against; don't expect to.
+  - Fixed what was actually defective rather than guessing: `readFormData` (400 + the offending
+    content-type logged, never a 500), the client sending multipart **only** when there are
+    files (the plain Continue button was posting an empty `FormData`), and `NewTaskForm`
+    catching a rejected `fetch` — it didn't, so a network error left the button spinning on
+    "Dispatching…" forever with no message, which is itself a faithful description of "I can't
+    send the request".
+  - **The real gap, and the likeliest thing the user hit: you could not attach anything to a
+    task that was still running.** The composer with the attach button only renders on a
+    terminal task, and the gate feedback box was text-only — so at a proposal/report gate, the
+    one moment the agent is listening, a screenshot had nowhere to go. `respond` now takes
+    multipart and appends the saved paths to the feedback via `attachmentNote`. Only
+    server-written paths are appended; a client-supplied path there would be an
+    arbitrary-file-read primitive aimed at the agent.
+  - **`ONBOARD_MARKERS` became load-bearing.** Hiding `onboard` once an agent is onboarded means
+    a namespace with no marker (it reads as "always onboarded") would never offer onboarding at
+    all — pm was in that state, so it got `.pm/notes.md`. A "Re-onboard /ns" link keeps a
+    deliberate refresh reachable.
+  - **`orderSkills` lives in `lib/ui.ts`, not in the component**, purely so `pnpm test` sees it:
+    the test script's globs are exact (`lib/*.test.ts`), and ordering logic inside a `.tsx` is
+    untestable here. Verified in the browser too, since a unit test can't prove the picker uses
+    it: fe renders task, fix, audit, review, plan, ship; swe task, fix, security, review, plan,
+    ship, workspace; pm just plan; and Re-onboard reveals + selects `onboard`.
+  - **The agent-side dedupe I planned already existed** (`openItemWithTitle` in
+    `runner/backlog-tool.ts`), so "re-running `/swe:plan` shouldn't double-file" needed no code —
+    only the rule text telling `plan` to file its tasks in the first place. Check that file
+    before adding a guard to it.
+  - Agent rule edits go in the **source checkouts** (`../swe-agent`, `../fe-agent` — neither is
+    a git repo, so nothing to commit there) and then `pnpm agents:sync` to refresh `agents/`.
+    Both plan commands, both review commands, `swe:security`, the fe audit procedure and both
+    workflows' report gates now say to file out-of-scope findings, and to use `assignee: "pm"`
+    for anything the agent couldn't scope.
+  - Probes that touch real state must be cleaned up **by exact name**: this task created
+    `task_zz_probe` plus `data/uploads/task_zz_probe/` in the dev DB and three upload dirs in the
+    *installed* data dir, and removed each one explicitly (`data/uploads` back to 11 dirs, no
+    `task_zz%` rows). Never a wildcard `rm` under `data/`.
+  - **The security review's one blocking finding, worth remembering as a class:** the new
+    multipart branch on `POST /api/tasks/[id]/respond` wrote files for *any* owned task, with no
+    check that a gate was pending — so it was a disk-fill primitive that needed no agent turn
+    and no state transition, i.e. cheaper than the `continue` path it was modelled on (which at
+    least requires a terminal task and starts a session). Fixed two ways: files are refused
+    (409) unless the row is `awaiting_proposal`/`awaiting_report`, and `saveAttachments` now
+    takes the task's existing attachments and enforces **cumulative** ceilings
+    (`MAX_TASK_FILES` 30, `MAX_TASK_BYTES` 100 MB). The general lesson: a per-request cap bounds
+    one request, never a sequence, and "the existing endpoint does it this way" is not a bound —
+    ask what the *cheapest repeatable* call costs the disk. Verified by curl in all three
+    states (non-gated + files → 409 and nothing written; gated + files → saved; non-gated
+    text-only → unchanged passthrough).
+  - The correctness review's two worth-fixing notes: `cleanTitle` sliced UTF-16 units, so a
+    title ending in an emoji truncated mid-surrogate-pair and would render a replacement
+    character in every task list (now cut by code point); and a gate answer that failed to send
+    cleared the card optimistically, losing the typed feedback *and* the attached screenshot —
+    it now removes its own decision bubble and puts the gate, the text and the files back.
+  - Known and accepted after the re-review (non-blocking, from the auditor): the gate check and
+    the cumulative caps both read `task.status`/`task.attachments` once per request, so two
+    *concurrent* `respond` calls against the same open gate can each pass against the same
+    snapshot and write one batch apiece. That bounds an overrun to a few extra batches under
+    deliberate concurrency — not the unbounded loop it replaced. Closing it properly means the
+    read and the write in one transaction; not worth it for a loopback app today.

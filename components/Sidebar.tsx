@@ -55,7 +55,7 @@ export function Sidebar({
 
       {/* Links */}
       <nav aria-label="Primary" className="flex-1 px-3 rail:px-2">
-        <p className="mb-2 px-2 text-[11px] font-medium tracking-wider text-fg-ghost uppercase rail:hidden">
+        <p className="mb-2 px-2 text-[11px] font-medium tracking-wider text-fg-faint uppercase rail:hidden">
           Navigate
         </p>
         <ul className="space-y-1">
@@ -160,7 +160,7 @@ export function Sidebar({
 
         {version && (
           <p
-            className="px-3 text-[11px] text-fg-ghost rail:hidden"
+            className="px-3 text-[11px] text-fg-faint rail:hidden"
             title={`Agent Control Center ${version}`}
           >
             v{version}

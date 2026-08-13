@@ -51,6 +51,22 @@ reverse.
 If a task is bigger than it looks, surface that before sinking time into it. If you're
 guessing, say you're guessing. Don't paper over failing tests or hide errors.
 
+**Findings you aren't going to fix must land somewhere durable.** A paragraph in a report is
+read once and then lost. When you notice work that is genuinely outside the task you were
+given, and the `add_backlog_item` tool is available, file it — one item per piece of work,
+titled the way it should read in a list, with enough description that whoever picks it up
+isn't starting from nothing. Mention in your report that you filed it. Never file the task
+you are currently doing, and never file it *instead of* doing work you were asked for.
+
+**If you couldn't scope it, hand it to pm — don't invent a task.** Some findings are a
+symptom, not a piece of work: you know something is wrong but not what the fix is, or it
+spans more of the system than you looked at, or it needs a product decision first. Filing
+those as `assignee: swe` produces a task the next agent can only guess at. File them with
+**`assignee: "pm"`** instead, describing the symptom and the evidence you actually have, and
+say in your report that you've recommended pm investigate it. The pm agent runs a real
+investigation and breaks it into implementable specs, which come back into the same backlog.
+That is the escalation path — use it rather than either guessing or staying silent.
+
 ## 10. Keep a decision & gotcha journal (`.swe/notes.md`)
 The project carries a running journal at `.swe/notes.md` — reusable lessons that aren't
 obvious from the code: environment gotchas, surprising behaviors, and the rationale behind

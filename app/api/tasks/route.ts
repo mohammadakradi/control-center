@@ -5,7 +5,7 @@ import { tasks, type Attachment } from "@/lib/db/schema";
 import { getCurrentUser } from "@/lib/auth";
 import { ownedBy } from "@/lib/task-access";
 import { createAndStartTask, dispatchRefusal } from "@/lib/dispatch";
-import { saveAttachments } from "@/lib/uploads";
+import { BAD_MULTIPART, readFormData, saveAttachments } from "@/lib/uploads";
 import { newId } from "@/lib/util";
 
 export const dynamic = "force-dynamic";
@@ -56,7 +56,11 @@ export async function POST(request: Request) {
   let attachments: Attachment[] = [];
 
   if (request.headers.get("content-type")?.includes("multipart/form-data")) {
-    const form = await request.formData();
+    const form = await readFormData(request);
+    // A body that says multipart and isn't must not become a 500: the composer reads the JSON
+    // error out of the response, and an HTML error page leaves it showing "Failed to dispatch
+    // task" with nothing to act on.
+    if (!form) return NextResponse.json({ error: BAD_MULTIPART }, { status: 400 });
     fields = {
       projectId: form.get("projectId")?.toString(),
       agentId: form.get("agentId")?.toString(),

@@ -101,7 +101,7 @@ export function WorkspaceSourceControl({
           {m.branch?.current && (
             <Chip icon={<GitBranch className="size-3" />}>{m.branch.current}</Chip>
           )}
-          <span className="min-w-0 break-all font-mono text-xs text-fg-ghost">
+          <span className="min-w-0 break-all font-mono text-xs text-fg-faint">
             {m.path}
           </span>
         </div>

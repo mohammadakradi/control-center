@@ -111,6 +111,14 @@ Two deliverables, then stop for approval:
    least one **accessibility check** (keyboard nav / focus / contrast). **Link the file** in
    your report.
 
+3. **Anything you found and are not fixing.** Out-of-scope findings (a component that should
+   be extracted, a page still on raw palette shades, an a11y gap elsewhere) go into the
+   project backlog via `add_backlog_item` — one item per piece of work — rather than living in
+   this report, which is read once. If you found a problem you *couldn't scope* — the right
+   direction is a product decision, or fixing it properly reaches past the UI — file it with
+   `assignee: "pm"` and say you've recommended pm investigate and break it down. List what
+   you filed; see rule 9 of the frontend rules.
+
 Present the nutshell + the link, then **STOP and wait for the user.** If they want changes,
 return to the relevant phase.
 

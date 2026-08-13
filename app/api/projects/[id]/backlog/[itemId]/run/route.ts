@@ -60,7 +60,8 @@ export async function POST(_req: Request, { params }: Ctx) {
 
   const want = item.assignee ?? targetNamespace(parseFrontmatter(item.description));
   // Fall back to swe if the requested agent isn't installed — it's the generalist.
-  const agent = agentForNamespace(want) ?? agentForNamespace("swe");
+  const chosen = agentForNamespace(want) ? want : "swe";
+  const agent = agentForNamespace(chosen);
   if (!agent) {
     return NextResponse.json(
       { error: `No ${want} (or swe) agent is installed to take this item.` },
@@ -68,12 +69,23 @@ export async function POST(_req: Request, { params }: Ctx) {
     );
   }
 
+  // pm has no `task` skill, and an item routed to it is a problem to investigate rather than
+  // work to build — `/pm:plan` is the skill that turns it into specs the sync then imports as
+  // implementable items. Keyed off the agent actually chosen, so a fallback to swe (pm not
+  // installed) still dispatches something swe has.
+  const command = chosen === "pm" ? "plan" : "task";
+
   const outcome = await createAndStartTask({
     projectId: id,
     agentId: agent.id,
-    command: "task",
+    command,
     userId: user.id,
     requestText: backlogRequestText(item),
+    // The item is already titled — by its spec's frontmatter, or by whoever filed it. Passing
+    // that title through means the runner skips its naming call entirely (it only names a row
+    // that has none), so the task list reads with the same words as the backlog it came from
+    // and nobody pays a Haiku round-trip to get a worse summary of text we already summarised.
+    title: item.title,
   });
 
   if (!outcome.ok) {

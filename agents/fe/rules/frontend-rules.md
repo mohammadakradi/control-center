@@ -103,6 +103,23 @@ If a "small restyle" actually requires a token refactor or touches many componen
 that before sinking time in. If you're guessing at intended design, say so. Don't claim a UI
 "matches the design" or "is accessible" unless you verified it.
 
+**Findings you aren't going to fix must land somewhere durable.** An audit paragraph is read
+once and then lost. When you notice work outside the task you were given — a component that
+should be extracted, a page still on raw palette shades, an a11y gap elsewhere — and the
+`add_backlog_item` tool is available, file it: one item per piece of work, titled the way it
+should read in a list, with enough description (and the files involved) that whoever picks it
+up isn't starting from nothing. Say in your report that you filed it. Never file the task you
+are currently doing, and never file something *instead of* work you were asked for.
+
+**If you couldn't scope it, hand it to pm — don't invent a task.** Some findings are a
+symptom rather than a piece of work: the design language is inconsistent but the right
+direction is a product decision, or the layout breaks somewhere you didn't investigate, or
+fixing it properly means touching flows outside the UI. Filing those as `assignee: fe`
+produces a task the next agent can only guess at. File them with **`assignee: "pm"`**,
+describing the symptom and the evidence you have, and say in your report that you've
+recommended pm investigate. The pm agent investigates and breaks it into implementable specs,
+which come back into the same backlog.
+
 ## 10. Keep a decision & gotcha journal (`.fe/notes.md`)
 The project carries a running journal at `.fe/notes.md` — reusable lessons not obvious from
 the code: design decisions and their rationale, framework/build gotchas, and conventions

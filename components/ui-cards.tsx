@@ -105,20 +105,23 @@ export function ViewAll({
 export function Chip({
   children,
   icon,
-  tone = "neutral",
+  tone = "muted",
   title,
 }: {
   children: ReactNode;
   icon?: ReactNode;
-  tone?: "neutral" | "ok" | "violet" | "sky" | "warn";
+  /** Named for the tone tokens they map to — `muted` and `info`, not `neutral` and
+   *  `sky`, which is what these were called while they quietly disagreed with
+   *  `bg-muted-soft` / `text-info` underneath. */
+  tone?: "muted" | "ok" | "violet" | "info" | "warn";
   /** Native tooltip — for a chip whose one word needs a sentence behind it. */
   title?: string;
 }) {
   const tones = {
-    neutral: "border-muted-line bg-muted-soft text-muted",
+    muted: "border-muted-line bg-muted-soft text-muted",
     ok: "border-ok-line bg-ok-soft text-ok",
     violet: "border-violet-line bg-violet-soft text-violet",
-    sky: "border-info-line bg-info-soft text-info",
+    info: "border-info-line bg-info-soft text-info",
     // Caution rather than failure — used for the "agent-filed" backlog marker, where the
     // point is that nobody has reviewed the text yet.
     warn: "border-warn-line bg-warn-soft text-warn",

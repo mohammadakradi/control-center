@@ -7,9 +7,16 @@ import { projects, tasks } from "@/lib/db/schema";
 import { syncAgents } from "@/lib/discovery/agents";
 import { Avatar } from "@/components/AgentAvatar";
 import { AgentContributors } from "@/components/AgentContributors";
+import { GettingStarted } from "@/components/GettingStarted";
 import { TaskList } from "@/components/TaskList";
-import { TokenNudge } from "@/components/TokenNudge";
-import { card, CardSection, PageHeader, ViewAll } from "@/components/ui-cards";
+import { buttonClasses } from "@/components/ui/button";
+import {
+  card,
+  CardSection,
+  EmptyState,
+  PageHeader,
+  ViewAll,
+} from "@/components/ui-cards";
 import { getCurrentUser } from "@/lib/auth";
 import { ownedBy } from "@/lib/task-access";
 import { ACTIVE_STATUSES } from "@/lib/ui";
@@ -63,7 +70,12 @@ export default async function Dashboard() {
         description="Overview of your agents, projects, and recent activity."
       />
 
-      <TokenNudge />
+      {/* Subsumes `TokenNudge` here — the token is step 1 of this checklist. */}
+      <GettingStarted
+        hasProject={projectList.length > 0}
+        hasTask={allTasks.length > 0}
+        firstProjectId={projectList[0]?.id}
+      />
 
       {/* Stats */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -96,7 +108,11 @@ export default async function Dashboard() {
         {/* Agents */}
         <CardSection title="Agents" right={<ViewAll href="/agents" />}>
           {agentList.length === 0 ? (
-            <Empty>No agents discovered. Install a Claude Code plugin.</Empty>
+            <EmptyState
+              icon={<Boxes className="size-6" />}
+              title="No agents discovered"
+              hint="An agent is an installed Claude Code plugin. Install one and reload — they're picked up automatically."
+            />
           ) : (
             <ul className="space-y-2">
               {agentList.map((a) => (
@@ -134,7 +150,19 @@ export default async function Dashboard() {
         {/* Projects */}
         <CardSection title="Projects" right={<ViewAll href="/projects" />}>
           {projectList.length === 0 ? (
-            <Empty>No projects yet. Add a local folder to get started.</Empty>
+            <EmptyState
+              icon={<FolderGit2 className="size-6" />}
+              title="No projects yet"
+              hint="A project is a folder on this device. Add one to give your agents somewhere to work."
+              action={
+                <Link
+                  href="/projects"
+                  className={buttonClasses("secondary", "sm", "mt-1")}
+                >
+                  Add a project
+                </Link>
+              }
+            />
           ) : (
             <ul className="space-y-2">
               {projectList.slice(0, 6).map((p) => (
@@ -167,7 +195,11 @@ export default async function Dashboard() {
           history={recent}
           namespaceById={namespaceById}
           projectNameById={projectNameById}
-          emptyMessage="No tasks yet. Add a project and dispatch one."
+          emptyMessage={
+            projectList.length === 0
+              ? "No tasks yet. Add a project, then dispatch one."
+              : "No tasks yet. Open a project and dispatch one."
+          }
         />
       </CardSection>
     </div>
@@ -212,6 +244,3 @@ function Stat({
   );
 }
 
-function Empty({ children }: { children: ReactNode }) {
-  return <p className="py-3 text-sm text-fg-subtle">{children}</p>;
-}
