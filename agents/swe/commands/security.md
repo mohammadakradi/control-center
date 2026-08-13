@@ -21,3 +21,9 @@ findings and does not change code (fixes go through `/swe:task` or `/swe:fix`).
    be checked (missing tools) — never imply "secure" for something unverified.
 4. If the user wants the issues fixed, hand off to `/swe:task` / `/swe:fix` (one finding or
    group at a time) rather than fixing inline here.
+5. **File what isn't being fixed now.** If the `add_backlog_item` tool is available, record
+   each confirmed critical/high/medium finding as its own backlog item (with `file:line` and
+   why it's exploitable) so it survives this session, and say which ones you filed. A finding
+   you could not confirm — or one whose fix depends on a decision nobody has made — goes in
+   with `assignee: "pm"` to be investigated and broken down, rather than as a task the next
+   agent would have to guess at.

@@ -27,7 +27,7 @@ export default function AgentsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Agents"
-        description="An agent is an installed Claude Code plugin, auto-discovered from this device. Its commands are the workflows you can dispatch."
+        description="An agent is an installed Claude Code plugin, auto-discovered from this device. Its skills are what you dispatch."
       />
 
       {agents.length === 0 ? (

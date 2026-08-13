@@ -70,7 +70,7 @@ export async function GettingStarted({
     {
       title: "Run your first task",
       explainer:
-        "Open the project, pick an agent and a workflow, and describe the work. You'll watch it run live.",
+        "Open the project, pick an agent and a skill, and describe the work. You'll watch it run live.",
       done: hasTask,
       icon: <Rocket className="size-4" aria-hidden="true" />,
       cta: firstProjectId

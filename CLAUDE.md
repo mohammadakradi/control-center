@@ -212,6 +212,20 @@ translate HTTP. An item can be dispatched as a real task and links back to it.
   transcript. Its `linkedTask` is exposed to everyone as `{ id, status }` and nothing more.
   An item whose task is still live refuses a second run (409) — a double click shouldn't buy
   two sessions.
+- **A run reuses the item's title, so no model renames it.** `DispatchInput.title` is stored on
+  the row, and the runner only names a task whose row has *no* title (`nameTask` in
+  `runner/session-manager.ts`) — passing it through is what suppresses the Haiku call. The item
+  was already titled, by its spec's frontmatter or by whoever filed it; paying the owner's
+  tokens to summarise that into something shorter produced a worse name. Titles are normalised
+  (one line, 80 chars) and an empty one stays null so the runner still names those.
+- **An item can be assigned to `pm`, and that means "investigate this", not "build it".**
+  `BacklogAssignee` (`lib/pm-spec.ts`) is `fe | swe | pm`, while `SpecAssignee` stays
+  `fe | swe` — a pm spec routed back to pm would be a loop, and `targetNamespace` must always
+  land on someone who implements. A pm-assigned item dispatches **`/pm:plan`** (pm has no
+  `task` skill), and the specs that plan writes re-enter this same backlog through the
+  `.pm/tasks/` sync — that round trip is the escalation path for a finding nobody could scope.
+  The command is keyed off the agent actually chosen, so falling back to swe (pm not installed)
+  still dispatches a skill swe has. The column is typed only, so this needed no migration.
 - **Only the project root's `.pm/tasks/` is scanned.** For a workspace project
   (`projects.members`), specs planned inside a member repo don't enter the backlog, even though
   `lib/pm-spec.ts` recognises the nested path form. Deliberate for now — a workspace's members
@@ -237,6 +251,16 @@ translate HTTP. An item can be dispatched as a real task and links back to it.
     per-project 1 000. A continued task gets a fresh 20, so the per-project cap is the real
     ceiling. An add is refused, never silently dropped, and both the add and the refusal are
     logged into the transcript.
+  - **A repeat title is answered with the existing item, not a second row.** Agents retry tool
+    calls, and `/swe:plan` re-run on the same goal files the same tasks again — so an open item
+    with that exact title short-circuits the add. Checked ahead of both caps, since that branch
+    writes nothing and "it's already on the list" stays the useful answer even for a session
+    that has spent its allowance.
+  - **`assignee` accepts `pm`**, which is how an agent escalates something it could not scope
+    (see the assignee note above). The swe/fe agents are told to use it — `plan` files one item
+    per planned task, and `review`/`security`/`audit`/the report gate file what they found and
+    aren't fixing — so a finding lands somewhere durable instead of in a report read once.
+    Their rule text lives in `agents/<ns>/` (edit the source checkout, then `pnpm agents:sync`).
 - **An agent-filed item is dispatched inside a nonce fence, and every part of that shape is
   load-bearing.** An item's body becomes the top-level instruction to an autonomous agent running
   on *whoever pressed Run's* token — so a `source: "agent"` body is text a model wrote, possibly
@@ -523,6 +547,55 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   It follows the OS scheme, which can disagree with the in-app light/dark/system toggle — the
   standalone window chrome can't track that toggle.
 
+## Skills, and attaching files to a live run
+- **A command is called a *skill* in the UI** ("Workflow" until 2026-08-13). The code keeps
+  `commands` — that's the plugin directory's own name for them (`agents/<ns>/commands/*.md`)
+  and the DB column — so `AgentCommand` isn't renamed; only what a user reads.
+- **`orderSkills` (`lib/ui.ts`) decides both the order and whether `onboard` is offered.**
+  Discovery sorts commands by filename, which put `audit`/`onboard` ahead of `task`; the picker
+  shows working order instead (fe: task, fix, audit, review, plan, ship · swe: task, fix,
+  security, review, plan, ship, workspace). A skill missing from that table keeps its
+  alphabetical place after the listed ones, so a new command still appears without a code
+  change.
+  - `onboard` **leads** the row until the agent is onboarded on that project, and is **dropped**
+    from it once it is. Onboarding is a one-time step, and a permanent chip for it sat in front
+    of the skills people actually came for.
+  - Which makes `ONBOARD_MARKERS` (`lib/discovery/projects.ts`) load-bearing rather than
+    cosmetic: a namespace with no marker reads as "always onboarded", so its onboard skill would
+    never be offered. pm's marker (`.pm/notes.md`) was added for exactly that reason. **Add one
+    whenever an agent gains an `onboard` command.**
+  - A "Re-onboard /ns" link keeps it reachable, because CLAUDE.md and `.fe/design-system.md` go
+    stale and re-running onboarding is a real need. It re-includes the skill and selects it.
+- **Files can be attached to a gate answer, not only to a finished task.** The composer with
+  the attach button renders only on a *terminal* task, so for a run that was live — the one
+  moment the agent is actually listening — there was no way to send a screenshot at all.
+  `POST /api/tasks/[id]/respond` now takes multipart as well as JSON: the files are saved under
+  the task's own upload directory and `attachmentNote` appends their paths to the feedback the
+  agent receives. **Only paths we just wrote are appended** — accepting a client-supplied path
+  here would turn gate feedback into "ask the agent to read any file on the device".
+  - **Files are only accepted while a gate is actually pending** (`awaiting_proposal` /
+    `awaiting_report`). Without that check `respond` was a write primitive needing no agent turn
+    and no state change — a loop of multipart posts against your own task fills the disk faster
+    than the `continue` path, which at least demands a terminal task and starts a session. Found
+    by the security review of this change. Answering a gate clears it, so writes are bounded to
+    one batch per gate. A text-only answer is unaffected.
+  - **`saveAttachments` takes the task's existing attachments, not just their names**, and
+    enforces cumulative ceilings (`MAX_TASK_FILES` 30, `MAX_TASK_BYTES` 100 MB) on top of the
+    per-request 10 × 25 MB. Per-request caps bound one upload, never a sequence of them, and a
+    task accepts batches at dispatch, at every gate and on every follow-up. Over-cap files are
+    skipped, not an error — the caller reports what it got back.
+- **A route that reads multipart uses `readFormData` (`lib/uploads.ts`), never
+  `request.formData()` directly.** Undici throws on a `multipart/form-data` request with no
+  `boundary`, and an unhandled throw in a route handler is an HTML 500 — the composer can't read
+  an error out of that, so it showed a bare "Failed to dispatch task". This install's log had
+  seven of them and no way to tell what had been sent. The helper returns null (→ 400 with
+  `BAD_MULTIPART`) and logs the content-type that caused it.
+- **The client sends multipart only when there are files**, JSON otherwise. The plain
+  "Continue" button used to post a completely empty `FormData`.
+- **A rejected `fetch` must be caught in the composer.** `NewTaskForm` didn't, so a network
+  error left the button spinning on "Dispatching…" for good with nothing said — from the user's
+  side, indistinguishable from the app ignoring them.
+
 ## UI architecture map
 - `agents/` — the swe / fe / pm plugins, vendored and shipped in the release tarball (see
   "The agents ship with the app"); read by `lib/discovery/agents.ts`, never imported as code
@@ -532,7 +605,8 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `app/projects/` — Project list + detail pages
 - `app/tasks/[id]/` — Task live view (SSE + gate actions via the authenticated
   `/api/tasks/[id]/{stream,respond,reply,stop}` proxy routes — the browser never talks
-  to the runner directly)
+  to the runner directly). `respond` and `continue` accept multipart, so a gate answer or a
+  follow-up can carry files; `reply` exists on the runner but no UI calls it
 - `app/settings/` — Per-user settings (Anthropic token vault card)
 - `app/usage/` — Per-user usage page: spend summary + Claude plan-limit bars. A top-level
   nav entry, not a Settings sub-section (moved out of Settings 2026-08-02)
@@ -566,8 +640,16 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   (`lib/frontmatter.ts` is the dependency-free primitive underneath, also used by agent
   discovery)
 - `lib/dispatch.ts` — Creating + starting a task: token gate, model allowlist, agent-version
-  snapshot, project↔agent link, failure bookkeeping. `POST /api/tasks` and the backlog's run
-  action both go through it — anything else that dispatches should too
+  snapshot, optional pre-set `title` (which suppresses the runner's naming call), project↔agent
+  link, failure bookkeeping. `POST /api/tasks` and the backlog's run action both go through it —
+  anything else that dispatches should too
+- `lib/uploads.ts` — Saving request/gate/follow-up attachments under
+  `data/uploads/<taskId>/`, plus `readFormData` (a malformed multipart body answers 400 instead
+  of throwing a 500) and `attachmentNote` (the "read these with the Read tool" note, shared by
+  the runner's prompt and the gate reply so the wording can't drift)
+- `lib/ui.ts` — Shared UI logic with no DOM: status labels/tones, `taskDisplayTitle`, and
+  `orderSkills` (skill order + whether `onboard` is offered). Kept out of the components so
+  `pnpm test` can cover it
 - `lib/db/migrate.ts` — Schema migrations: applies `drizzle/`, adopts pre-migration databases,
   snapshots before changes, and refuses to run against a schema the code can't query. Driven
   by `runner/migrate.ts` (`pnpm db:migrate`), which `install.sh` and `control-center start` run

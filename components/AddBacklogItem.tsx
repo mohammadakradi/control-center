@@ -18,6 +18,9 @@ const ASSIGNEES = [
   { value: "", label: "Decide at dispatch", description: "Route by the item's own text" },
   { value: "fe", label: "/fe", description: "Frontend — UI, components, design" },
   { value: "swe", label: "/swe", description: "Software engineer — everything else" },
+  // pm doesn't build: it investigates a problem and plans it into tasks, which then arrive in
+  // this same backlog through the `.pm/tasks/` sync. Runs as `/pm:plan`, not `/pm:task`.
+  { value: "pm", label: "/pm", description: "Project manager — investigate & break it down" },
 ];
 
 /**

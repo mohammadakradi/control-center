@@ -170,6 +170,46 @@ export function reportHasFindings(report: string): boolean {
   return true;
 }
 
+/**
+ * The order an agent's skills are offered in — the order someone works, not the alphabet.
+ *
+ * Discovery reads a plugin's `commands/` directory and sorts by filename
+ * (`lib/discovery/agents.ts`), which puts `audit`/`onboard` in front of `task`. A skill not
+ * listed here keeps its alphabetical place after the listed ones, so a new command added to
+ * an agent still shows up without a change here.
+ */
+const SKILL_ORDER: Record<string, string[]> = {
+  swe: ["task", "fix", "security", "review", "plan", "ship", "workspace"],
+  fe: ["task", "fix", "audit", "review", "plan", "ship"],
+  pm: ["plan"],
+};
+
+/**
+ * Order an agent's skills for the picker, and decide whether `onboard` belongs there at all.
+ *
+ * Onboarding is a one-time step per project: until it's done it's the obvious first thing, and
+ * once it's done it's clutter in front of the skills someone actually came for. So it leads the
+ * list while the agent isn't onboarded and is dropped once it is — the caller re-includes it
+ * (by passing `onboarded: false`) when offering a deliberate re-onboard.
+ */
+export function orderSkills<T extends { name: string }>(
+  namespace: string | undefined,
+  commands: T[],
+  onboarded: boolean,
+): T[] {
+  const order = (namespace && SKILL_ORDER[namespace]) || [];
+  const rank = (n: string) => {
+    const i = order.indexOf(n);
+    return i === -1 ? order.length : i;
+  };
+  const ordered = [...commands].sort(
+    (a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name),
+  );
+  if (onboarded) return ordered.filter((c) => c.name !== "onboard");
+  const onboard = ordered.find((c) => c.name === "onboard");
+  return onboard ? [onboard, ...ordered.filter((c) => c.name !== "onboard")] : ordered;
+}
+
 const ms = (ts: number | Date) => (ts instanceof Date ? ts.getTime() : ts);
 
 /** How long a run took (or has been running), e.g. "1h 23m", "5m 12s", "45s". */

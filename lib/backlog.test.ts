@@ -721,7 +721,7 @@ test("field validation rejects the wrong types and the too-long", () => {
       { description: "x".repeat(backlog.MAX_DESCRIPTION_LENGTH + 1) },
       /description must be/,
     ],
-    [{ assignee: "pm" }, /assignee must be/],
+    [{ assignee: "dba" }, /assignee must be/],
     [{ assignee: 1 }, /assignee must be/],
     [{ priority: 3 }, /priority must be/],
     [{ priority: "x".repeat(21) }, /priority must be/],
@@ -732,6 +732,16 @@ test("field validation rejects the wrong types and the too-long", () => {
     const parsed = backlog.parseBacklogEdit(body);
     assert.equal(parsed.ok, false, `should have rejected ${JSON.stringify(body)}`);
     if (!parsed.ok) assert.match(parsed.error, expected);
+  }
+});
+
+test("pm is a valid assignee for an item, though never for a spec", () => {
+  // An item routed to pm is a problem to investigate, not work to build — the run route turns
+  // it into `/pm:plan`. Specs stay fe/swe only, which `targetNamespace` covers.
+  for (const assignee of ["fe", "swe", "pm"]) {
+    const parsed = backlog.parseBacklogEdit({ assignee });
+    assert.equal(parsed.ok, true, `${assignee} must be accepted`);
+    assert.deepEqual(parsed.ok && parsed.value, { assignee });
   }
 });
 

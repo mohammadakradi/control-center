@@ -68,8 +68,13 @@ export type BacklogToolContext = {
 
 const DESCRIPTION =
   "Record a piece of follow-up work in this project's backlog for someone to pick up later. " +
-  "Call this when the user asks you to add something to the backlog, or when you find work " +
-  "that is genuinely out of scope for the task you are on and would otherwise be forgotten. " +
+  "Call this when the user asks you to add something to the backlog, when you plan work you " +
+  "are not building now (each task of a plan or epic is one item), or when you find work that " +
+  "is genuinely out of scope for the task you are on and would otherwise be forgotten. " +
+  "If what you found is a problem you could not scope — you know something is wrong but not " +
+  "what the fix is, or it spans more of the system than you looked at — file it with " +
+  "assignee 'pm' so it gets investigated and broken down properly, rather than guessing at a " +
+  "task nobody can act on. " +
   "It does not pause your turn and does not start the work: the item is queued as 'todo' for " +
   "a human to dispatch. Do not use it as a to-do list for the task you are currently doing.";
 
@@ -141,11 +146,12 @@ export function makeBacklogTool(ctx: BacklogToolContext) {
             "the item is run, so include the context they won't have.",
         ),
       assignee: z
-        .enum(["fe", "swe"])
+        .enum(["fe", "swe", "pm"])
         .optional()
         .describe(
-          "Which agent should take it: 'fe' for frontend/UI work, 'swe' for everything else. " +
-            "Omit if it isn't clearly one or the other.",
+          "Which agent should take it: 'fe' for frontend/UI work, 'swe' for implementation " +
+            "elsewhere, 'pm' for something that needs investigating and breaking down before " +
+            "anyone can implement it. Omit if it isn't clearly any of them.",
         ),
     },
     async (args) => {

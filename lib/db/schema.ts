@@ -6,9 +6,10 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-// Type-only (erased at runtime): the backlog's assignee is the same "which agent takes this"
-// choice a pm spec expresses, so it stays one union rather than two that can drift.
-import type { SpecAssignee } from "../pm-spec";
+// Type-only (erased at runtime): the backlog's assignee is the "which agent takes this" choice
+// a pm spec expresses, plus pm itself — an item can be a problem waiting to be planned, not
+// only a task waiting to be built. One union, defined next to the spec parser that shares it.
+import type { BacklogAssignee } from "../pm-spec";
 
 /** A registered account. */
 export const users = sqliteTable(
@@ -199,7 +200,7 @@ export const backlogItems = sqliteTable(
     // The body handed to the agent when the item is run. For a synced spec that's the
     // markdown file verbatim, so a run doesn't depend on the file still being readable.
     description: text("description").notNull().default(""),
-    assignee: text("assignee").$type<SpecAssignee>(), // null → derived at dispatch
+    assignee: text("assignee").$type<BacklogAssignee>(), // null → derived at dispatch
     status: text("status").notNull().$type<BacklogStatus>().default("todo"),
     priority: text("priority"), // free-form, as the spec frontmatter writes it (e.g. "P1")
     // Project-relative path of the `.pm/tasks/` spec this mirrors. Unique per project so sync

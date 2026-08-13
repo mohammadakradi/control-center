@@ -114,7 +114,7 @@ export default async function AgentDetail({
               below, so the four card headings on this page stay one weight. */}
           <h2 className="mb-4 text-base font-semibold text-fg-strong">At a glance</h2>
           <div className="grid grid-cols-2 gap-3">
-            <Tile value={String(agent.commands.length)} label="Commands" />
+            <Tile value={String(agent.commands.length)} label="Skills" />
             <Tile value={String(connected.length)} label="Projects" />
             <Tile value={String(runs.length)} label="Total runs" />
             <Tile
@@ -170,11 +170,11 @@ export default async function AgentDetail({
           )}
         </section>
 
-        {/* Commands */}
+        {/* Skills */}
         <section className={`${card} lg:col-span-2`}>
           <h2 className="mb-4 inline-flex items-center gap-2 text-base font-semibold text-fg-strong">
             <SquareTerminal className="size-4 text-fg-faint" />
-            Commands
+            Skills
           </h2>
           <div className="grid gap-2 sm:grid-cols-2">
             {agent.commands.map((c) => (

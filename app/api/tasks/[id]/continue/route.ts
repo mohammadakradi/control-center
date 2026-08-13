@@ -5,7 +5,7 @@ import { tasks, type Attachment } from "@/lib/db/schema";
 import { getCurrentUser } from "@/lib/auth";
 import { findOwnedTask } from "@/lib/task-access";
 import { daemonContinueTask } from "@/lib/daemon-client";
-import { saveAttachments } from "@/lib/uploads";
+import { BAD_MULTIPART, readFormData, saveAttachments } from "@/lib/uploads";
 
 export const dynamic = "force-dynamic";
 
@@ -32,12 +32,13 @@ export async function POST(
   let added: Attachment[] = [];
 
   if (req.headers.get("content-type")?.includes("multipart/form-data")) {
-    const form = await req.formData();
+    const form = await readFormData(req);
+    if (!form) return NextResponse.json({ error: BAD_MULTIPART }, { status: 400 });
     message = form.get("message")?.toString();
     const files = form.getAll("files").filter((f): f is File => f instanceof File);
     if (files.length) {
       const existing = (task.attachments ?? []) as Attachment[];
-      added = await saveAttachments(id, files, existing.map((a) => a.name));
+      added = await saveAttachments(id, files, existing);
       if (added.length) {
         // Record on the task so the header count reflects the total.
         db.update(tasks)

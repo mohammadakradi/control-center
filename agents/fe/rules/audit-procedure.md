@@ -78,3 +78,11 @@ COVERAGE GAPS: <what couldn't be checked automatically (e.g. visual contrast) an
 End by telling the user how to act: fix individual items with `/fe:task "<item>"`, or
 `/fe:plan` an epic to clean up systematically. Optionally append the confirmed items to the
 "Known inconsistencies / debt" section of `.fe/design-system.md` so they're tracked.
+
+**Then put the findings somewhere they'll be picked up.** An audit whose only output is a
+report is read once and forgotten. If the `add_backlog_item` tool is available, file the
+**confirmed P1 and P2 items** as backlog items — one per piece of work, with the files
+involved and the token/component it should use — and say in the report which ones you filed.
+Anything you could only mark **suspected**, or where the right direction is a product/design
+decision rather than a fix, goes in with `assignee: "pm"` so it gets investigated and broken
+down properly instead of becoming a task the next agent has to guess at. Don't file P3 nits.

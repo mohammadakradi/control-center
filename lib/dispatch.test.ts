@@ -161,6 +161,51 @@ test("a pre-allocated id is honoured — uploads are already stored under it", a
   );
 });
 
+test("a caller-supplied title is stored, which is what suppresses the naming call", async () => {
+  // The runner only names a task whose row has no title, so storing one here is the whole
+  // mechanism by which a backlog run avoids paying for a Haiku summary of its own request.
+  const outcome = await dispatch.createAndStartTask({
+    projectId: "p1",
+    agentId: "fe@bundled",
+    command: "task",
+    userId: "user_local",
+    requestText: "implement the thing",
+    title: "Add Invoice Approval Flow",
+  });
+  assert.equal(outcome.ok, false); // runner is unreachable; the row still exists
+  if (outcome.ok) return;
+  const row = db.select().from(schema.tasks).where(eq(schema.tasks.id, outcome.taskId!)).get()!;
+  assert.equal(row.title, "Add Invoice Approval Flow");
+});
+
+test("a title is normalised, and a useless one stays null so the runner still names it", async () => {
+  const cases: [string | null | undefined, string | null][] = [
+    ["  Spaced   out\n title ", "Spaced out title"],
+    ["   ", null],
+    ["", null],
+    [null, null],
+    [undefined, null],
+    ["x".repeat(200), "x".repeat(80)],
+    // Cut by code point: slicing UTF-16 units would end this mid-surrogate-pair and render a
+    // replacement character in every task list.
+    [`${"🙂".repeat(90)}tail`, "🙂".repeat(80)],
+    [`${"e".repeat(79)}🙂 more`, `${"e".repeat(79)}🙂`],
+  ];
+  for (const [given, want] of cases) {
+    const outcome = await dispatch.createAndStartTask({
+      projectId: "p1",
+      agentId: "fe@bundled",
+      command: "task",
+      userId: "user_local",
+      title: given,
+    });
+    assert.equal(outcome.ok, false);
+    if (outcome.ok) return;
+    const row = db.select().from(schema.tasks).where(eq(schema.tasks.id, outcome.taskId!)).get()!;
+    assert.equal(row.title, want, `title ${JSON.stringify(given)}`);
+  }
+});
+
 test("a user who can't run tasks is refused before any row exists", async () => {
   delete process.env.ALLOW_SHARED_TOKEN_FALLBACK;
   try {

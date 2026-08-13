@@ -101,6 +101,13 @@ Two deliverables, then stop for approval:
    steps with the expected result at each key step, and at least one edge/failure case.
    **Link the file in your report** (e.g. `Test scenario: .swe/test-scenarios/<slug>.md`).
 
+3. **Anything you found and are not fixing.** Out-of-scope work goes into the project backlog
+   via `add_backlog_item` (one item per piece of work) rather than living in this report,
+   which is read once. If you found a problem you *couldn't scope* — a symptom, something
+   spanning more of the system than you looked at, or a product decision — file it with
+   `assignee: "pm"` and say you've recommended pm investigate and break it down. List what
+   you filed in the report; see rule 9 of the engineering rules.
+
 Present the nutshell + the link, then **STOP and wait for the user.** If they want changes,
 return to the relevant phase.
 

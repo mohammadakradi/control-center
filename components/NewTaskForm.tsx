@@ -19,6 +19,7 @@ import { Avatar } from "@/components/AgentAvatar";
 import { AttachmentPicker, FileDropZone } from "@/components/AttachmentPicker";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
+import { orderSkills } from "@/lib/ui";
 
 type Cmd = {
   name: string;
@@ -34,9 +35,6 @@ type AgentLite = {
   description?: string | null;
   commands: Cmd[];
 };
-
-// Preferred command order for the SWE agent.
-const SWE_ORDER = ["task", "fix", "review", "ship", "onboard", "workspace"];
 
 const MODELS = [
   { value: "auto", label: "Auto (smart)" },
@@ -75,32 +73,6 @@ const AGENT_META: Record<
   },
 };
 
-/** Order an agent's commands: SWE follows a curated order, others keep theirs.
- *  Until the agent is onboarded on this project, its `onboard` command floats
- *  to the top so it's the obvious first step. */
-function orderCommands(
-  namespace: string | undefined,
-  commands: Cmd[],
-  onboarded: boolean,
-): Cmd[] {
-  let ordered = commands;
-  if (namespace === "swe") {
-    const rank = (n: string) => {
-      const i = SWE_ORDER.indexOf(n);
-      return i === -1 ? SWE_ORDER.length : i;
-    };
-    ordered = [...commands].sort(
-      (a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name),
-    );
-  }
-  if (!onboarded) {
-    const onboard = ordered.find((c) => c.name === "onboard");
-    if (onboard)
-      ordered = [onboard, ...ordered.filter((c) => c.name !== "onboard")];
-  }
-  return ordered;
-}
-
 export function NewTaskForm({
   projectId,
   agents,
@@ -119,9 +91,12 @@ export function NewTaskForm({
   );
   // Unknown agents (no marker defined) aren't gated.
   const onboarded = onboardedByAgent[agentId] ?? true;
+  // `onboard` is dropped from the list once it's done — but CLAUDE.md and the design-system
+  // notes go stale, so "Re-onboard" puts it back rather than making a refresh unreachable.
+  const [reonboard, setReonboard] = useState(false);
   const commands = useMemo(
-    () => orderCommands(agent?.namespace, agent?.commands ?? [], onboarded),
-    [agent, onboarded],
+    () => orderSkills(agent?.namespace, agent?.commands ?? [], onboarded && !reonboard),
+    [agent, onboarded, reonboard],
   );
   const [command, setCommand] = useState(commands[0]?.name ?? "");
   const [requestText, setRequestText] = useState("");
@@ -153,8 +128,15 @@ export function NewTaskForm({
 
   function selectAgent(a: AgentLite) {
     setAgentId(a.id);
+    setReonboard(false); // a per-agent choice — don't carry it to the next one
     const ob = onboardedByAgent[a.id] ?? true;
-    setCommand(orderCommands(a.namespace, a.commands, ob)[0]?.name ?? "");
+    setCommand(orderSkills(a.namespace, a.commands, ob)[0]?.name ?? "");
+  }
+
+  /** Reveal `onboard` again and select it. */
+  function startReonboard() {
+    setReonboard(true);
+    setCommand("onboard");
   }
 
   async function submit(e: React.FormEvent) {
@@ -171,11 +153,21 @@ export function NewTaskForm({
     fd.set("requestText", requestText);
     fd.set("model", model);
     for (const f of files) fd.append("files", f);
-    const res = await fetch("/api/tasks", { method: "POST", body: fd });
+    // A rejected fetch (server restarted, upload cut off) used to escape this function
+    // entirely, leaving the button spinning on "Dispatching…" for good with nothing said —
+    // indistinguishable, from the outside, from the app ignoring you.
+    let res: Response;
+    try {
+      res = await fetch("/api/tasks", { method: "POST", body: fd });
+    } catch {
+      setBusy(false);
+      setError("Couldn't reach the server. Check it's still running and try again.");
+      return;
+    }
     const body = await res.json().catch(() => ({}));
     setBusy(false);
     if (!res.ok) {
-      setError(body.error ?? "Failed to dispatch task");
+      setError(body.error ?? `Failed to dispatch task (HTTP ${res.status}).`);
       setNeedsToken(Boolean(body.needsToken));
       return;
     }
@@ -234,9 +226,9 @@ export function NewTaskForm({
         })}
       </div>
 
-      {/* Step 2 — workflow */}
-      <Eyebrow>Workflow</Eyebrow>
-      <div className="mb-2 flex flex-wrap gap-2">
+      {/* Step 2 — skill */}
+      <Eyebrow>Skill</Eyebrow>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
         {commands.map((c) => {
           const selected = c.name === command;
           return (
@@ -255,6 +247,17 @@ export function NewTaskForm({
             </button>
           );
         })}
+        {/* Onboarding is done, so it's out of the row — but a project's notes go stale, and
+            this is the only way back to it. */}
+        {onboarded && hasOnboard && !reonboard && (
+          <button
+            type="button"
+            onClick={startReonboard}
+            className="rounded-lg px-2 py-1.5 text-xs text-fg-faint underline decoration-dotted underline-offset-2 transition-colors hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          >
+            Re-onboard /{agent?.namespace}
+          </button>
+        )}
       </div>
       <p className="mb-6 min-h-10 max-w-2xl text-sm leading-snug text-fg-subtle">
         {cmd?.description ?? " "}

@@ -225,9 +225,11 @@ export function BacklogItemRow({
                 ? "This item is done — set its status back to To do to run it again"
                 : running
                   ? "This item is already running as a task"
-                  : item.assignee
-                    ? `Dispatch this item to the ${item.assignee} agent`
-                    : "Dispatch this item as a task"
+                  : item.assignee === "pm"
+                    ? "Hand this to the pm agent to investigate and break into tasks"
+                    : item.assignee
+                      ? `Dispatch this item to the ${item.assignee} agent`
+                      : "Dispatch this item as a task"
             }
           >
             {busy === "run"

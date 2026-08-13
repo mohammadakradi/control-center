@@ -21,6 +21,16 @@ Follow `${CLAUDE_PLUGIN_ROOT}/rules/epics.md` and the frontend engineering rules
    constraints & decisions, milestones with task checklists, empty log).
 4. **Present** the epic for approval: the goal, the milestone breakdown, sequencing, design
    decisions, risks, and open questions. **Stop and wait for the user.** Revise if asked.
+5. **Publish the tasks to the project backlog — after approval, not before.** If the
+   `add_backlog_item` tool is available, file **one item per planned task** (not per
+   milestone): its title, a description carrying what an implementer needs (which
+   components/tokens/pages, what it depends on, decisions already locked in), and `assignee`
+   `fe` (or `swe` where the work isn't frontend). Record each returned item id beside its task
+   in the epic, so the plan and the backlog point at each other. An epic that lives only in a
+   file is invisible to whoever is choosing what to work on next; the backlog is where work
+   gets picked up. Re-running plan on the same goal is safe — filing an item that already
+   exists is answered with the existing one rather than duplicated. If the tool isn't
+   available (a plain terminal session), say so in your summary instead of silently skipping.
 
 After approval, the user advances the epic by running `/fe:task` / `/fe:fix` task by task;
 those commands read the epic, pick up the next task, and check it off when done.

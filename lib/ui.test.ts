@@ -12,6 +12,7 @@ import {
   BACKLOG_STATUS_LABEL,
   backlogStatusDot,
   isOpenBacklogStatus,
+  orderSkills,
   statusColor,
   taskDisplayTitle,
 } from "./ui";
@@ -94,4 +95,66 @@ test("backlog and task statuses agree on what a colour means", () => {
   assert.equal(backlogStatusDot("done"), "bg-ok");
   assert.ok(statusColor("cancelled").includes("muted"));
   assert.equal(backlogStatusDot("cancelled"), "bg-muted");
+});
+
+/** The skills each bundled agent actually ships, in the alphabetical order discovery hands
+ *  them over (`readCommands` sorts by filename) — so these tests exercise the real input. */
+const SWE_SKILLS = ["fix", "onboard", "plan", "review", "security", "ship", "task", "workspace"];
+const FE_SKILLS = ["audit", "fix", "onboard", "plan", "review", "ship", "task"];
+
+const named = (names: string[]) => names.map((name) => ({ name }));
+const names = (cmds: { name: string }[]) => cmds.map((c) => c.name);
+
+test("fe skills are offered in working order, not alphabetical", () => {
+  assert.deepEqual(names(orderSkills("fe", named(FE_SKILLS), true)), [
+    "task",
+    "fix",
+    "audit",
+    "review",
+    "plan",
+    "ship",
+  ]);
+});
+
+test("swe skills are offered in working order", () => {
+  assert.deepEqual(names(orderSkills("swe", named(SWE_SKILLS), true)), [
+    "task",
+    "fix",
+    "security",
+    "review",
+    "plan",
+    "ship",
+    "workspace",
+  ]);
+});
+
+test("onboard only appears when the agent isn't onboarded, and leads when it does", () => {
+  for (const [ns, skills] of [
+    ["swe", SWE_SKILLS],
+    ["fe", FE_SKILLS],
+    ["pm", ["onboard", "plan"]],
+  ] as const) {
+    const onboarded = names(orderSkills(ns, named([...skills]), true));
+    assert.ok(!onboarded.includes("onboard"), `${ns}: onboarded agents don't re-offer onboard`);
+    const fresh = names(orderSkills(ns, named([...skills]), false));
+    assert.equal(fresh[0], "onboard", `${ns}: onboarding leads until it's done`);
+    assert.equal(fresh.length, skills.length, `${ns}: nothing else is dropped`);
+  }
+});
+
+test("an unknown skill keeps its alphabetical place after the curated ones", () => {
+  // A new command added to an agent must still show up without editing SKILL_ORDER.
+  const got = names(orderSkills("fe", named(["zeta", "task", "alpha", "ship"]), true));
+  assert.deepEqual(got, ["task", "ship", "alpha", "zeta"]);
+});
+
+test("an agent with no curated order is left alphabetical, minus onboard", () => {
+  assert.deepEqual(names(orderSkills("dba", named(["b", "onboard", "a"]), true)), ["a", "b"]);
+  assert.deepEqual(names(orderSkills(undefined, named(["b", "a"]), true)), ["a", "b"]);
+});
+
+test("orderSkills does not mutate the list it was given", () => {
+  const input = named(["ship", "task"]);
+  orderSkills("swe", input, true);
+  assert.deepEqual(names(input), ["ship", "task"]);
 });

@@ -58,14 +58,20 @@ export function pathExists(rawPath: string): boolean {
 }
 
 /**
- * The on-disk artifact each agent's `onboard` workflow writes. Presence of the
+ * The on-disk artifact each agent's `onboard` skill writes. Presence of the
  * marker means that agent has been onboarded on the project. Keyed by namespace.
  *   - swe writes CLAUDE.md
  *   - fe writes .fe/design-system.md (its design-system inventory; CLAUDE.md is shared)
+ *   - pm writes .pm/notes.md (its planning journal)
+ *
+ * This now decides whether `onboard` is *offered* at all, not just whether a nudge shows
+ * (see `orderSkills`), so a missing entry means that agent's onboarding is unreachable from
+ * the picker's default state. Add one whenever an agent gains an `onboard` command.
  */
 const ONBOARD_MARKERS: Record<string, string> = {
   swe: "CLAUDE.md",
   fe: ".fe/design-system.md",
+  pm: ".pm/notes.md",
 };
 
 /** Whether a given agent (by namespace) has been onboarded on a project.
