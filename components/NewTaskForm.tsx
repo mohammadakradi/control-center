@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Check,
@@ -18,8 +17,9 @@ import {
 import { Avatar } from "@/components/AgentAvatar";
 import { AttachmentPicker, FileDropZone } from "@/components/AttachmentPicker";
 import { Button } from "@/components/ui/button";
+import { ErrorAlert, type ErrorAction } from "@/components/ui/error-alert";
 import { Select } from "@/components/ui/select";
-import { orderSkills } from "@/lib/ui";
+import { dispatchErrorAction, orderSkills } from "@/lib/ui";
 
 type Cmd = {
   name: string;
@@ -103,9 +103,9 @@ export function NewTaskForm({
   const [model, setModel] = useState("auto");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Set when dispatch was refused because this user has no Anthropic token — the
-  // error then carries a link to Settings instead of being a dead end.
-  const [needsToken, setNeedsToken] = useState(false);
+  // Set when dispatch was refused for a reason the user can act on (no Anthropic token) — the
+  // error then carries a link instead of being a dead end.
+  const [errorAction, setErrorAction] = useState<ErrorAction | null>(null);
   const [files, setFiles] = useState<File[]>([]);
 
   const cmd = commands.find((c) => c.name === command);
@@ -144,7 +144,7 @@ export function NewTaskForm({
     if (busy) return;
     setBusy(true);
     setError(null);
-    setNeedsToken(false);
+    setErrorAction(null);
     // FormData so we can attach files; the API accepts both multipart and JSON.
     const fd = new FormData();
     fd.set("projectId", projectId);
@@ -168,7 +168,7 @@ export function NewTaskForm({
     setBusy(false);
     if (!res.ok) {
       setError(body.error ?? `Failed to dispatch task (HTTP ${res.status}).`);
-      setNeedsToken(Boolean(body.needsToken));
+      setErrorAction(dispatchErrorAction(body));
       return;
     }
     router.push(`/tasks/${body.id}`);
@@ -365,19 +365,7 @@ export function NewTaskForm({
         )}
       </div>
 
-      {error && (
-        <p role="alert" className="mt-3 text-sm text-danger">
-          {error}
-          {needsToken && (
-            <>
-              {" "}
-              <Link href="/settings" className="font-medium underline">
-                Open Settings
-              </Link>
-            </>
-          )}
-        </p>
-      )}
+      <ErrorAlert message={error} action={errorAction} className="mt-3 text-sm" />
     </form>
   );
 }

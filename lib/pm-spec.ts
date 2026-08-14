@@ -16,9 +16,40 @@ import { parseFrontmatter as parseRawFrontmatter } from "./frontmatter";
 /** A pm task spec lives under `.pm/tasks/<timestamp>/`. */
 export const isPmTaskPath = (p: string) => /(^|\/)\.pm\/tasks\//.test(p);
 
-/** True only for an individual task file — the request's `index.md` summary isn't work. */
+/** True only for an individual task file — the request's index summary isn't work. Both
+ *  extensions, matching the scan's own `isIndex`: an `index.markdown` is just as much a
+ *  summary, and treating it as work here would offer to dispatch a file the backlog skipped. */
 export const isPmTaskSpec = (p: string) =>
-  isPmTaskPath(p) && !/\/index\.md$/i.test(p);
+  isPmTaskPath(p) && !/\/index\.(md|markdown)$/i.test(p);
+
+/**
+ * The `sourcePath` a backlog item would carry for this spec, or `null` when the backlog can't
+ * be holding one — so a caller can look the item up by it and dispatch through the backlog
+ * instead of straight past it.
+ *
+ * Stricter than `isPmTaskSpec` on purpose, in the one way that matters: only the **project
+ * root's** `.pm/tasks/` is scanned into the backlog, and the scan keys a row on exactly
+ * `.pm/tasks/<request>/<file>` (see `scanPmSpecs`). `isPmTaskSpec` accepts a nested path
+ * because the file modal can legitimately show a spec inside a workspace member repo — but
+ * that file has no row, and matching it loosely (by suffix, say) would link a run to a
+ * *different* project's identically-named spec. Hence exact shape, and an exact comparison.
+ *
+ * A leading `./` is tolerated because these paths are copied out of agent prose, not
+ * generated; everything else that doesn't already read as a `sourcePath` is refused rather
+ * than repaired.
+ */
+export function specSourcePath(path: string): string | null {
+  const rel = path.replace(/^\.\/+/, "");
+  // Two checks rather than one flagged pattern, because they don't want the same casing rule.
+  // The *shape* is case-sensitive: `sourcePath` is stored verbatim, so `.PM/tasks/…` is simply
+  // a different string and must not resolve to a row keyed under `.pm/`. The *extension* is
+  // case-insensitive, matching `scanPmSpecs`'s own `isMarkdown` — the scan would have imported
+  // a `README.MD`, so we must be able to find it. Exactly one folder deep, and markdown only:
+  // the scan imports nothing else, so any other path can have no row to be matched against.
+  if (!/^\.pm\/tasks\/[^/]+\/[^/]+$/.test(rel)) return null;
+  if (!/\.(md|markdown)$/i.test(rel)) return null;
+  return isPmTaskSpec(rel) ? rel : null;
+}
 
 /**
  * A spec's frontmatter, keys lowercased — `Title:` and `title:` must read the same, since

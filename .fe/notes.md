@@ -428,3 +428,39 @@ Another entry for the AGENTS.md "this is not the Next.js you know" list.
 background and rasterizes 192/512/maskable-512/apple-180 through macOS QuickLook (`qlmanage`) —
 there is no ImageMagick or librsvg on the host or in the container, and `sips` can't read SVG.
 Change the mark in `app/icon.svg`, re-run, commit the PNGs.
+
+## Dispatching a spec goes through its backlog item, and a failed lookup refuses (2026-08-14)
+`FileModal`'s **Create task** used to `POST /api/tasks` directly, so the backlog item the
+`.pm/tasks/` sync had already created for that same file stayed `todo` with no `linkedTaskId`
+forever — the backlog only learned about runs started from its own Run button. It now resolves
+the item first (`GET …/backlog`, which is also what *syncs*, so an on-disk spec is guaranteed
+present and fresh) and dispatches via `POST …/backlog/<itemId>/run`. That route already owns
+agent selection, the swe fallback, `/pm:plan` for a pm item, title passthrough (no Haiku rename)
+and the already-running 409, so the client-side version of all of it became the fallback.
+
+Three things are load-bearing:
+- **`specSourcePath()` (`lib/pm-spec.ts`) matches exactly, never by suffix.** The scan keys
+  `.pm/tasks/<request>/<file>.md` **relative to the project root**, but the modal's path comes
+  from a clickable code span in agent markdown whose pattern also accepts a *nested*
+  `web/.pm/tasks/…`. Suffix-matching a workspace member's spec would link the run to a different
+  project's identically-named file. `member` is excluded before the lookup for the same reason.
+- **A failed lookup is not "no item".** Folding them together means a transient error on that
+  GET silently dispatches through a path with no duplicate check — a second concurrent agent
+  session on the same spec, on the user's token, editing the same files. The lookup returns
+  `none | item | failed` and `failed` refuses with a message; retrying is one click, undoing two
+  live runs isn't.
+- **The direct fallback's request text stays byte-identical to `backlogRequestText()`**, which
+  `lib/backlog.test.ts` asserts, so the same spec produces the same run either way.
+
+`ErrorAlert` (`components/ui/error-alert.tsx`) came out of this: the error-with-a-link pattern
+had three hand-rolled copies. The link belongs **inside** the `role="alert"` paragraph — a
+sibling is a second live-region announcement — and `dispatchErrorAction()` (`lib/ui.ts`) is the
+shared 409→"Open it" / 412→"Open Settings" mapping, unit-tested.
+
+**Verifying a modal without a browser:** temporarily render it from a component the page already
+mounts (editing an existing file hot-reloads; a *new* route directory does not — see above),
+seed its `useState` initial values, and curl the SSR'd HTML. **And check your viewport is real:**
+macOS Chrome clamps a headless window to a **500px minimum layout width**, so `--window-size=390`
+silently renders at 500 and crops — which looks exactly like a horizontal-overflow bug on every
+page at once. The control that catches it is screenshotting a *centred* layout (`/signin`): if
+it renders off-centre, the width is a lie, not the CSS.

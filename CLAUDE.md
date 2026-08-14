@@ -212,6 +212,16 @@ translate HTTP. An item can be dispatched as a real task and links back to it.
   transcript. Its `linkedTask` is exposed to everyone as `{ id, status }` and nothing more.
   An item whose task is still live refuses a second run (409) — a double click shouldn't buy
   two sessions.
+- **The file modal's "Create task" is the same dispatch, not a second one.** `FileModal` resolves
+  the spec's item (`GET …/backlog` — the load that syncs, so an on-disk spec is guaranteed
+  present) by `specSourcePath()` and then calls this route, so a spec dispatched from a
+  transcript moves its item exactly as the Run button does. Dispatching straight to
+  `POST /api/tasks` left the item at `todo` with no `linkedTaskId` forever, which is what made
+  the backlog's own status untrustworthy. That direct dispatch is now only the fallback for a
+  spec the backlog *cannot* hold — a workspace member's, or one the scan refused. A lookup that
+  **fails** is deliberately not that fallback: it refuses and says so, because `POST /api/tasks`
+  has no duplicate check, so guessing would turn one transient error into two concurrent
+  sessions on the same spec, billed to the user twice.
 - **A run reuses the item's title, so no model renames it.** `DispatchInput.title` is stored on
   the row, and the runner only names a task whose row has *no* title (`nameTask` in
   `runner/session-manager.ts`) — passing it through is what suppresses the Haiku call. The item
@@ -634,7 +644,10 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `lib/backlog.ts` — The per-project backlog (`backlog_items`): scans/syncs the pm agent's
   `.pm/tasks/` specs, validates API input, and owns the status rules (a manual status wins
   over both the sync and the linked task; see "The backlog" below)
-- `lib/pm-spec.ts` — Reading a pm task spec (frontmatter → title/assignee/priority). Shared by
+- `lib/pm-spec.ts` — Reading a pm task spec (frontmatter → title/assignee/priority), plus
+  `specSourcePath()`, which maps a spec's on-screen path to the `sourcePath` key the backlog
+  scan would have stored — root-only and matched exactly, since the modal's path may name a
+  workspace member's spec that has no row. Shared by
   `components/FileModal.tsx` and the backlog sync so one spec always routes to the same agent.
   **Imported by a client component — nothing reachable from it may touch `node:*`**
   (`lib/frontmatter.ts` is the dependency-free primitive underneath, also used by agent

@@ -7,6 +7,7 @@ import { Bot, Check, FileText, Play } from "lucide-react";
 import { ExpandableRequest } from "@/components/ExpandableRequest";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
+import { ErrorAlert, type ErrorAction } from "@/components/ui/error-alert";
 import { Chip } from "@/components/ui-cards";
 import { Select } from "@/components/ui/select";
 import { specBody } from "@/lib/pm-spec";
@@ -14,6 +15,7 @@ import {
   ACTIVE_STATUSES,
   BACKLOG_STATUS_LABEL,
   backlogStatusDot,
+  dispatchErrorAction,
 } from "@/lib/ui";
 import type { BacklogItem, TaskStatus } from "@/lib/db/schema";
 
@@ -68,7 +70,7 @@ export function BacklogItemRow({
   const [error, setError] = useState<string | null>(null);
   /** Set when dispatch was refused for a reason the user can act on, so the message can
    *  carry a link instead of being a dead end. */
-  const [errorLink, setErrorLink] = useState<{ href: string; label: string } | null>(null);
+  const [errorLink, setErrorLink] = useState<ErrorAction | null>(null);
 
   const running = item.linkedTask !== null && ACTIVE_STATUSES.has(item.linkedTask.status);
   // Finished work doesn't offer a Run button — it says so instead. `item.status`, not the
@@ -125,10 +127,7 @@ export function BacklogItemRow({
         return; // keep the spinner up through the navigation
       }
       setError(payload.error ?? `Could not start the task (${res.status})`);
-      // 409 hands back the run that's already going; 412 means this account has no token.
-      if (payload.taskId) setErrorLink({ href: `/tasks/${payload.taskId}`, label: "Open it" });
-      else if (payload.needsToken)
-        setErrorLink({ href: "/settings", label: "Open Settings" });
+      setErrorLink(dispatchErrorAction(payload));
       setBusy(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not start the task");
@@ -245,19 +244,7 @@ export function BacklogItemRow({
         </div>
       </div>
 
-      {error && (
-        <p role="alert" className="mt-2 text-xs text-danger">
-          {error}
-          {errorLink && (
-            <>
-              {" "}
-              <Link href={errorLink.href} className="font-medium underline">
-                {errorLink.label}
-              </Link>
-            </>
-          )}
-        </p>
-      )}
+      <ErrorAlert message={error} action={errorLink} className="mt-2 text-xs" />
     </li>
   );
 }

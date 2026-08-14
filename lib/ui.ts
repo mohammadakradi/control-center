@@ -210,6 +210,34 @@ export function orderSkills<T extends { name: string }>(
   return onboard ? [onboard, ...ordered.filter((c) => c.name !== "onboard")] : ordered;
 }
 
+/**
+ * The link that resolves a refused dispatch, read off the response body.
+ *
+ * Both dispatch endpoints (`POST /api/tasks` and the backlog's run action) refuse in the same
+ * actionable ways, so the mapping lives here rather than being re-derived at each call site:
+ * a `taskId` came back with the refusal, or **412** says this account has no Anthropic token.
+ * Anything else has no next step and returns null — the message stands alone.
+ *
+ * The label is **"Open the task"**, not "Open it", because `taskId` arrives from two different
+ * refusals and only one of them is a live run: the backlog's **409** hands back the session
+ * already going, while `createAndStartTask`'s **502** hands back a row it saved as `failed`
+ * when the runner couldn't be reached. "Open it" reads as "the run already going" and would be
+ * a small lie in the second case; naming the noun is true in both.
+ *
+ * `taskId` is checked to be a string before it is interpolated. The prefix is a literal, so no
+ * response could smuggle in a `javascript:` href, but a non-string would render `/tasks/[object
+ * Object]` — a link that looks real and 404s.
+ */
+export function dispatchErrorAction(
+  body: { taskId?: unknown; needsToken?: unknown } | null | undefined,
+): { href: string; label: string } | null {
+  if (typeof body?.taskId === "string" && body.taskId !== "") {
+    return { href: `/tasks/${body.taskId}`, label: "Open the task" };
+  }
+  if (body?.needsToken) return { href: "/settings", label: "Open Settings" };
+  return null;
+}
+
 const ms = (ts: number | Date) => (ts instanceof Date ? ts.getTime() : ts);
 
 /** How long a run took (or has been running), e.g. "1h 23m", "5m 12s", "45s". */

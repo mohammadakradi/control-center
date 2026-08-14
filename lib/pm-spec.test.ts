@@ -12,6 +12,7 @@ import {
   isSpecAssignee,
   parseFrontmatter,
   specBody,
+  specSourcePath,
   specTitle,
   targetNamespace,
 } from "./pm-spec";
@@ -86,9 +87,48 @@ test("isPmTaskSpec accepts task files and rejects the request index", () => {
   assert.equal(isPmTaskSpec(`${dir}/03-backend-backlog.md`), true);
   assert.equal(isPmTaskSpec(`${dir}/index.md`), false);
   assert.equal(isPmTaskSpec(`${dir}/INDEX.md`), false);
+  // Both extensions, like the scan's own `isIndex` — otherwise we'd offer to dispatch a file
+  // the backlog deliberately skipped.
+  assert.equal(isPmTaskSpec(`${dir}/index.markdown`), false);
   assert.equal(isPmTaskSpec("docs/notes.md"), false);
   // Nested project (a workspace member) still matches.
   assert.equal(isPmTaskPath(`portal/${dir}/01-a.md`), true);
+});
+
+test("specSourcePath returns the key the backlog sync would have stored", () => {
+  const dir = ".pm/tasks/20260811-113836-backlog";
+  assert.equal(specSourcePath(`${dir}/03-backend-backlog.md`), `${dir}/03-backend-backlog.md`);
+  // Paths are copied out of agent prose, so a `./` prefix is the one thing worth repairing.
+  assert.equal(specSourcePath(`./${dir}/03-backend-backlog.md`), `${dir}/03-backend-backlog.md`);
+  assert.equal(specSourcePath(`${dir}/07-a.markdown`), `${dir}/07-a.markdown`);
+});
+
+test("specSourcePath refuses anything the root scan would not have keyed", () => {
+  const dir = ".pm/tasks/20260811-113836-backlog";
+  // A workspace member's spec: a real spec the modal can show, but only the project root's
+  // `.pm/tasks/` is scanned, so no row carries this path — and matching it loosely would link
+  // the run to another project's identically-named file.
+  assert.equal(specSourcePath(`portal/${dir}/01-a.md`), null);
+  assert.equal(specSourcePath(`${dir}/index.md`), null);
+  assert.equal(specSourcePath(`${dir}/index.markdown`), null);
+  // The scan keys `<request>/<file>` and nothing deeper or shallower.
+  assert.equal(specSourcePath(`${dir}/sub/01-a.md`), null);
+  assert.equal(specSourcePath(".pm/tasks/01-a.md"), null);
+  assert.equal(specSourcePath(".fe/test-scenarios/backlog-page.md"), null);
+  assert.equal(specSourcePath(""), null);
+  // The scan imports markdown only, so nothing else can have a row to match.
+  assert.equal(specSourcePath(`${dir}/01-a.txt`), null);
+  assert.equal(specSourcePath(`${dir}/01-a.md/`), null);
+  // The paths come out of agent prose; the key is stored verbatim, so casing is not repaired.
+  assert.equal(specSourcePath(".PM/tasks/req/01-a.md"), null);
+  assert.equal(specSourcePath(".pm/Tasks/req/01-a.md"), null);
+});
+
+test("specSourcePath accepts the extension in any case, since the scan would have", () => {
+  // `scanPmSpecs`'s own `isMarkdown` is case-insensitive, so a row can exist under `.MD` —
+  // refusing it here would leave that spec permanently unable to find its own item.
+  assert.equal(specSourcePath(".pm/tasks/req/01-a.MD"), ".pm/tasks/req/01-a.MD");
+  assert.equal(specSourcePath(".pm/tasks/req/01-a.Markdown"), ".pm/tasks/req/01-a.Markdown");
 });
 
 test("specTitle prefers frontmatter, then a heading, then the filename", () => {

@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import {
   BACKLOG_STATUS_LABEL,
   backlogStatusDot,
+  dispatchErrorAction,
   isOpenBacklogStatus,
   orderSkills,
   statusColor,
@@ -157,4 +158,42 @@ test("orderSkills does not mutate the list it was given", () => {
   const input = named(["ship", "task"]);
   orderSkills("swe", input, true);
   assert.deepEqual(names(input), ["ship", "task"]);
+});
+
+// ------------------------------------------------------- dispatch error actions
+
+test("a refused dispatch offers the run that is already going", () => {
+  // The 409 from the backlog's run route hands back the live task; that link is the whole
+  // point of the message, since the answer to "it's already running" is "so go and look".
+  // The label names the noun because a 502 also returns a taskId, for a run that *failed*.
+  assert.deepEqual(dispatchErrorAction({ taskId: "task_abc" }), {
+    href: "/tasks/task_abc",
+    label: "Open the task",
+  });
+});
+
+test("a dispatch refused for a missing token points at Settings", () => {
+  assert.deepEqual(dispatchErrorAction({ needsToken: true }), {
+    href: "/settings",
+    label: "Open Settings",
+  });
+});
+
+test("a live task outranks the token hint when a body carries both", () => {
+  assert.deepEqual(dispatchErrorAction({ taskId: "task_abc", needsToken: true }), {
+    href: "/tasks/task_abc",
+    label: "Open the task",
+  });
+});
+
+test("a body with no next step gets no link, and never a broken one", () => {
+  // The message has to stand on its own rather than offering a link that 404s.
+  assert.equal(dispatchErrorAction({}), null);
+  assert.equal(dispatchErrorAction(null), null);
+  assert.equal(dispatchErrorAction(undefined), null);
+  assert.equal(dispatchErrorAction({ error: "nope" } as Record<string, unknown>), null);
+  assert.equal(dispatchErrorAction({ needsToken: false }), null);
+  // A non-string id would interpolate to `/tasks/[object Object]` — a link that looks real.
+  assert.equal(dispatchErrorAction({ taskId: { id: "x" } }), null);
+  assert.equal(dispatchErrorAction({ taskId: "" }), null);
 });
