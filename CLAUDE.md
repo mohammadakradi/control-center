@@ -304,6 +304,81 @@ translate HTTP. An item can be dispatched as a real task and links back to it.
   - Still a mitigation, not a fix — a model can be argued with. The control is a person reading
     an item before pressing Run.
 
+## Reading files out of a project tree
+`GET /api/projects/[id]/{file,diff}` take a caller-supplied relative path and read it under a
+root the user registered — `project.path`, a workspace member, or a task's git worktree, which
+for a parallel run is **written by an agent with Bash**. Their old guard (reject a leading `/`
+or a `..` segment, then `resolve()`) is purely lexical, so it proved nothing about what the
+path lands on. `lib/safe-read.ts` is the containment check; the routes keep the lexical gate
+only as a cheap pre-filter.
+- **Three escapes exist and no single check catches all three.** Measured, not assumed:
+
+  | planted in the tree | `O_NOFOLLOW` | realpath containment |
+  |---|---|---|
+  | `docs.md` → `/etc/passwd` | refuses | refuses |
+  | `link/` → `/secrets`, read as `link/id_rsa` | **opens it** | refuses |
+  | `docs.md` hard-linked to a file outside | opens (only `nlink` sees it) | **contained** |
+
+  `O_NOFOLLOW` only refuses a symlink as the *final* component, so a symlinked intermediate
+  directory walks through it; a hard link has no target to resolve, so realpath reports it as
+  living exactly where it appears. Hence both, plus `nlink === 1`.
+- **A symlink that stays inside the root is allowed**, unlike `readSpecFile` in `lib/backlog.ts`,
+  which refuses links outright. `README.md → docs/README.md` is ordinary in a repo and this is a
+  file viewer; a `.pm/tasks/` spec becomes the instruction text of an autonomous run, so the
+  stricter rule is right where it is. Escaping the root is what both refuse. The two are
+  deliberately **not** merged.
+- **Containment is decided on the inode, not by resolving the path twice.** `realpath` then
+  `open` is check-then-use, and `O_NOFOLLOW` only guards the *last* component — so swapping a
+  **directory** along the path for a symlink mid-flight gets followed. Both reviews reproduced
+  that with a shell loop. After opening, `readFileInside` therefore re-resolves and requires the
+  file at that contained path to be the very inode the handle holds (`dev` + `ino`); with
+  `nlink === 1` that is airtight, since the open file then has exactly one name and that name was
+  just seen inside the root. Re-checking the *path* alone is not enough — an attacker can put the
+  directory back and pass a second path check.
+- **`O_NONBLOCK` on the open is load-bearing, not tidiness.** `open` on a FIFO blocks until a
+  writer arrives, and that happens *before* `fstat` can classify it — so a named pipe left in a
+  tree hangs the request forever and no check afterwards helps. Found by the FIFO spec hanging
+  the suite. Regular files ignore the flag.
+- **No worktree path is handed to a subprocess any more.** A Node-side check followed by
+  `execFileSync` is check-then-use with a whole *process spawn* in the window — the audit leaked
+  a planted secret through `git diff --no-index` in 9–15ms, under 100 attempts, 3 times out of 3.
+  So an untracked file's diff is now **synthesized** in `untrackedDiff` (`lib/git.ts`) from a
+  contained read: same shape git produced (`--- /dev/null`, `@@ -0,0 +1,N @@`, `+` lines, binary
+  and no-trailing-newline cases included), close enough for `components/DiffModal.tsx`, which
+  colours by prefix. Keep it that way — reintroducing `--no-index` on a worktree path reopens the
+  race that the remaining `escapesOnDisk` pre-check cannot close.
+- **`escapesOnDisk` allows a contained *directory*.** It's the containment question, not "is this
+  a plain file". Refusing every non-regular path silently returned an empty diff for **every git
+  submodule in every project** — `git diff HEAD -- <submodule>` is an ordinary "Subproject commit"
+  diff. Caught in review; there's a spec for it now. A path with **nothing on disk answers false**
+  too: `git diff HEAD -- deleted.md` is served from the object store, so there is no filesystem
+  read to escape through.
+- **The diff route's exposure was narrower than it looks, which is why it had to be tested.**
+  `git diff --no-index` renders a plain symlink as mode 120000 whose content is the *target's
+  path* — harmless. Only the symlinked-directory form leaked real content.
+- **Every `git diff` here carries `--no-ext-diff --no-textconv`.** A repository can define what
+  "diff" *means*: `diff.<name>.textconv` / `.command` name a shell command git runs to render a
+  file, with the command in `.git/config` and the binding available from `.git/info/attributes`
+  — neither tracked, so neither shows in `git status`, a review, or a clone, and both are
+  ordinary writes inside a repo, which a task's Bash tool has. Verified: without the flags a
+  planted driver **executes** on `git diff HEAD -- <path>`; with them it doesn't and the diff is
+  unchanged. There's a spec for it. Note the shared-`.git` half of this is *not* fixed — hooks
+  and config are shared across all linked worktrees, so a plant from one task's worktree still
+  fires in the main checkout (backlog `bli_e0d5be33`).
+- **A refused path and a missing one answer identically** (404), like `lib/task-access`'s "not
+  yours ≡ doesn't exist". A separate "invalid path" status turned one planted symlink into an
+  existence oracle for arbitrary absolute paths on the host — no race, no auth, repeatable. Only
+  a *lexically* bad path (leading `/`, a `..` segment, control chars) still answers 400, since
+  that is decided before anything is looked up and reveals nothing.
+- **`gitChanges` reads untracked files just to count lines**, and `git status` lists an untracked
+  symlink like any other entry — so that read leaked a target's line count, and would have hung
+  on a FIFO. It now goes through the same helper, capped (it was unbounded, so a huge untracked
+  file was a memory-exhaustion primitive); anything refused counts 0, as unreadable files already did.
+- **This is defence in depth, not a perimeter.** It needs write access to a project tree to
+  exploit, and these routes still have no auth on the non-task path — the same gap documented
+  under the backlog. What it removes is a confused deputy: the server no longer reads outside a
+  root on behalf of a path that merely looks like it's inside.
+
 ## The agents ship with the app
 The swe / fe / pm plugins are **vendored into this repo at `agents/<namespace>` and shipped in the
 release tarball**, because a new device has neither the plugin directories nor the Claude Code
@@ -660,6 +735,10 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   `data/uploads/<taskId>/`, plus `readFormData` (a malformed multipart body answers 400 instead
   of throwing a 500) and `attachmentNote` (the "read these with the Read tool" note, shared by
   the runner's prompt and the gate reply so the wording can't drift)
+- `lib/safe-read.ts` — Reading a file a project tree *claims* to contain: `readFileInside`
+  (the file route), `escapesOnDisk` (the git callers, which hand a path to a subprocess and
+  can't hold an fd) and `isUsableRelPath` (the lexical gate both routes share). See "Reading
+  files out of a project tree" below
 - `lib/ui.ts` — Shared UI logic with no DOM: status labels/tones, `taskDisplayTitle`, and
   `orderSkills` (skill order + whether `onboard` is offered). Kept out of the components so
   `pnpm test` can cover it

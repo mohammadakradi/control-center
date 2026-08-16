@@ -6,6 +6,7 @@ import { projects } from "@/lib/db/schema";
 import { getCurrentUser } from "@/lib/auth";
 import { findOwnedTask } from "@/lib/task-access";
 import { gitFileDiff } from "@/lib/git";
+import { isUsableRelPath } from "@/lib/safe-read";
 import { memberPath } from "@/lib/workspace";
 
 export const dynamic = "force-dynamic";
@@ -24,8 +25,10 @@ export async function GET(req: Request, { params }: Ctx) {
   const url = new URL(req.url);
   const path = url.searchParams.get("path");
   const member = url.searchParams.get("member") ?? undefined;
-  // Keep paths inside the repo (the file list only ever yields relative paths).
-  if (!path || path.startsWith("/") || path.split("/").includes("..")) {
+  // Cheap lexical gate (the file list only ever yields relative paths). Containment against
+  // the real path is `gitFileDiff`'s job — a symlinked directory inside the tree passes this
+  // check and still points out of the repo.
+  if (!isUsableRelPath(path)) {
     return NextResponse.json({ error: "invalid path" }, { status: 400 });
   }
 

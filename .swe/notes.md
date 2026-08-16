@@ -481,7 +481,90 @@ update after every change.
       project checkout's HEAD, a different tree.
   - Security audit residual, filed to the backlog rather than fixed here (pre-existing class):
     the file route's `readFileSync` follows in-tree symlinks, and a worktree is agent-written —
-    `readSpecFile`'s O_NOFOLLOW technique is the known fix.
+    `readSpecFile`'s O_NOFOLLOW technique is the known fix. **Done 2026-08-16** — see below;
+    note the filed item's proposed fix (O_NOFOLLOW alone) turned out to be insufficient.
+
+## 2026-08-16 — contained reads for the file/diff routes (`lib/safe-read.ts`)
+Picked up the backlog item above. The bug was real; the item's diagnosis was half of it.
+- **Measured the escapes before writing anything, which changed the design.** Three work, and
+  no single check catches all three: a symlink as the final component (O_NOFOLLOW refuses it),
+  a symlinked *intermediate directory* — `link/` → `/secrets` asked for as `link/id_rsa`, which
+  **O_NOFOLLOW happily opens**, since it only inspects the last component — and a hard link,
+  which realpath structurally cannot see because there is no target to resolve. So: realpath
+  containment *plus* `nlink === 1`. Had I taken the filed item's word for it, the shipped fix
+  would have missed the middle case, which is the easiest of the three to plant.
+- **The diff route was exposed too** (the item asked me to check). Narrower than it looks and
+  worth recording so nobody "simplifies" the guard away: `git diff --no-index` renders a plain
+  symlink as mode 120000 whose content is the *target's path* — harmless. Only the
+  symlinked-directory form emits real content. An exploration subagent asserted the git paths
+  were safe; running the command printed the secret. Trust the terminal over the summary.
+- **`O_NONBLOCK` is load-bearing and I got it wrong first.** `open` on a FIFO blocks until a
+  writer arrives — *before* `fstat` can classify it — so the "refuse non-regular files" check
+  can never run. My own FIFO spec caught it by hanging the suite; `backlog.ts` sidesteps this
+  by classifying the dirent before opening, which is why the flag isn't in `readSpecFile`.
+- **Deliberately allows symlinks that stay inside the root**, unlike `readSpecFile`, which
+  refuses links outright. `README.md` → `docs/README.md` is ordinary in a repo and this is a
+  viewer; a `.pm/tasks/` spec becomes an autonomous run's instruction text. Different policies,
+  both correct — not merged, and `readSpecFile` was left alone rather than churned.
+- `escapesOnDisk` answers **false for a path with nothing on disk**: `git diff HEAD --
+  deleted.md` is a legitimate diff git serves from the object store. Getting this wrong would
+  have broken every deleted-file diff, which is why there's a spec for it.
+- Two smaller things found on the way, both in `gitChanges`' untracked line-count read: it
+  followed links (leaking a target's *line count*) and was **unbounded**, so a huge untracked
+  file was a memory-exhaustion primitive. Now capped at 2 MB; refusals count 0, as unreadable
+  files already did.
+- Severity, honestly: defence in depth. It needs write access to a registered project tree, and
+  these routes still have **no auth on the non-task path** — the real gap, unchanged here and
+  bigger than one task. What's removed is a confused deputy.
+- **Both reviews came back CHANGES_REQUIRED, and they were right.** The first cut checked
+  containment on a *path* and then opened that path string — check-then-use. I had even written a
+  comment calling the residual window "accepted knowingly", which was the wrong call dressed up as
+  candour. Reproduced: ~2 leaks per 640k attempts via `readFileInside`, and **9–15ms / <100
+  attempts / 3-of-3 trials** via `gitFileDiff`, where the window is a whole subprocess spawn. Two
+  lessons worth keeping:
+  - *Documenting a hole is not closing it.* If the threat model names the attacker and the
+    primitive defeats them, "disclosed in a comment" is not a mitigation.
+  - *A green test is not evidence until it can fail.* I disabled the inode check and my own race
+    test still passed — the residual window is far too narrow for a 3-second sample. The test
+    stayed (it guards against a regression that *widens* the window) but its docstring now says
+    plainly that it does not prove the fix; the soundness argument does. I also verified the
+    submodule spec fails with the fix removed, which it does.
+- Fixes: inode identity (`dev`+`ino` at the re-resolved contained path must equal the handle's,
+  which `nlink === 1` makes conclusive); the untracked diff **synthesized** from a contained read
+  so no worktree path reaches a subprocess at all; `escapesOnDisk` allows contained directories;
+  and "refused" collapsed into 404 to kill an existence oracle the split status codes had created.
+- **A second audit round found something bigger than the race, in the same line of code.** A repo
+  can define what "diff" *means*: `diff.<name>.textconv` names a shell command git runs to render
+  a file, the command living in `.git/config` and the binding available from
+  `.git/info/attributes` — neither tracked, so neither appears in `git status`, a review, or a
+  clone, and both are plain writes inside a repo, which a task's Bash tool has. Reproduced in a
+  throwaway repo: `git diff HEAD -- <path>` **executed** it. `--no-ext-diff --no-textconv` stops
+  it with the diff unchanged; both flags now go on every `git diff` here, with a spec that fails
+  without them. Worth noting *why* it was missed twice: the first two reviews and I were all
+  looking at the path argument, and the vulnerability was in the *configuration* the subprocess
+  inherits. "Is this path safe to pass" is a smaller question than "is this subprocess safe to
+  run".
+  - The other half is **not** fixed and is not in these files: `.git/config`, `.git/hooks/` and
+    `.git/info/attributes` are shared across all linked worktrees, so a hook planted from inside
+    one task's "isolated" worktree fires in the main checkout — and `ensureTaskWorktree`'s own
+    `git worktree add` re-triggers it on every future dispatch. That contradicts
+    `runner/worktree.ts`'s docstring, which promises isolation of index/HEAD/build dir — true for
+    those, false for the state that matters here. Backlog `bli_e0d5be33` (pm).
+- **The audit's one unreproduced hypothesis was right, and cheap to close.** It suggested the
+  post-open check compared `dev`/`ino` but not `nlink`, and couldn't demonstrate it. It is real:
+  swap the directory so the open lands on an outside file (link count 1 *then*), restore the
+  directory, and hard-link that same outside file to the contained path — identity matches and
+  the content is served. The comparison now lives in `isSameSoleFile`, a pure function, precisely
+  so it has a **deterministic** test: the race test cannot cover it (removing only the identity
+  clause leaves every timing test passing — verified independently by two reviewers).
+- **Residual, deliberately not fixed:** the *tracked* branch `git diff HEAD -- <path>` still lets
+  git read the worktree, so the same directory-swap race applies to it. The audit re-attacked it
+  at 66k attempts with zero leaks and found it structurally weak anyway — git's tracked-diff path
+  reports a symlinked intermediate directory as "file deleted" rather than following it. Closing it soundly means
+  diffing content we read ourselves (HEAD blob via `git show` + a contained read) instead of
+  letting git touch the tree — a real change to how diffs are produced, and out of scope here.
+  It is much narrower than the `--no-index` window that got removed, and needs an attacker with
+  live code execution in the tree, who can already read those files directly. Filed to the backlog.
   - **Not verified end-to-end with a live agent** — `user_local` has no token on this install
     (the usual 412), so isolation semantics are pinned by `runner/worktree.test.ts` (14 specs
     against real repos) + `lib/git.test.ts` + dispatch specs; manual steps in
