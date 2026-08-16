@@ -22,6 +22,13 @@
       "when": 1786450232358,
       "tag": "0002_backlog_items",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1786876299029,
+      "tag": "0003_legal_gunslinger",
+      "breakpoints": true
     }
   ]
 }

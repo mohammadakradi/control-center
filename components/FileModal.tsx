@@ -40,11 +40,15 @@ export function FileModal({
   projectId,
   member,
   path,
+  taskId,
   onClose,
 }: {
   projectId: string;
   member?: string;
   path: string;
+  /** Read the file from this task's own working dir — a parallel run executes in an
+   *  isolated git worktree, so files it wrote aren't in the project checkout. */
+  taskId?: string;
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -60,6 +64,7 @@ export function FileModal({
   useEffect(() => {
     const params = new URLSearchParams({ path });
     if (member) params.set("member", member);
+    if (taskId) params.set("task", taskId);
     fetch(`/api/projects/${projectId}/file?${params.toString()}`)
       .then((r) => r.json())
       .then((d: { content?: string; error?: string }) => {
@@ -67,7 +72,7 @@ export function FileModal({
         else setErr(d.error ?? "Could not load file");
       })
       .catch((e) => setErr((e as Error).message));
-  }, [projectId, member, path]);
+  }, [projectId, member, path, taskId]);
 
   // Escape-to-close, the focus trap, and scroll locking all live in `Modal`.
 

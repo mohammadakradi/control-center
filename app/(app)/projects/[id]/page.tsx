@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { ownedBy } from "@/lib/task-access";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, notInArray } from "drizzle-orm";
 import {
   ArrowLeft,
   Boxes,
@@ -12,7 +12,7 @@ import {
   Users,
 } from "lucide-react";
 import { db } from "@/lib/db";
-import { tasks } from "@/lib/db/schema";
+import { tasks, TERMINAL_TASK_STATUSES } from "@/lib/db/schema";
 import { backlogItemCount } from "@/lib/backlog";
 import { syncAgents } from "@/lib/discovery/agents";
 import { isAgentOnboarded, refreshProject } from "@/lib/discovery/projects";
@@ -97,6 +97,25 @@ export default async function ProjectDetail({
   // Open items only, straight from the database — the `.pm/tasks/` scan belongs to the
   // backlog page itself, so opening a project never pays for one.
   const backlogOpen = backlogItemCount(project.id);
+
+  // Is any run — any owner's, since the runner serializes install-wide — occupying this
+  // project's main checkout right now? Deliberately NOT scoped to `history`'s owner, and
+  // deliberately only a boolean: it decides whether the composer offers "Run in parallel",
+  // and reveals nothing about whose task is running. Worktree-isolated runs (workdir set)
+  // don't hold the checkout, so they don't count.
+  const checkoutBusy = Boolean(
+    db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.projectId, id),
+          notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
+          isNull(tasks.workdir),
+        ),
+      )
+      .get(),
+  );
 
   const aheadBehind = branchInfo
     ? branchInfo.ahead || branchInfo.behind
@@ -184,6 +203,7 @@ export default async function ProjectDetail({
             projectId={project.id}
             agents={agents}
             onboardedByAgent={onboardedByAgent}
+            parallelOffer={checkoutBusy && project.isGit && !isWs}
           />
         </CardSection>
 

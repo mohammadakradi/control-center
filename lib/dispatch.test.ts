@@ -232,3 +232,83 @@ test("a user who can't run tasks is refused before any row exists", async () => 
     process.env.ALLOW_SHARED_TOKEN_FALLBACK = "1";
   }
 });
+
+test("the parallel flag is refused where no worktree can exist, before any row is made", async () => {
+  const rows = db.select().from(schema.tasks).all().length;
+
+  // p1 is not a git repo — there is nothing to make a worktree of.
+  const nonGit = await dispatch.createAndStartTask({
+    projectId: "p1",
+    agentId: "fe@bundled",
+    command: "task",
+    userId: "user_local",
+    parallel: true,
+  });
+  assert.equal(nonGit.ok, false);
+  if (!nonGit.ok) {
+    assert.equal(nonGit.status, 400);
+    assert.match(nonGit.error, /git repository/);
+  }
+
+  // A workspace spans several member repos — "the" worktree is ambiguous.
+  db.insert(schema.projects)
+    .values({ id: "p_ws", name: "WS", path: join(root, "ws"), isGit: true, isWorkspace: true })
+    .run();
+  const ws = await dispatch.createAndStartTask({
+    projectId: "p_ws",
+    agentId: "fe@bundled",
+    command: "task",
+    userId: "user_local",
+    parallel: true,
+  });
+  assert.equal(ws.ok, false);
+  if (!ws.ok) {
+    assert.equal(ws.status, 400);
+    assert.match(ws.error, /workspace/);
+  }
+
+  assert.equal(
+    db.select().from(schema.tasks).all().length,
+    rows,
+    "a refused parallel dispatch must not leave a task row behind",
+  );
+});
+
+test("the parallel flag is stored on a git project's task; the default stays false", async () => {
+  db.insert(schema.projects)
+    .values({ id: "p_git", name: "Git", path: join(root, "git-proj"), isGit: true })
+    .run();
+
+  const flagged = await dispatch.createAndStartTask({
+    projectId: "p_git",
+    agentId: "fe@bundled",
+    command: "task",
+    userId: "user_local",
+    parallel: true,
+  });
+  assert.equal(flagged.ok, false); // runner unreachable; the row still exists
+  if (!flagged.ok) {
+    const row = db
+      .select()
+      .from(schema.tasks)
+      .where(eq(schema.tasks.id, flagged.taskId!))
+      .get()!;
+    assert.equal(row.parallel, true, "the runner reads the opt-in off the row");
+  }
+
+  const plain = await dispatch.createAndStartTask({
+    projectId: "p_git",
+    agentId: "fe@bundled",
+    command: "task",
+    userId: "user_local",
+  });
+  assert.equal(plain.ok, false);
+  if (!plain.ok) {
+    const row = db
+      .select()
+      .from(schema.tasks)
+      .where(eq(schema.tasks.id, plain.taskId!))
+      .get()!;
+    assert.equal(row.parallel, false, "queueing stays the default");
+  }
+});

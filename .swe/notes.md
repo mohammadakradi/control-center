@@ -422,6 +422,71 @@ update after every change.
     repoint the import, delete the old file last) — a restart into a broken graph leaves the
     runner down, not just restarted.
 
+- **2026-08-16 — opt-in parallel runs via git worktree isolation** (pm task
+  `02-fullstack-parallel-runs-worktree-isolation`,
+  `.pm/tasks/20260814-170321-backlog-tracking-and-parallel-runs/`). `tasks.parallel` (the
+  opt-in) + `tasks.workdir` (where the run actually executed; null = the project checkout),
+  migration `drizzle/0003`. New `runner/worktree.ts`; `projectBusy` now means "busy in the
+  *main checkout*" — worktree-isolated sessions don't count, so `promoteNext` keeps filling
+  the checkout exactly as before. Decisions worth keeping:
+  - **The flag means "isolate if the checkout is busy at launch", not "always isolate"**: a
+    parallel-flagged task that finds the checkout free runs there normally. But a task that
+    *ever* ran isolated (workdir set) goes back to its worktree on every continue — its work
+    lives there/on its branch, so following the busy-bit instead would strand it.
+  - **Nothing ever removes a dirty worktree.** The agent workflow holds all work uncommitted
+    until the report gate, so "clean up dead tasks' worktrees" (the spec's words) would destroy
+    the work of any failed run — the exact runs Continue exists for. Cleanup is `git worktree
+    remove` *without* `--force` (refusing dirty trees is the feature), on `finalize(done)` and
+    in a boot sweep that otherwise only deletes dirs with no task row at all. Failed/cancelled
+    trees are kept; abandoned ones accumulate under `data/worktrees/` until continued to done
+    or deleted by hand (safe — commits live on the `task/<id>` branch, which survives removal).
+  - **`ensureTaskWorktree` is one idempotent call for every lifecycle state** (live → reuse;
+    dir gone but branch survives → re-checkout; first run → create branch at HEAD), so the
+    fresh-dispatch and continue-after-cleanup paths can't drift. A leftover dir git doesn't
+    recognise is *refused*, never deleted — it may hold unpushed work.
+  - **Gotcha: "is this dir a worktree" must compare `rev-parse --show-toplevel` to the dir
+    itself** (realpath'd). In a dev checkout `data/worktrees/` sits inside the app's own repo,
+    so `--is-inside-work-tree` says yes for any junk dir.
+  - The never-written `tasks.branch` column is now real: set at worktree creation, refreshed at
+    cleanup to wherever the agent actually ended up (its workflow switches branches), and the
+    task page's existing chip renders it for free.
+  - **Task-scoped reads**: `file`/`diff` routes take `?task=`, resolved via `findOwnedTask`
+    (not-yours ≡ doesn't exist, per lib/task-access) and pinned to the route's project. The
+    file route falls back to `git show <branch>:<path>` once the worktree is cleaned up — that's
+    what keeps a done parallel task's test-scenario link working. The diff route deliberately
+    answers an *empty* diff for a cleaned-up worktree rather than falling back to the project
+    checkout, which would show someone else's working changes under this task's name.
+    `gitShowFile` refuses refs starting with `-` (execFile has no shell; a leading dash being
+    read as a git option is the one injection left).
+  - The project page's `checkoutBusy` for the composer's checkbox is **deliberately not
+    owner-scoped** (the runner serializes install-wide) but only a boolean crosses to the
+    client. `parallel` dispatch is refused 400 up front for non-git projects and workspaces —
+    silently downgrading would run two sessions in one checkout on stale busy info.
+  - **Both reviews found real blocking bugs; fixed with regression tests:**
+    - (reviewer, with a repro) Recreating a cleaned-up worktree reattached to the derived
+      `task/<id>` *birth* name, ignoring the branch `finalize` had just stored — an agent that
+      switched to its own feature branch resumed without its committed work, and the resume
+      then overwrote the correct `tasks.branch`. `ensureTaskWorktree` now takes the stored
+      branch and prefers it (validated as a real local ref, leading dash refused) over the
+      birth name. The two pre-existing specs each covered half of this (live-reuse with an
+      agent branch; recreate without one) — the *combination* is what shipped broken.
+    - (reviewer) The queue-vs-isolate switch had no test. Extracted as pure `launchMode()` in
+      `runner/worktree.ts` (same move as `classifyTurnEnd`/`orderSkills`), table-tested.
+    - (security) Uncapped worktree creation was a disk-fill primitive — each parallel dispatch
+      materializes a full checkout, and `POST /api/tasks` is reachable unauthenticated over
+      loopback from an agent's own Bash tool. `MAX_WORKTREES = 16`, enforced in the *create*
+      path only (reuse/recreate add no disk), loud refusal → failed task with the reason.
+    - Also from review: `worktreeBranch` returns null for a detached HEAD — storing the
+      literal "HEAD" would make the file view's later `git show HEAD:…` silently read the
+      project checkout's HEAD, a different tree.
+  - Security audit residual, filed to the backlog rather than fixed here (pre-existing class):
+    the file route's `readFileSync` follows in-tree symlinks, and a worktree is agent-written —
+    `readSpecFile`'s O_NOFOLLOW technique is the known fix.
+  - **Not verified end-to-end with a live agent** — `user_local` has no token on this install
+    (the usual 412), so isolation semantics are pinned by `runner/worktree.test.ts` (14 specs
+    against real repos) + `lib/git.test.ts` + dispatch specs; manual steps in
+    `.swe/test-scenarios/parallel-worktree-runs.md`.
+
 ## Gotchas
 - **2026-08-11 — never create a FIFO (or other special file) under a bind-mounted path.** While
   testing that the backlog scan refuses non-regular files, I ran `mkfifo` inside

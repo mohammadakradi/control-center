@@ -29,6 +29,8 @@ type TaskFields = {
   command?: string;
   requestText?: string;
   model?: string;
+  /** Opt in to running in an isolated worktree if the project is busy (see lib/dispatch). */
+  parallel?: boolean;
 };
 
 // POST /api/tasks — create and dispatch a task.
@@ -67,6 +69,7 @@ export async function POST(request: Request) {
       command: form.get("command")?.toString(),
       requestText: form.get("requestText")?.toString(),
       model: form.get("model")?.toString(),
+      parallel: form.get("parallel")?.toString() === "1",
     };
     const files = form.getAll("files").filter((f): f is File => f instanceof File);
     attachments = await saveAttachments(id, files);
@@ -90,6 +93,7 @@ export async function POST(request: Request) {
     requestText: fields.requestText,
     model: fields.model,
     attachments,
+    parallel: fields.parallel === true,
   });
 
   if (!outcome.ok) {

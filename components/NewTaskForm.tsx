@@ -77,11 +77,17 @@ export function NewTaskForm({
   projectId,
   agents,
   onboardedByAgent = {},
+  parallelOffer = false,
 }: {
   projectId: string;
   agents: AgentLite[];
   /** Per-agent onboarding state for this project, keyed by agent id. */
   onboardedByAgent?: Record<string, boolean>;
+  /** Offer "Run in parallel": the project's checkout is busy right now AND it's a plain git
+   *  repo (worktree isolation is refused for non-git projects and workspaces). Computed
+   *  server-side at page load — if the other run finishes before dispatch, the flag simply
+   *  runs this task normally. */
+  parallelOffer?: boolean;
 }) {
   const router = useRouter();
   const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
@@ -107,6 +113,7 @@ export function NewTaskForm({
   // error then carries a link instead of being a dead end.
   const [errorAction, setErrorAction] = useState<ErrorAction | null>(null);
   const [files, setFiles] = useState<File[]>([]);
+  const [parallel, setParallel] = useState(false);
 
   const cmd = commands.find((c) => c.name === command);
   const hasOnboard = (agent?.commands ?? []).some((c) => c.name === "onboard");
@@ -152,6 +159,7 @@ export function NewTaskForm({
     fd.set("command", command);
     fd.set("requestText", requestText);
     fd.set("model", model);
+    if (parallel && parallelOffer) fd.set("parallel", "1");
     for (const f of files) fd.append("files", f);
     // A rejected fetch (server restarted, upload cut off) used to escape this function
     // entirely, leaving the button spinning on "Dispatching…" for good with nothing said —
@@ -329,6 +337,24 @@ export function NewTaskForm({
       </FileDropZone>
       {model === "auto" && (
         <p className="mt-2 text-xs text-fg-faint">{autoHint(agent?.namespace)}</p>
+      )}
+
+      {/* Offered only while another run occupies this project's checkout (and only for a
+          plain git repo — the API refuses the flag anywhere a worktree can't isolate). */}
+      {parallelOffer && (
+        <label className="mt-3 flex items-start gap-2 text-sm text-fg-subtle">
+          <input
+            type="checkbox"
+            checked={parallel}
+            onChange={(e) => setParallel(e.target.checked)}
+            className="mt-1"
+          />
+          <span>
+            <span className="font-medium text-fg">Run in parallel</span> — another task is
+            running on this project. Instead of queueing, this run gets its own isolated git
+            worktree and branch; merging the branch afterwards is the normal PR flow.
+          </span>
+        </label>
       )}
 
       {/* Run row */}

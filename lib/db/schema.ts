@@ -159,7 +159,19 @@ export const tasks = sqliteTable("tasks", {
     .$type<Attachment[]>()
     .default(sql`'[]'`),
   sessionId: text("session_id"), // SDK session_id, for resume fallback
+  // The task's git branch. Written when the run is isolated in a worktree (the branch the
+  // worktree was created on — it survives cleanup, so commits stay reachable and a continue
+  // can rebuild the tree from it).
   branch: text("branch"),
+  // Opt-in from dispatch: if the project is busy when this task launches, run it in an
+  // isolated git worktree instead of queueing. Meaningless for non-git/workspace projects
+  // (dispatch refuses the flag there).
+  parallel: integer("parallel", { mode: "boolean" }).notNull().default(false),
+  // Where the run actually executed when it was isolated: an absolute path under
+  // data/worktrees/. Null = the project checkout. Task-scoped reads (file/diff views)
+  // resolve against this, not the project path. The dir may be cleaned up after a clean
+  // `done` — the branch column is what stays authoritative for committed content.
+  workdir: text("workdir"),
   error: text("error"),
   // What this task cost to run, accumulated over every SDK turn it took — including
   // continues/resumes, which each spawn a fresh subprocess whose own counters restart

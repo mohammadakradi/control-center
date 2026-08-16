@@ -138,6 +138,27 @@ export function gitFileDiff(cwd: string, path: string): string {
     : diff;
 }
 
+/**
+ * Content of one file at a ref (`git show ref:path`), or null when git can't produce it
+ * (unknown ref, path not in that tree, not a repo). Used to read a finished parallel task's
+ * committed files after its worktree was cleaned up — the branch is what survives.
+ * The ref must not start with "-": args go through execFile (no shell), so a leading dash
+ * being read as a git option is the one injection left to refuse.
+ */
+export function gitShowFile(cwd: string, ref: string, path: string): string | null {
+  if (!ref || ref.startsWith("-")) return null;
+  try {
+    return execFileSync("git", ["show", `${ref}:${path}`], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch {
+    return null;
+  }
+}
+
 export type BranchInfo = {
   current: string | null;
   branches: string[];
