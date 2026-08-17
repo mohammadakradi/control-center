@@ -347,15 +347,78 @@ only as a cheap pre-filter.
   and no-trailing-newline cases included), close enough for `components/DiffModal.tsx`, which
   colours by prefix. Keep it that way — reintroducing `--no-index` on a worktree path reopens the
   race that the remaining `escapesOnDisk` pre-check cannot close.
+- **git is not allowed to read the working tree for a file's content at all** (2026-08-17), and
+  that — not `escapesOnDisk` — is what makes `gitFileDiff` safe. The tracked branch used to run
+  `git diff HEAD -- <path>` after the check, and git resolves the path *again*, on its own: a
+  tracked file swapped for a **hard link** to an outside file mid-request leaked it at **3 hits
+  in 53 attempts, 20 ms**. Now `git ls-tree HEAD` classifies the path from the object store, the
+  before side comes from `git show HEAD:<path>` and the after side from `readBytesInside`; git
+  renders the diff from those two, written into a private `mkdtemp` (which is why `--no-index`
+  is safe *there* and not on a worktree path). Keep any new diff work on that side of the line.
+  - **The filed item blamed the wrong shape, and so did the note it came from.** A symlinked
+    *ancestor directory* does **not** leak on the tracked path — git answers `deleted file mode
+    100644` instead of following it, which is why an audit at 66k attempts found nothing and
+    called the window narrow. A hard link has no target to resolve, so only `nlink` sees it.
+  - **A tracked *directory* path leaked with no race at all.** `escapesOnDisk` allows a contained
+    directory (below), so `git diff HEAD -- docs` walked it and diffed a hard link planted at
+    `docs/a.md` — a file the caller never named and no check ever looked at. A `tree` entry now
+    returns nothing: this route serves one file.
+  - **`--submodule=short` is as load-bearing as `--no-ext-diff --no-textconv`.** `diff.submodule`
+    is ordinary `.git/config` — untracked, shared across linked worktrees, writable by a task's
+    Bash tool — and it changes the output wholesale: `log` drops the `@@` line entirely (so a
+    real pointer change rendered blank), `diff` prints the *contents of files inside the
+    submodule*. Pinning the format means neither depends on how a repo is configured.
+  - **A submodule keeps the real `git diff`, with its output checked positionally.** HEAD saying
+    "gitlink" doesn't bind the worktree to still be one, and a regular file there makes git
+    render a typechange carrying that file's content. `isSubmoduleDiff` requires every line from
+    the first `@@` onward to be a `Subproject commit` line; a typechange puts a second
+    `diff --git` block there, so it fails whatever the planted file holds. Both earlier attempts
+    were wrong and each failed a different way, so don't "simplify" this back:
+    - matching header *prefixes* let content through — git prefixes added lines with one `+`,
+      so a file whose lines start with `++ ` renders as `+++ …` and passes as the `+++ b/…`
+      header (found by the security audit, reproduced end to end);
+    - matching header lines *exactly against the path* blanked real submodules — git appends a
+      trailing **tab** to `--- a/<path>` when the path has a space, and C-quotes the path when
+      it isn't ASCII. Specs cover `my sub` and `üni sub`.
+  - **A committed symlink's target is never read.** A *deleted* one still renders its deletion
+    (built purely from HEAD's committed blob, so nothing comes out of the tree); one that is
+    still there renders nothing. Both alternatives were tried and both leak or lie:
+    - a contained *content* read follows the link, so it diffs the target's content against
+      HEAD's stored path text — a large bogus diff for a link nobody touched;
+    - **`readlink` follows the directories above the link**, so pointing an ancestor outside
+      the tree returns an outside link's target. The security re-audit proved this, including
+      a variant with **no race at all**: `escapesOnDisk` answers "safe" for a path with nothing
+      on disk (deliberately — that is how a deleted file's diff works), which is exactly a
+      *dangling* link behind a swapped ancestor. Validating the returned target lexically does
+      not save it: a plain relative target resolves inside the root on paper while having been
+      read from outside it.
+    There is no sound version in Node — it needs the parent held as a descriptor
+    (`openat`/`O_PATH`), which Node doesn't expose. The cost is that a *retargeted* committed
+    symlink shows no diff; the file list still reports it as modified.
+  - Fixed on the way: the old code read an empty `git diff` as "not tracked" and fell through to
+    `untrackedDiff`, so **every unchanged tracked file** rendered as a brand-new file containing
+    its whole content.
+  - Both git calls carry **`--literal-pathspecs`**: the path is a name, not a pattern, and
+    without it a leading `:` is pathspec magic (`:/`, `:(exclude)…`) and `*` globs.
+  - **A tracked diff's read cap is 16 MB, not the untracked 2 MB**, and the difference is
+    load-bearing: an untracked file's diff *is* its whole content, but a one-line edit inside a
+    4 MB tracked file is a five-line hunk. Reusing the small cap returned no diff at all for it
+    (caught in review). The cap bounds memory, not what is worth showing.
 - **`escapesOnDisk` allows a contained *directory*.** It's the containment question, not "is this
   a plain file". Refusing every non-regular path silently returned an empty diff for **every git
   submodule in every project** — `git diff HEAD -- <submodule>` is an ordinary "Subproject commit"
   diff. Caught in review; there's a spec for it now. A path with **nothing on disk answers false**
   too: `git diff HEAD -- deleted.md` is served from the object store, so there is no filesystem
-  read to escape through.
+  read to escape through. It is now a **pre-filter, not the containment guarantee** — every
+  branch of `gitFileDiff` is sound without it.
 - **The diff route's exposure was narrower than it looks, which is why it had to be tested.**
   `git diff --no-index` renders a plain symlink as mode 120000 whose content is the *target's
   path* — harmless. Only the symlinked-directory form leaked real content.
+- **`readFileInside` is a UTF-8 wrapper over `readBytesInside`.** The diff path needs the bytes
+  undecoded: two files differing only in bytes that don't map to UTF-8 decode to the same
+  replacement character, so a string-based diff reports an edited file as unchanged. `mode` comes
+  off the open handle (`fstat`), not a second `stat` of the path, which is what lets a
+  mode-only change (`chmod +x`) still render its `old mode`/`new mode` lines.
 - **Every `git diff` here carries `--no-ext-diff --no-textconv`.** A repository can define what
   "diff" *means*: `diff.<name>.textconv` / `.command` name a shell command git runs to render a
   file, with the command in `.git/config` and the binding available from `.git/info/attributes`
@@ -374,6 +437,9 @@ only as a cheap pre-filter.
   symlink like any other entry — so that read leaked a target's line count, and would have hung
   on a FIFO. It now goes through the same helper, capped (it was unbounded, so a huge untracked
   file was a memory-exhaustion primitive); anything refused counts 0, as unreadable files already did.
+  Its *tracked* counts still come from a whole-tree `git diff --numstat HEAD`, which does read the
+  worktree — the same plant can misreport an outside file's **line count**. Left alone knowingly:
+  it is one integer and no content, and containing it means synthesizing the whole summary.
 - **This is defence in depth, not a perimeter.** It needs write access to a project tree to
   exploit, and these routes still have no auth on the non-task path — the same gap documented
   under the backlog. What it removes is a confused deputy: the server no longer reads outside a

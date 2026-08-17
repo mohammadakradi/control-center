@@ -5,13 +5,15 @@
  */
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -202,6 +204,361 @@ test("a modified submodule still diffs", () => {
   g(join(host, "sub"), ["reset", "--hard", "origin/main"]);
 
   assert.match(gitFileDiff(host, "sub"), /Subproject commit/);
+});
+
+/**
+ * The tracked-file branch: git must never read the working tree to build a diff.
+ *
+ * These are the specs for that rewrite, and the two attack shapes below are the reason it
+ * exists. Both were reproduced against the previous implementation before it was changed —
+ * the race in 20 ms, the directory one on the first try.
+ */
+let tBase: string;
+let tRepo: string;
+
+before(() => {
+  tBase = realpathSync(mkdtempSync(join(tmpdir(), "platform-git-tracked-")));
+  tRepo = join(tBase, "repo");
+  mkdirSync(join(tBase, "out"));
+  writeFileSync(join(tBase, "out", "id_rsa"), `${SECRET_LINE}\nsecond\n`);
+
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: tRepo, encoding: "utf8" });
+  mkdirSync(join(tRepo, "docs"), { recursive: true });
+  g(["init", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+  writeFileSync(join(tRepo, "racy.md"), "orig\n");
+  writeFileSync(join(tRepo, "chmod.md"), "same content\n");
+  writeFileSync(join(tRepo, "bin.dat"), Buffer.from([0x41, 0x00, 0x42]));
+  writeFileSync(join(tRepo, "latin.md"), Buffer.from([0xff, 0x0a])); // not valid UTF-8
+  writeFileSync(join(tRepo, "docs", "a.md"), "one\n");
+  writeFileSync(join(tRepo, "docs", "b.md"), "two\n"); // a second link target
+  symlinkSync("docs/a.md", join(tRepo, "link.md")); // a committed symlink
+  g(["add", "-A"]);
+  g(["commit", "-m", "init"]);
+});
+
+after(() => rmSync(tBase, { recursive: true, force: true }));
+
+/**
+ * The regression this whole change exists for. A background shell flips a tracked file
+ * between an honest modification and a hard link to a secret outside the repo, while this
+ * loop asks for its diff. `escapesOnDisk` sees the honest file; the old code then spawned
+ * `git diff HEAD -- racy.md`, and git opened whatever the name pointed at by then.
+ *
+ * Unlike the timing test in `safe-read.test.ts`, this one **does** prove its fix: measured at
+ * 3 leaks in 53 attempts / 20 ms against the previous implementation, because the window was
+ * an entire process spawn rather than a couple of syscalls. If someone reintroduces a
+ * worktree read here, this fails within a second.
+ */
+test("a hard link swapped in mid-diff cannot leak into a tracked file's diff", () => {
+  const target = join(tRepo, "racy.md");
+  const flip = spawn(
+    "sh",
+    [
+      "-c",
+      `while :; do rm -f "${target}"; ln "${join(tBase, "out", "id_rsa")}" "${target}" 2>/dev/null; ` +
+        `rm -f "${target}"; printf 'orig\\nmodified\\n' > "${target}"; done`,
+    ],
+    { stdio: "ignore" },
+  );
+
+  try {
+    let leaks = 0;
+    let real = 0;
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      const diff = gitFileDiff(tRepo, "racy.md");
+      if (diff.includes(SECRET_LINE)) leaks += 1;
+      if (diff.includes("+modified")) real += 1;
+    }
+    assert.equal(leaks, 0, `leaked the outside file ${leaks} time(s)`);
+    // Without this the test could pass by refusing every single request.
+    assert.ok(real > 0, "no honest diff was ever produced — the race proved nothing");
+  } finally {
+    flip.kill("SIGKILL");
+    rmSync(target, { force: true });
+    writeFileSync(target, "orig\n");
+  }
+});
+
+test("a hard link inside a tracked directory cannot leak through the directory's path", () => {
+  // No race in this one. `escapesOnDisk` allows a contained *directory* — it has to, or
+  // submodules stop diffing — and `git diff HEAD -- docs` then walked the directory and
+  // diffed a file the caller never named and no check ever saw.
+  const planted = join(tRepo, "docs", "a.md");
+  rmSync(planted, { force: true });
+  linkSync(join(tBase, "out", "id_rsa"), planted);
+  try {
+    assert.equal(gitFileDiff(tRepo, "docs").includes(SECRET_LINE), false);
+    assert.equal(gitFileDiff(tRepo, "docs"), "");
+  } finally {
+    rmSync(planted, { force: true });
+    writeFileSync(planted, "one\n");
+  }
+});
+
+test("a submodule diff that stops being one emits nothing", () => {
+  // HEAD saying "gitlink" does not bind the working tree to still be a submodule: put a
+  // regular file where the gitlink is and git renders a typechange carrying its content.
+  // The output allowlist is what refuses that, so this must not depend on the escape checks —
+  // the planted file is an ordinary contained one.
+  const host = join(tBase, "gitlink-host");
+  mkdirSync(host);
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: host, encoding: "utf8" });
+  g(["init", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+  writeFileSync(join(host, "keep.md"), "x\n");
+  g(["add", "-A"]);
+  g([
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    `160000,${"a".repeat(40)},sub`,
+  ]);
+  g(["commit", "-m", "gitlink"]);
+
+  writeFileSync(join(host, "sub"), "NOT-A-SUBMODULE-CONTENT\n");
+  assert.equal(gitFileDiff(host, "sub").includes("NOT-A-SUBMODULE"), false);
+  assert.equal(gitFileDiff(host, "sub"), "");
+
+  // The security audit's bypass: git prefixes every added line with one literal "+", so a
+  // planted file whose lines start with "++ " renders as "+++ <text>" — which a *prefix*
+  // pattern for the "+++ b/…" header waved straight through. Matching whole lines is the fix.
+  writeFileSync(
+    join(host, "sub"),
+    "++ EXFILTRATED-LINE-ONE apikey=AKIA-1234567890\n++ EXFILTRATED-LINE-TWO\n",
+  );
+  assert.equal(gitFileDiff(host, "sub").includes("EXFILTRATED"), false);
+  assert.equal(gitFileDiff(host, "sub"), "");
+});
+
+test("a mode-only change still produces a diff", () => {
+  // It has no hunks, so a rewrite that only rendered content would show "modified" in the
+  // file list and then open an empty diff.
+  chmodSync(join(tRepo, "chmod.md"), 0o755);
+  try {
+    const diff = gitFileDiff(tRepo, "chmod.md");
+    assert.match(diff, /^old mode 100644$/m);
+    assert.match(diff, /^new mode 100755$/m);
+    assert.equal(diff.includes("@@"), false);
+  } finally {
+    chmodSync(join(tRepo, "chmod.md"), 0o644);
+  }
+});
+
+test("an unchanged committed symlink produces no diff", () => {
+  // A contained read follows the link and returns its target's content, while HEAD holds the
+  // target *path* — diffing those two would render a bogus full diff for a file nobody
+  // touched.
+  //
+  // The old implementation failed this for a second reason worth keeping in mind: it read an
+  // empty `git diff` as "not tracked" and fell through to the untracked branch, so *any*
+  // unchanged tracked file rendered as a brand-new file containing its whole content.
+  assert.equal(gitFileDiff(tRepo, "link.md"), "");
+});
+
+test("an unchanged tracked file produces no diff", () => {
+  assert.equal(gitFileDiff(tRepo, "chmod.md"), "");
+});
+
+test("a deleted committed symlink shows a deletion; a retargeted one shows nothing", () => {
+  // The deletion is rendered purely from HEAD's committed blob, so no working-tree data can
+  // reach it. The retarget is deliberately NOT rendered: the honest "after" side would be
+  // `readlink`, which reads no file but follows the directories *above* the link — the
+  // security re-audit leaked an outside link's target through exactly that, including with no
+  // race at all. Node has no `openat`/`O_PATH`, so there is no way to read a symlink's own
+  // target through a handle; a rare blank diff beats an open race. See `symlinkDiff`.
+  const link = join(tRepo, "link.md");
+  rmSync(link, { force: true });
+
+  const gone = gitFileDiff(tRepo, "link.md");
+  assert.match(gone, /^deleted file mode 120000$/m);
+  assert.match(gone, /^-docs\/a\.md$/m);
+
+  symlinkSync("docs/b.md", link);
+  assert.equal(gitFileDiff(tRepo, "link.md"), "");
+
+  rmSync(link, { force: true });
+  symlinkSync("docs/a.md", link); // restore for the other specs
+});
+
+test("a symlink behind a swapped ancestor cannot leak an outside link's target", () => {
+  // The security re-audit's deterministic proof-of-concept, kept as a spec. `escapesOnDisk`
+  // answers "safe" for a path with nothing on disk — deliberately, since that is how a deleted
+  // file's diff is served from the object store — and a *dangling* link behind an ancestor
+  // pointing outside the tree is exactly that case. Validating the target string lexically
+  // does not save it either: a plain relative name resolves inside the root on paper while
+  // having been read from outside it.
+  const evil = join(tBase, "evil-outside");
+  mkdirSync(evil, { recursive: true });
+  symlinkSync("SECRET-HOST-PATH-LEAKED", join(evil, "link"));
+
+  const nested = join(tRepo, "nest");
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(join(nested, "real.md"), "x\n");
+  symlinkSync("real.md", join(nested, "link"));
+  execFileSync("git", ["add", "-A"], { cwd: tRepo, encoding: "utf8" });
+  execFileSync("git", ["commit", "-m", "nested link"], { cwd: tRepo, encoding: "utf8" });
+
+  renameSync(nested, join(tBase, "nest-stash"));
+  symlinkSync(evil, nested);
+  try {
+    const diff = gitFileDiff(tRepo, "nest/link");
+    assert.equal(diff.includes("SECRET-HOST-PATH-LEAKED"), false, "leaked the outside target");
+  } finally {
+    rmSync(nested, { force: true });
+    renameSync(join(tBase, "nest-stash"), nested);
+  }
+});
+
+test("a one-line change in a large tracked file still diffs", () => {
+  // Also from review. Capping the *input* at the untracked read cap (2 MB) meant a tiny edit
+  // deep inside a big file rendered nothing at all — the old code let git read the file at any
+  // size and only ever truncated the rendered output.
+  const big = join(tRepo, "big.txt");
+  const filler = `${"x".repeat(80)}\n`.repeat(40_000); // ~3.2 MB
+  writeFileSync(big, `first line\n${filler}`);
+  execFileSync("git", ["add", "big.txt"], { cwd: tRepo, encoding: "utf8" });
+  execFileSync("git", ["commit", "-m", "big"], { cwd: tRepo, encoding: "utf8" });
+  try {
+    writeFileSync(big, `edited first line\n${filler}`);
+    const diff = gitFileDiff(tRepo, "big.txt");
+    assert.match(diff, /^-first line$/m);
+    assert.match(diff, /^\+edited first line$/m);
+    assert.ok(diff.length < 1000, `expected a small hunk, got ${diff.length} bytes`);
+  } finally {
+    rmSync(big, { force: true });
+  }
+});
+
+test("a tracked file with no trailing newline keeps git's marker", () => {
+  writeFileSync(join(tRepo, "chmod.md"), "same content\nno eol");
+  try {
+    assert.match(gitFileDiff(tRepo, "chmod.md"), /\\ No newline at end of file/);
+  } finally {
+    writeFileSync(join(tRepo, "chmod.md"), "same content\n");
+  }
+});
+
+test("a tracked file's bytes are compared as bytes, not through a UTF-8 round trip", () => {
+  // HEAD holds 0xff, the working tree now holds 0xfe. Both are invalid UTF-8 and both decode
+  // to the *same* replacement character, so a diff built from decoded strings would compare
+  // them as equal and report that this file had not changed at all. This is what
+  // `readBytesInside` and the undecoded `git show` are for. (The rendered diff still has to
+  // be a string — the route returns JSON — so U+FFFD in the *output* is expected.)
+  writeFileSync(join(tRepo, "latin.md"), Buffer.from([0xfe, 0x0a]));
+  assert.match(gitFileDiff(tRepo, "latin.md"), /^@@ /m);
+});
+
+test("a modified tracked binary file diffs as binary", () => {
+  writeFileSync(join(tRepo, "bin.dat"), Buffer.from([0x41, 0x00, 0x43]));
+  assert.match(gitFileDiff(tRepo, "bin.dat"), /^Binary files a\/bin\.dat and b\/bin\.dat differ$/m);
+});
+
+test("a staged but uncommitted file diffs as a new file", () => {
+  // HEAD has no entry for it, so it takes the same branch as an untracked file.
+  writeFileSync(join(tRepo, "staged.md"), "fresh\n");
+  execFileSync("git", ["add", "staged.md"], { cwd: tRepo, encoding: "utf8" });
+  const diff = gitFileDiff(tRepo, "staged.md");
+  assert.match(diff, /^\+\+\+ b\/staged\.md$/m);
+  assert.match(diff, /^\+fresh$/m);
+});
+
+test("tracked paths with spaces or non-ASCII are classified from HEAD correctly", () => {
+  // `headEntry` parses `git ls-tree`, which C-quotes a non-ASCII path — but only in the field
+  // *after* the tab, so splitting on the tab is immune. Worth pinning: a misparse falls through
+  // to the "absent" branch, which renders a tracked file as a brand-new one containing its
+  // whole content, and it would only ever show up for users with such filenames.
+  const names = ["üni.md", "my file.md", "emoji-🎉.md", "sub dir/nested ü.md"];
+  mkdirSync(join(tRepo, "sub dir"), { recursive: true });
+  for (const n of names) writeFileSync(join(tRepo, n), "one\n");
+  execFileSync("git", ["add", "-A"], { cwd: tRepo, encoding: "utf8" });
+  execFileSync("git", ["commit", "-m", "odd names"], { cwd: tRepo, encoding: "utf8" });
+  for (const n of names) writeFileSync(join(tRepo, n), "one\ntwo\n");
+
+  for (const n of names) {
+    const diff = gitFileDiff(tRepo, n);
+    assert.match(diff, /^\+two$/m, n);
+    assert.equal(diff.includes("new file mode"), false, `${n} misread as untracked`);
+  }
+});
+
+test("a submodule whose path has a space or non-ASCII still diffs", () => {
+  // The false negative the whole-line allowlist introduced, caught before merge: git appends a
+  // trailing TAB to `--- a/<path>` when the path contains a space, and C-quotes the path when
+  // it is not ASCII (`diff --git "a/\303\274ni sub" …`). Matching the header against the path
+  // therefore blanked ordinary submodules — the same class as the bug that once hid every
+  // submodule in every project.
+  const origin = join(tBase, "sub-origin-2");
+  mkdirSync(origin);
+  const g = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8" });
+  g(origin, ["init", "-q", "-b", "main"]);
+  g(origin, ["config", "user.email", "t@t"]);
+  g(origin, ["config", "user.name", "t"]);
+  writeFileSync(join(origin, "a.txt"), "one\n");
+  g(origin, ["add", "-A"]);
+  g(origin, ["commit", "-qm", "one"]);
+
+  const host = join(tBase, "space-host");
+  mkdirSync(host);
+  g(host, ["init", "-q", "-b", "main"]);
+  g(host, ["config", "user.email", "t@t"]);
+  g(host, ["config", "user.name", "t"]);
+
+  for (const name of ["my sub", "üni sub"]) {
+    g(host, ["-c", "protocol.file.allow=always", "submodule", "add", origin, name]);
+    g(host, ["commit", "-qm", `add ${name}`]);
+    writeFileSync(join(origin, "a.txt"), `${name}\n`);
+    g(origin, ["commit", "-qam", "move"]);
+    g(join(host, name), ["fetch", "-q", "origin"]);
+    g(join(host, name), ["reset", "-q", "--hard", "origin/main"]);
+    assert.match(gitFileDiff(host, name), /Subproject commit/, name);
+  }
+});
+
+test("a repo's diff.submodule config cannot change what a submodule diff is", () => {
+  // `diff.submodule` is ordinary config in the untracked, worktree-shared `.git/config`, and
+  // it rewrites the output wholesale: `log` drops the `@@` line entirely (so a real pointer
+  // change rendered blank — caught in re-review) and `diff` prints the *contents of files
+  // inside the submodule*. Same class as the textconv driver pinned by NO_CUSTOM_DIFF_DRIVERS.
+  const origin = join(tBase, "sub-origin-3");
+  mkdirSync(origin);
+  const g = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8" });
+  g(origin, ["init", "-q", "-b", "main"]);
+  g(origin, ["config", "user.email", "t@t"]);
+  g(origin, ["config", "user.name", "t"]);
+  writeFileSync(join(origin, "a.txt"), "one\n");
+  g(origin, ["add", "-A"]);
+  g(origin, ["commit", "-qm", "one"]);
+
+  const host = join(tBase, "cfg-host");
+  mkdirSync(host);
+  g(host, ["init", "-q", "-b", "main"]);
+  g(host, ["config", "user.email", "t@t"]);
+  g(host, ["config", "user.name", "t"]);
+  g(host, ["-c", "protocol.file.allow=always", "submodule", "add", origin, "sub"]);
+  g(host, ["commit", "-qm", "add sub"]);
+  writeFileSync(join(origin, "a.txt"), "SUBMODULE-FILE-CONTENT\n");
+  g(origin, ["commit", "-qam", "two"]);
+  g(join(host, "sub"), ["fetch", "-q", "origin"]);
+  g(join(host, "sub"), ["reset", "-q", "--hard", "origin/main"]);
+
+  for (const mode of ["log", "diff", "short"]) {
+    g(host, ["config", "diff.submodule", mode]);
+    const diff = gitFileDiff(host, "sub");
+    assert.match(diff, /Subproject commit/, `diff.submodule=${mode} rendered nothing`);
+    assert.equal(
+      diff.includes("SUBMODULE-FILE-CONTENT"),
+      false,
+      `diff.submodule=${mode} leaked the submodule's file content`,
+    );
+  }
 });
 
 test("gitChanges counts untracked lines without following a link out of the repo", () => {

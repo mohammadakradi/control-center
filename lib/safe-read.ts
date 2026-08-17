@@ -123,9 +123,18 @@ function resolveReal(root: string, rel: string): Resolved {
   return isInside(real, realRoot) ? { real } : { fail: "escape" };
 }
 
-export type SafeRead =
-  | { ok: true; content: string }
-  | { ok: false; reason: "invalid" | "too-large" | "not-found" };
+type SafeFail = { ok: false; reason: "invalid" | "too-large" | "not-found" };
+
+export type SafeRead = { ok: true; content: string } | SafeFail;
+
+/**
+ * The same read, before anything decodes it. `bytes` matters where the content is handed to
+ * something other than a UTF-8 consumer — the diff path writes it back out, and decoding a
+ * latin-1 or binary file to a string first would replace bytes it cannot map and diff a file
+ * that never existed. `mode` comes off the **handle**, not a second `stat` of the path, so it
+ * carries the same guarantee as the content: it describes the file that was actually read.
+ */
+export type SafeBytes = { ok: true; bytes: Buffer; mode: number } | SafeFail;
 
 /**
  * Read a text file that must live inside `root`.
@@ -147,11 +156,11 @@ export type SafeRead =
  * the handle cannot be pointing at anything outside it. Re-resolving alone would not do —
  * an attacker can restore the directory and pass a second path check.
  */
-export function readFileInside(
+export function readBytesInside(
   root: string,
   rel: string,
   maxBytes: number,
-): SafeRead {
+): SafeBytes {
   const resolved = resolveReal(root, rel);
   if ("fail" in resolved)
     return {
@@ -199,12 +208,22 @@ export function readFileInside(
       if (n === 0) break;
       read += n;
     }
-    return { ok: true, content: buf.subarray(0, read).toString("utf8") };
+    return { ok: true, bytes: buf.subarray(0, read), mode: st.mode };
   } catch {
     return { ok: false, reason: "not-found" };
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+/** `readBytesInside` decoded as UTF-8 — what every caller that renders text wants. */
+export function readFileInside(
+  root: string,
+  rel: string,
+  maxBytes: number,
+): SafeRead {
+  const read = readBytesInside(root, rel, maxBytes);
+  return read.ok ? { ok: true, content: read.bytes.toString("utf8") } : read;
 }
 
 /**

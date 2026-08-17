@@ -15,6 +15,7 @@ import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import {
+  chmodSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -29,6 +30,7 @@ import {
   escapesOnDisk,
   isSameSoleFile,
   isUsableRelPath,
+  readBytesInside,
   readFileInside,
 } from "./safe-read";
 
@@ -235,6 +237,28 @@ test("no leak while a directory component is swapped for a symlink", () => {
     rmSync(dir, { recursive: true, force: true });
     rmSync(join(outside, "real.md"), { force: true });
   }
+});
+
+test("readBytesInside returns the bytes undecoded, and the handle's mode", () => {
+  // The diff path writes this back out for git to compare, so a UTF-8 round trip would make
+  // two different files look identical (every unmappable byte becomes the same replacement
+  // character). The mode comes off `fstat` on the open handle rather than a second `stat` of
+  // the path, so it describes the file that was actually read.
+  const raw = Buffer.from([0xff, 0xfe, 0x0a]);
+  writeFileSync(join(repo, "raw.bin"), raw);
+  chmodSync(join(repo, "raw.bin"), 0o755);
+
+  const r = readBytesInside(repo, "raw.bin", MAX);
+  assert.ok(r.ok);
+  assert.deepEqual(r.bytes, raw);
+  assert.equal(r.mode & 0o100, 0o100);
+  // The utf8 wrapper is still what every text caller gets.
+  assert.equal(readFileInside(repo, "raw.bin", MAX).ok, true);
+});
+
+test("readBytesInside refuses the same escapes as readFileInside", () => {
+  for (const p of ["leak-file.md", "leak-dir/id_rsa", "leak-hard.md"])
+    assert.equal(readBytesInside(repo, p, MAX).ok, false, p);
 });
 
 test("escapesOnDisk allows a path with nothing on disk", () => {

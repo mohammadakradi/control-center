@@ -570,6 +570,114 @@ Picked up the backlog item above. The bug was real; the item's diagnosis was hal
     against real repos) + `lib/git.test.ts` + dispatch specs; manual steps in
     `.swe/test-scenarios/parallel-worktree-runs.md`.
 
+## 2026-08-17 — a file diff no longer lets git read the working tree (`gitFileDiff`)
+Picked up the backlog item left by the 2026-08-16 work (the "residual, deliberately not fixed"
+bullet above). The hole was real, bigger than filed, and **the item named the wrong attack
+shape** — the second time in two tasks that a filed diagnosis has been half right, so the habit
+of reproducing before designing paid for itself again.
+- **Measured first, and it inverted the severity.** The item (and my own note above) said the
+  tracked branch was narrow, citing an audit that attacked it at 66k attempts with zero leaks.
+  That audit was attacking a **symlinked ancestor directory**, which git structurally refuses on
+  this path: `git diff HEAD -- link/file` reports `deleted file mode 100644` rather than
+  following it. Verified. The shape that *does* work is a **hard link** — no target to resolve,
+  so it is an ordinary regular file to every check except `nlink`, and git diffs whatever inode
+  the name holds. Against the old code: **3 leaks in 53 attempts, 20 ms**. Not narrow at all;
+  the same order as the `--no-index` window that was treated as urgent.
+- **And there was a second leak with no race in it, found while validating the design.**
+  `escapesOnDisk` allows a contained *directory* — it has to, or every submodule diff breaks —
+  so asking for `docs` instead of `docs/a.md` made `git diff HEAD -- docs` walk the directory
+  and diff a hard link planted inside it. No timing, no retries, worked first try. A per-file
+  containment check is worth nothing if the caller can name the parent instead.
+- **The fix is "git never reads the working tree for file content", not "check harder".** Both
+  sides come from somewhere the caller's path can't reach at read time: `git show HEAD:<path>`
+  for the before side, `readBytesInside` (handle-based, inode-verified) for the after side. git
+  still *renders* the diff — on two files in a private `mkdtemp` — so hunks, binary detection
+  and `\ No newline at end of file` stay byte-identical instead of being reimplemented.
+  Reusing `--no-index` here is safe for the reason it wasn't before: the paths are ones we just
+  created, not ones an agent can point somewhere else.
+- **Classification comes from `git ls-tree HEAD`** (the object store, the one thing a tree
+  writer can't restate), into blob / symlink / gitlink / tree / absent. Each non-blob case
+  exists because of something measured, not for symmetry:
+  - **tree → nothing.** This route serves one file; see the raceless leak above.
+  - **gitlink → the real `git diff`, output checked positionally.** A submodule diff says only
+    which commit it points at, so there is no content for git to read — but HEAD saying
+    "gitlink" doesn't bind the *worktree* to still be one, and a regular file there makes git
+    render a typechange carrying its content. Everything from the first `@@` on must be a
+    `Subproject commit` line. **This took three attempts and the two failures are the useful
+    part:** allowlisting header *prefixes* let content through, because git prefixes added
+    lines with one `+` and a file whose lines start with `++ ` renders as `+++ …`, which the
+    `+++ b/…` header pattern accepted (the security audit reproduced it end to end); then
+    matching headers *exactly against the path* blanked ordinary submodules, because git
+    appends a trailing **tab** to `--- a/<path>` for a path with a space and C-quotes a
+    non-ASCII path. I found that second one by testing my own fix against real repos rather
+    than trusting it — the reviewer had warned that a false negative here is the same class as
+    the bug that once hid every submodule in every project.
+  - **`--submodule=short` belongs next to `--no-ext-diff --no-textconv`, for the same reason.**
+    Re-review found that `diff.submodule` — ordinary `.git/config`, untracked, shared across
+    linked worktrees, writable by a task's Bash tool — rewrites the output: `log` emits
+    `Submodule sub aaa..bbb:` with **no `@@` line at all** (so a real pointer change rendered
+    blank under the positional check), and `diff` emits the **contents of files inside the
+    submodule** with no planted file needed. "A repository can define what diff means" turned
+    out to have a third instance in the same function.
+  - **committed symlink → its target is never read.** Deleted renders a deletion (from HEAD's
+    blob, so nothing leaves the tree); still-present renders nothing. **This took three
+    attempts and is the most instructive part of the task:**
+    1. A contained *content* read follows the link, so it diffs the target's content against
+       HEAD's stored path text — a bogus full diff for an untouched link.
+    2. So I returned nothing for every symlink. Review rightly called that a regression: it
+       also swallowed the diff of a link that really had been retargeted or deleted.
+    3. So I used `readlink`, which reads no file — and **that leaked**. It follows the
+       *directories above* the link, so an ancestor pointing outside the tree returns an
+       outside link's target. I caught a raced variant myself (184 hits in 2 076 attempts) and
+       "fixed" it by validating the returned target lexically; the security re-audit then broke
+       *that* with a **deterministic** PoC — `escapesOnDisk` answers "safe" for a path with
+       nothing on disk (correct, that is the deleted-file case), so a *dangling* link behind a
+       swapped ancestor sails through, and a plain relative target like `secret-name` resolves
+       inside the root on paper while having been read from outside it.
+    - **There is no sound version of this in Node.** Closing it needs the link's parent held as
+      a descriptor (`openat`/`O_PATH`); Node exposes neither, so every route to a symlink's own
+      target is a path an attacker can re-point. The final answer is therefore to *not do it* —
+      shipping the narrow-but-open race would have repeated the exact mistake this task exists
+      to correct, and the 2026-08-16 entry's own lesson ("documenting a hole is not closing
+      it") applies to a hole I would have introduced myself.
+    - Lesson worth keeping: **"reads no file" is not the same as "is contained".** `readlink`,
+      `lstat` and `realpath` all traverse directories, and directories are the part an attacker
+      swaps.
+- **A third bug fell out of proving the tests could fail.** The old code read an empty
+  `git diff` as "not tracked" and fell through to the untracked branch — so **any unchanged
+  tracked file** rendered as a brand-new file containing its whole content. Cosmetic, never
+  reported, and it had been there the whole time. It only surfaced because the temporarily
+  restored old implementation failed a spec I'd written for the symlink case.
+- **`--literal-pathspecs` on both git calls.** `path` is a name, not a pattern: without it a
+  leading `:` is pathspec magic (`:/` = repo root, `:(exclude)…`) and `*` globs, so one request
+  could name a set of files no containment check ever looked at.
+- **The specs can fail, and I checked rather than assuming.** Restoring the old one-liner turns
+  four of them red (both leaks, the submodule typechange, the unchanged-file case) and they go
+  green again on the rewrite. This is the lesson from 2026-08-16 applied up front: the race test
+  there could *not* fail with its fix removed, and said so in its docstring. This one can.
+- `readFileInside` is now a UTF-8 wrapper over `readBytesInside`. The undecoded read matters:
+  two files differing only in bytes that don't map to UTF-8 both decode to the same replacement
+  character, so a string-based diff would report an edited file as unchanged. There's a spec.
+- **Almost everything that went wrong in this task was a silent blank diff, and that is the
+  pattern to carry forward.** When the safe path can't render something, "return nothing" is
+  the tempting answer, and it is usually wrong: `gitChanges` still lists the file as modified,
+  so the user clicks a real change and is told there isn't one. Instances, all caught by review
+  or by re-testing my own fixes: capping the *tracked* read at the untracked 2 MB (no diff for
+  a one-line edit in a large file — hence the separate `TRACKED_READ_CAP`); refusing every
+  committed symlink; exact-matching submodule headers against the path; and `diff.submodule=log`
+  dropping the `@@` line. Each fix has a spec that fails without it — verified by reverting each
+  one, not assumed.
+- **Two rounds of review, and the second round mattered more than the first.** Round one found
+  two blank-diff regressions; round two found that *my fixes for those* had introduced a real
+  leak and two more blank-diff cases. A fix written under review pressure deserves the same
+  adversarial treatment as the original code — re-running the suite is not that treatment.
+- **Residuals, deliberately not fixed and reported at the gate:** `gitChanges` still takes its
+  line counts from a whole-tree `git diff --numstat HEAD`, so the same plant can misreport an
+  outside file's **line count** (one integer, no content) — fixing it means synthesizing the
+  entire change summary. Clean filters / CRLF (`text=auto`, git-LFS) are not applied to the
+  after side, so those repos get noisier diffs: running a repo-defined filter is exactly the
+  command execution `--no-textconv` exists to prevent.
+
 ## Gotchas
 - **2026-08-11 — never create a FIFO (or other special file) under a bind-mounted path.** While
   testing that the backlog scan refuses non-regular files, I ran `mkfifo` inside
