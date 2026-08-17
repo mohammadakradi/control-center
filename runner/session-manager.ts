@@ -21,6 +21,12 @@ import {
 import { generateTitle, resolveModel, type ModelChoice } from "./model-router";
 import { buildTaskEnv, sensitiveEnvValues, type TaskEnv } from "./user-env";
 import {
+  ensureTaskWorktree,
+  launchMode,
+  removeWorktreeIfClean,
+  worktreeBranch,
+} from "./worktree";
+import {
   isZeroUsage,
   LAUNCH_LOG,
   usageDelta,
@@ -52,16 +58,28 @@ type SessionHandle = {
    *  the agent running `env` — deliberately or via prompt injection) is scrubbed
    *  before it is persisted or streamed. */
   secrets: string[];
+  /** Set when this run executes in an isolated git worktree (parallel opt-in, or the
+   *  resume of a run that was isolated). An isolated session doesn't occupy the project's
+   *  main checkout, so `projectBusy` ignores it; `finalize` cleans the tree up on done. */
+  worktree?: { projectPath: string; dir: string };
 };
 
 const sessions = new Map<string, SessionHandle>();
 
 export const getHandle = (taskId: string) => sessions.get(taskId);
 
-/** Is another job actually running (started, not finished) in this project right now? */
+/** Is another job actually running (started, not finished) in this project's main checkout
+ *  right now? Worktree-isolated sessions don't count: they hold their own working tree, so
+ *  they neither block the checkout nor stop `promoteNext` from filling it. */
 function projectBusy(projectId: string, exceptTaskId?: string): boolean {
   for (const h of sessions.values()) {
-    if (h.projectId === projectId && h.started && !h.done && h.taskId !== exceptTaskId)
+    if (
+      h.projectId === projectId &&
+      h.started &&
+      !h.done &&
+      !h.worktree &&
+      h.taskId !== exceptTaskId
+    )
       return true;
   }
   return false;
@@ -229,6 +247,27 @@ function finalize(handle: SessionHandle, status: TaskStatus, rawError?: string):
     .where(eq(tasks.id, handle.taskId))
     .run();
   record(handle, "status", { status, error });
+  // An isolated run that finished cleanly gives its worktree back — commits live on the
+  // branch, so a *clean* tree carries nothing. A dirty tree (or any failed/cancelled run,
+  // whose whole working state may be uncommitted) is kept so Continue can pick it up.
+  if (handle.worktree && status === "done") {
+    try {
+      // The agent may have switched branches mid-run; record where the commits actually
+      // are before the tree goes away — the file view's `git show` fallback reads this.
+      const branch = worktreeBranch(handle.worktree.dir);
+      if (branch) {
+        db.update(tasks).set({ branch }).where(eq(tasks.id, handle.taskId)).run();
+      }
+      const removed = removeWorktreeIfClean(handle.worktree.projectPath, handle.worktree.dir);
+      record(handle, "log", {
+        message: removed
+          ? `🧹 Cleaned up the isolated worktree — branch ${branch ?? "?"} keeps the commits.`
+          : "Isolated worktree kept: it still holds uncommitted changes.",
+      });
+    } catch {
+      /* cleanup must never fail a finished task */
+    }
+  }
   record(handle, "end", { status });
   handle.closeInput();
   // This project just freed up — start the next job waiting on it (if any).
@@ -487,7 +526,9 @@ function runTask(
         prompt: channel.gen(),
         options: {
           model: chosen.id,
-          cwd: project.path,
+          // An isolated run executes in its own worktree — but only one this process just
+          // ensured exists (handle.worktree), never a stale `workdir` column alone.
+          cwd: handle.worktree?.dir ?? project.path,
           env, // owner's token; replaces process.env (see buildTaskEnv)
           plugins: [{ type: "local", path: agent.sourcePath }],
           settingSources: ["user", "project", "local"],
@@ -665,15 +706,56 @@ function runTask(
     })();
   };
 
-  // Serialize per project: at most one live job per project. If another job is
-  // running here, queue this one — finalize() promotes it when the project frees.
-  if (projectBusy(project.id, taskId)) {
+  // Serialize per project: at most one live job in the project's checkout. Two ways out of
+  // the queue: the checkout is free, or this run is isolated in its own git worktree —
+  // because it already ran in one (its work lives there / on its branch, so it must go
+  // back), or because the user opted in ("run in parallel") and the project is busy right
+  // now. A parallel-flagged task that finds the checkout free just runs there normally.
+  // The decision itself is `launchMode` in ./worktree — pure, and tested there.
+  const mode = launchMode({
+    busy: projectBusy(project.id, taskId),
+    parallel: task.parallel,
+    workdir: task.workdir,
+    isGit: project.isGit,
+    isWorkspace: project.isWorkspace,
+  });
+
+  if (mode === "queue") {
     handle.start = launch;
     setStatus(handle, "queued");
     record(handle, "log", {
       message: "Queued — waiting for another job on this project to finish.",
     });
     return handle;
+  }
+
+  if (mode === "isolate") {
+    try {
+      // Pass the branch stored on the row: after a cleanup, reattaching must go to the
+      // branch the run actually ended on, not the derived task/<id> birth name.
+      const wtree = ensureTaskWorktree(project.path, taskId, { branch: task.branch });
+      handle.worktree = { projectPath: project.path, dir: wtree.dir };
+      // Persist where the run actually executes: the file/diff views resolve against
+      // `workdir`, and `branch` is what survives cleanup (and names the chip on the page).
+      if (task.workdir !== wtree.dir || task.branch !== wtree.branch) {
+        db.update(tasks)
+          .set({ workdir: wtree.dir, branch: wtree.branch })
+          .where(eq(tasks.id, taskId))
+          .run();
+      }
+      task.workdir = wtree.dir;
+      task.branch = wtree.branch;
+      record(handle, "log", {
+        message: `🌿 Running in an isolated git worktree (branch ${wtree.branch}) — the project's main checkout stays free.`,
+      });
+    } catch (err) {
+      finalize(
+        handle,
+        "failed",
+        `Couldn't prepare the task's isolated worktree: ${(err as Error).message}`,
+      );
+      return handle;
+    }
   }
 
   launch();

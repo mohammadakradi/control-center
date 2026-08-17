@@ -108,7 +108,7 @@ work, change an item's status, add one by hand, and run one as a task · 2026-08
      isn't yours.
 5. Press **Run** twice quickly on one item.
    - **Expected:** one task. The second press is refused with *"This item is already running as
-     task …"* and an **Open it** link, not a second session.
+     task …"* and an **Open the task** link, not a second session.
 6. With no Anthropic token saved, press **Run**.
    - **Expected:** a red message under the row with an **Open Settings** link; no task is created
      and the spinner stops.

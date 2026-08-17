@@ -1,15 +1,23 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import { existsSync, readdirSync } from "node:fs";
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import { db } from "../lib/db";
 import {
+  projects,
   taskEvents,
   tasks,
   TERMINAL_TASK_STATUSES,
   type Attachment,
   type TaskStatus,
 } from "../lib/db/schema";
+import {
+  removeOrphanWorktreeDir,
+  removeWorktreeIfClean,
+  taskWorktreeDir,
+  WORKTREES_DIR,
+} from "./worktree";
 import { RUNNER_HOST, RUNNER_PORT } from "../lib/config";
 import {
   continueTask,
@@ -207,8 +215,49 @@ for (const { id } of orphaned) {
     .run();
 }
 
+// Sweep task worktrees left behind by earlier runs. Deliberately conservative: a worktree
+// belonging to a failed/cancelled task (including everything the reconciliation above just
+// failed) is KEPT — the agent workflow holds all work uncommitted until its report gate, so
+// that tree may be the only copy of real work, and Continue resumes straight into it. What
+// goes: dirs with no task row at all (nothing can ever resume them, and with no row there's
+// no project path to ask git — plain delete), and clean trees of tasks already `done`,
+// whose end-of-run cleanup was skipped by a crash. Dirty `done` trees stay, same as at
+// finalize.
+let sweptWorktrees = 0;
+try {
+  for (const name of existsSync(WORKTREES_DIR) ? readdirSync(WORKTREES_DIR) : []) {
+    try {
+      const task = db
+        .select({ id: tasks.id, status: tasks.status, projectId: tasks.projectId })
+        .from(tasks)
+        .where(eq(tasks.id, name))
+        .get();
+      if (!task) {
+        removeOrphanWorktreeDir(name);
+        sweptWorktrees += 1;
+        continue;
+      }
+      if (task.status !== "done") continue;
+      const project = db
+        .select({ path: projects.path })
+        .from(projects)
+        .where(eq(projects.id, task.projectId))
+        .get();
+      if (project && removeWorktreeIfClean(project.path, taskWorktreeDir(name))) {
+        sweptWorktrees += 1;
+      }
+    } catch {
+      // One unsweepable entry (odd name, vanished repo) must not stop the others — or boot.
+    }
+  }
+} catch {
+  /* a missing/unreadable worktrees dir is not a reason to refuse to serve */
+}
+
 serve({ fetch: app.fetch, port: RUNNER_PORT, hostname: RUNNER_HOST }, (info) => {
   console.log(`[runner] listening on http://${RUNNER_HOST}:${info.port}`);
   if (orphaned.length > 0)
     console.log(`[runner] reconciled ${orphaned.length} orphaned task(s)`);
+  if (sweptWorktrees > 0)
+    console.log(`[runner] swept ${sweptWorktrees} stale task worktree(s)`);
 });

@@ -695,6 +695,9 @@ export function TaskLiveView({
         <FileModal
           projectId={projectId}
           path={scenarioPath}
+          // The task's own working dir may be an isolated worktree — the linked file
+          // (e.g. a test scenario) exists there, not in the project checkout.
+          taskId={taskId}
           onClose={() => setScenarioPath(null)}
         />
       )}

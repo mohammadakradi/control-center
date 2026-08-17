@@ -12,6 +12,7 @@ import { db } from "./db";
 import {
   agents,
   projectAgents,
+  projects,
   tasks,
   type Attachment,
   type Task,
@@ -89,6 +90,13 @@ export type DispatchInput = {
    * request text back into a worse title is a call nobody needs to pay for.
    */
   title?: string | null;
+  /**
+   * Opt in to running concurrently if the project is busy at launch: the runner then puts
+   * this task in its own git worktree (own working tree + branch) instead of queueing it.
+   * Only meaningful for a plain git project — refused up front for non-git projects (no
+   * worktrees to make) and workspaces (several member repos make "the" worktree ambiguous).
+   */
+  parallel?: boolean;
 };
 
 /** Titles are shown in lists and are not free-form input — cap them like the generated ones
@@ -120,6 +128,27 @@ export async function createAndStartTask(input: DispatchInput): Promise<Dispatch
   const refused = dispatchRefusal(input.userId);
   if (refused) return { ok: false, ...refused };
 
+  // Parallel isolation needs a repo to make a worktree of. Refuse before creating the row:
+  // silently downgrading the flag would run two sessions in one checkout the moment the
+  // caller's "is it busy?" information was stale in the wrong direction.
+  if (input.parallel) {
+    const project = db
+      .select({ isGit: projects.isGit, isWorkspace: projects.isWorkspace })
+      .from(projects)
+      .where(eq(projects.id, input.projectId))
+      .get();
+    if (!project) return { ok: false, status: 404, error: "project not found" };
+    if (!project.isGit || project.isWorkspace) {
+      return {
+        ok: false,
+        status: 400,
+        error: project.isWorkspace
+          ? "Parallel runs aren't available on a workspace — its member repos make the isolated worktree ambiguous. Dispatch normally to queue."
+          : "Parallel runs need a git repository — this project isn't one. Dispatch normally to queue.",
+      };
+    }
+  }
+
   const id = input.taskId ?? newId("task");
 
   // Snapshot the agent's current version so history records which version ran this task.
@@ -142,6 +171,7 @@ export async function createAndStartTask(input: DispatchInput): Promise<Dispatch
       status: "queued",
       model: resolveModel(input.model),
       attachments: input.attachments ?? [],
+      parallel: input.parallel ?? false,
     })
     .run();
 

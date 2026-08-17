@@ -212,6 +212,16 @@ translate HTTP. An item can be dispatched as a real task and links back to it.
   transcript. Its `linkedTask` is exposed to everyone as `{ id, status }` and nothing more.
   An item whose task is still live refuses a second run (409) — a double click shouldn't buy
   two sessions.
+- **The file modal's "Create task" is the same dispatch, not a second one.** `FileModal` resolves
+  the spec's item (`GET …/backlog` — the load that syncs, so an on-disk spec is guaranteed
+  present) by `specSourcePath()` and then calls this route, so a spec dispatched from a
+  transcript moves its item exactly as the Run button does. Dispatching straight to
+  `POST /api/tasks` left the item at `todo` with no `linkedTaskId` forever, which is what made
+  the backlog's own status untrustworthy. That direct dispatch is now only the fallback for a
+  spec the backlog *cannot* hold — a workspace member's, or one the scan refused. A lookup that
+  **fails** is deliberately not that fallback: it refuses and says so, because `POST /api/tasks`
+  has no duplicate check, so guessing would turn one transient error into two concurrent
+  sessions on the same spec, billed to the user twice.
 - **A run reuses the item's title, so no model renames it.** `DispatchInput.title` is stored on
   the row, and the runner only names a task whose row has *no* title (`nameTask` in
   `runner/session-manager.ts`) — passing it through is what suppresses the Haiku call. The item
@@ -293,6 +303,147 @@ translate HTTP. An item can be dispatched as a real task and links back to it.
     the equally unauthenticated `POST /api/tasks`.
   - Still a mitigation, not a fix — a model can be argued with. The control is a person reading
     an item before pressing Run.
+
+## Reading files out of a project tree
+`GET /api/projects/[id]/{file,diff}` take a caller-supplied relative path and read it under a
+root the user registered — `project.path`, a workspace member, or a task's git worktree, which
+for a parallel run is **written by an agent with Bash**. Their old guard (reject a leading `/`
+or a `..` segment, then `resolve()`) is purely lexical, so it proved nothing about what the
+path lands on. `lib/safe-read.ts` is the containment check; the routes keep the lexical gate
+only as a cheap pre-filter.
+- **Three escapes exist and no single check catches all three.** Measured, not assumed:
+
+  | planted in the tree | `O_NOFOLLOW` | realpath containment |
+  |---|---|---|
+  | `docs.md` → `/etc/passwd` | refuses | refuses |
+  | `link/` → `/secrets`, read as `link/id_rsa` | **opens it** | refuses |
+  | `docs.md` hard-linked to a file outside | opens (only `nlink` sees it) | **contained** |
+
+  `O_NOFOLLOW` only refuses a symlink as the *final* component, so a symlinked intermediate
+  directory walks through it; a hard link has no target to resolve, so realpath reports it as
+  living exactly where it appears. Hence both, plus `nlink === 1`.
+- **A symlink that stays inside the root is allowed**, unlike `readSpecFile` in `lib/backlog.ts`,
+  which refuses links outright. `README.md → docs/README.md` is ordinary in a repo and this is a
+  file viewer; a `.pm/tasks/` spec becomes the instruction text of an autonomous run, so the
+  stricter rule is right where it is. Escaping the root is what both refuse. The two are
+  deliberately **not** merged.
+- **Containment is decided on the inode, not by resolving the path twice.** `realpath` then
+  `open` is check-then-use, and `O_NOFOLLOW` only guards the *last* component — so swapping a
+  **directory** along the path for a symlink mid-flight gets followed. Both reviews reproduced
+  that with a shell loop. After opening, `readFileInside` therefore re-resolves and requires the
+  file at that contained path to be the very inode the handle holds (`dev` + `ino`); with
+  `nlink === 1` that is airtight, since the open file then has exactly one name and that name was
+  just seen inside the root. Re-checking the *path* alone is not enough — an attacker can put the
+  directory back and pass a second path check.
+- **`O_NONBLOCK` on the open is load-bearing, not tidiness.** `open` on a FIFO blocks until a
+  writer arrives, and that happens *before* `fstat` can classify it — so a named pipe left in a
+  tree hangs the request forever and no check afterwards helps. Found by the FIFO spec hanging
+  the suite. Regular files ignore the flag.
+- **No worktree path is handed to a subprocess any more.** A Node-side check followed by
+  `execFileSync` is check-then-use with a whole *process spawn* in the window — the audit leaked
+  a planted secret through `git diff --no-index` in 9–15ms, under 100 attempts, 3 times out of 3.
+  So an untracked file's diff is now **synthesized** in `untrackedDiff` (`lib/git.ts`) from a
+  contained read: same shape git produced (`--- /dev/null`, `@@ -0,0 +1,N @@`, `+` lines, binary
+  and no-trailing-newline cases included), close enough for `components/DiffModal.tsx`, which
+  colours by prefix. Keep it that way — reintroducing `--no-index` on a worktree path reopens the
+  race that the remaining `escapesOnDisk` pre-check cannot close.
+- **git is not allowed to read the working tree for a file's content at all** (2026-08-17), and
+  that — not `escapesOnDisk` — is what makes `gitFileDiff` safe. The tracked branch used to run
+  `git diff HEAD -- <path>` after the check, and git resolves the path *again*, on its own: a
+  tracked file swapped for a **hard link** to an outside file mid-request leaked it at **3 hits
+  in 53 attempts, 20 ms**. Now `git ls-tree HEAD` classifies the path from the object store, the
+  before side comes from `git show HEAD:<path>` and the after side from `readBytesInside`; git
+  renders the diff from those two, written into a private `mkdtemp` (which is why `--no-index`
+  is safe *there* and not on a worktree path). Keep any new diff work on that side of the line.
+  - **The filed item blamed the wrong shape, and so did the note it came from.** A symlinked
+    *ancestor directory* does **not** leak on the tracked path — git answers `deleted file mode
+    100644` instead of following it, which is why an audit at 66k attempts found nothing and
+    called the window narrow. A hard link has no target to resolve, so only `nlink` sees it.
+  - **A tracked *directory* path leaked with no race at all.** `escapesOnDisk` allows a contained
+    directory (below), so `git diff HEAD -- docs` walked it and diffed a hard link planted at
+    `docs/a.md` — a file the caller never named and no check ever looked at. A `tree` entry now
+    returns nothing: this route serves one file.
+  - **`--submodule=short` is as load-bearing as `--no-ext-diff --no-textconv`.** `diff.submodule`
+    is ordinary `.git/config` — untracked, shared across linked worktrees, writable by a task's
+    Bash tool — and it changes the output wholesale: `log` drops the `@@` line entirely (so a
+    real pointer change rendered blank), `diff` prints the *contents of files inside the
+    submodule*. Pinning the format means neither depends on how a repo is configured.
+  - **A submodule keeps the real `git diff`, with its output checked positionally.** HEAD saying
+    "gitlink" doesn't bind the worktree to still be one, and a regular file there makes git
+    render a typechange carrying that file's content. `isSubmoduleDiff` requires every line from
+    the first `@@` onward to be a `Subproject commit` line; a typechange puts a second
+    `diff --git` block there, so it fails whatever the planted file holds. Both earlier attempts
+    were wrong and each failed a different way, so don't "simplify" this back:
+    - matching header *prefixes* let content through — git prefixes added lines with one `+`,
+      so a file whose lines start with `++ ` renders as `+++ …` and passes as the `+++ b/…`
+      header (found by the security audit, reproduced end to end);
+    - matching header lines *exactly against the path* blanked real submodules — git appends a
+      trailing **tab** to `--- a/<path>` when the path has a space, and C-quotes the path when
+      it isn't ASCII. Specs cover `my sub` and `üni sub`.
+  - **A committed symlink's target is never read.** A *deleted* one still renders its deletion
+    (built purely from HEAD's committed blob, so nothing comes out of the tree); one that is
+    still there renders nothing. Both alternatives were tried and both leak or lie:
+    - a contained *content* read follows the link, so it diffs the target's content against
+      HEAD's stored path text — a large bogus diff for a link nobody touched;
+    - **`readlink` follows the directories above the link**, so pointing an ancestor outside
+      the tree returns an outside link's target. The security re-audit proved this, including
+      a variant with **no race at all**: `escapesOnDisk` answers "safe" for a path with nothing
+      on disk (deliberately — that is how a deleted file's diff works), which is exactly a
+      *dangling* link behind a swapped ancestor. Validating the returned target lexically does
+      not save it: a plain relative target resolves inside the root on paper while having been
+      read from outside it.
+    There is no sound version in Node — it needs the parent held as a descriptor
+    (`openat`/`O_PATH`), which Node doesn't expose. The cost is that a *retargeted* committed
+    symlink shows no diff; the file list still reports it as modified.
+  - Fixed on the way: the old code read an empty `git diff` as "not tracked" and fell through to
+    `untrackedDiff`, so **every unchanged tracked file** rendered as a brand-new file containing
+    its whole content.
+  - Both git calls carry **`--literal-pathspecs`**: the path is a name, not a pattern, and
+    without it a leading `:` is pathspec magic (`:/`, `:(exclude)…`) and `*` globs.
+  - **A tracked diff's read cap is 16 MB, not the untracked 2 MB**, and the difference is
+    load-bearing: an untracked file's diff *is* its whole content, but a one-line edit inside a
+    4 MB tracked file is a five-line hunk. Reusing the small cap returned no diff at all for it
+    (caught in review). The cap bounds memory, not what is worth showing.
+- **`escapesOnDisk` allows a contained *directory*.** It's the containment question, not "is this
+  a plain file". Refusing every non-regular path silently returned an empty diff for **every git
+  submodule in every project** — `git diff HEAD -- <submodule>` is an ordinary "Subproject commit"
+  diff. Caught in review; there's a spec for it now. A path with **nothing on disk answers false**
+  too: `git diff HEAD -- deleted.md` is served from the object store, so there is no filesystem
+  read to escape through. It is now a **pre-filter, not the containment guarantee** — every
+  branch of `gitFileDiff` is sound without it.
+- **The diff route's exposure was narrower than it looks, which is why it had to be tested.**
+  `git diff --no-index` renders a plain symlink as mode 120000 whose content is the *target's
+  path* — harmless. Only the symlinked-directory form leaked real content.
+- **`readFileInside` is a UTF-8 wrapper over `readBytesInside`.** The diff path needs the bytes
+  undecoded: two files differing only in bytes that don't map to UTF-8 decode to the same
+  replacement character, so a string-based diff reports an edited file as unchanged. `mode` comes
+  off the open handle (`fstat`), not a second `stat` of the path, which is what lets a
+  mode-only change (`chmod +x`) still render its `old mode`/`new mode` lines.
+- **Every `git diff` here carries `--no-ext-diff --no-textconv`.** A repository can define what
+  "diff" *means*: `diff.<name>.textconv` / `.command` name a shell command git runs to render a
+  file, with the command in `.git/config` and the binding available from `.git/info/attributes`
+  — neither tracked, so neither shows in `git status`, a review, or a clone, and both are
+  ordinary writes inside a repo, which a task's Bash tool has. Verified: without the flags a
+  planted driver **executes** on `git diff HEAD -- <path>`; with them it doesn't and the diff is
+  unchanged. There's a spec for it. Note the shared-`.git` half of this is *not* fixed — hooks
+  and config are shared across all linked worktrees, so a plant from one task's worktree still
+  fires in the main checkout (backlog `bli_e0d5be33`).
+- **A refused path and a missing one answer identically** (404), like `lib/task-access`'s "not
+  yours ≡ doesn't exist". A separate "invalid path" status turned one planted symlink into an
+  existence oracle for arbitrary absolute paths on the host — no race, no auth, repeatable. Only
+  a *lexically* bad path (leading `/`, a `..` segment, control chars) still answers 400, since
+  that is decided before anything is looked up and reveals nothing.
+- **`gitChanges` reads untracked files just to count lines**, and `git status` lists an untracked
+  symlink like any other entry — so that read leaked a target's line count, and would have hung
+  on a FIFO. It now goes through the same helper, capped (it was unbounded, so a huge untracked
+  file was a memory-exhaustion primitive); anything refused counts 0, as unreadable files already did.
+  Its *tracked* counts still come from a whole-tree `git diff --numstat HEAD`, which does read the
+  worktree — the same plant can misreport an outside file's **line count**. Left alone knowingly:
+  it is one integer and no content, and containing it means synthesizing the whole summary.
+- **This is defence in depth, not a perimeter.** It needs write access to a project tree to
+  exploit, and these routes still have no auth on the non-task path — the same gap documented
+  under the backlog. What it removes is a confused deputy: the server no longer reads outside a
+  root on behalf of a path that merely looks like it's inside.
 
 ## The agents ship with the app
 The swe / fe / pm plugins are **vendored into this repo at `agents/<namespace>` and shipped in the
@@ -634,7 +785,10 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `lib/backlog.ts` — The per-project backlog (`backlog_items`): scans/syncs the pm agent's
   `.pm/tasks/` specs, validates API input, and owns the status rules (a manual status wins
   over both the sync and the linked task; see "The backlog" below)
-- `lib/pm-spec.ts` — Reading a pm task spec (frontmatter → title/assignee/priority). Shared by
+- `lib/pm-spec.ts` — Reading a pm task spec (frontmatter → title/assignee/priority), plus
+  `specSourcePath()`, which maps a spec's on-screen path to the `sourcePath` key the backlog
+  scan would have stored — root-only and matched exactly, since the modal's path may name a
+  workspace member's spec that has no row. Shared by
   `components/FileModal.tsx` and the backlog sync so one spec always routes to the same agent.
   **Imported by a client component — nothing reachable from it may touch `node:*`**
   (`lib/frontmatter.ts` is the dependency-free primitive underneath, also used by agent
@@ -647,6 +801,10 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   `data/uploads/<taskId>/`, plus `readFormData` (a malformed multipart body answers 400 instead
   of throwing a 500) and `attachmentNote` (the "read these with the Read tool" note, shared by
   the runner's prompt and the gate reply so the wording can't drift)
+- `lib/safe-read.ts` — Reading a file a project tree *claims* to contain: `readFileInside`
+  (the file route), `escapesOnDisk` (the git callers, which hand a path to a subprocess and
+  can't hold an fd) and `isUsableRelPath` (the lexical gate both routes share). See "Reading
+  files out of a project tree" below
 - `lib/ui.ts` — Shared UI logic with no DOM: status labels/tones, `taskDisplayTitle`, and
   `orderSkills` (skill order + whether `onboard` is offered). Kept out of the components so
   `pnpm test` can cover it

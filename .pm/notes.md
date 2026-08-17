@@ -55,6 +55,17 @@ planning decision. Keep entries short and accurate.
   bug and would regress the deliberate build-before-swap (fail-safe, zero-downtime) ordering —
   flagged this reasoning back to the user rather than applying it as-is.
 
+- 2026-08-14 — planned backlog run-tracking + parallel runs
+  (`.pm/tasks/20260814-170321-backlog-tracking-and-parallel-runs/`, 2 tasks). Verdicts:
+  (1) BUILD — `FileModal.createTask` dispatches via `/api/tasks`, bypassing the backlog, so a
+  spec's item never leaves `todo`; fix is client-side: resolve the item by `sourcePath` via the
+  self-syncing backlog GET and use `POST …/backlog/[itemId]/run`, direct dispatch as fallback.
+  (2) ALREADY-DONE — pm-assignable backlog items shipped in b9c2c3b (`AddBacklogItem.tsx`
+  offers `/pm`, dispatches `/pm:plan`). (3) User asked for a pre-queue overlap check to run
+  tasks concurrently; assessed RISKY (overlap unknowable pre-run; shared checkout collides on
+  git index/HEAD regardless) — user approved the substitute: opt-in per-task `git worktree`
+  isolation, queueing stays the default, non-git projects unchanged.
+
 ## Constraints & conventions
 <!-- stacks present, who owns what, non-obvious rules to respect when planning -->
 - Single stack: full-stack Next.js 16 App Router (App Router pages/API in `app/`) + a
