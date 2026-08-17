@@ -41,8 +41,14 @@ import { isAbsolute, relative, resolve } from "node:path";
  * Is `child` strictly below `parent`? Both must already be real paths — on macOS `/tmp` is
  * itself a symlink to `/private/tmp`, so comparing a raw string against a realpath'd one
  * rejects paths that genuinely are inside.
+ *
+ * Exported for `lib/update-run.ts`, which reads two files under `~/.control-center` and needs
+ * the same containment question answered. It can't reuse `readBytesInside` — that allows a
+ * symlink which stays inside the root, and inside *that* root are `.env` and the token vault —
+ * so it pairs this with `isSameSoleFile` and its own `O_NOFOLLOW`. One definition of "below",
+ * rather than a second opinion.
  */
-function isInside(child: string, parent: string): boolean {
+export function isInside(child: string, parent: string): boolean {
   const rel = relative(parent, child);
   // "" means the root itself, which is a directory and never a file to serve.
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
