@@ -49,6 +49,9 @@ die() {
   # Every failure in this script funnels through here, which makes it the one place an update
   # attempt can record *why* it stopped. A no-op unless one is in flight.
   record_update failed "$*"
+  # Same funnel logic for the update lock: a failed update must not leave it held, and the
+  # owner check makes this a no-op for every death that never took it.
+  release_update_lock
   exit 1
 }
 
@@ -290,6 +293,155 @@ update_state() {
   sed -n 's/^state=//p' "$UPDATE_STATUS_FILE" 2>/dev/null | head -1
 }
 
+# ── update lock ─────────────────────────────────────────────────────────────────────────
+# Two entry points reach apply_update(): `update` (which the app's Update button drives via a
+# detached spawn) and check_and_update() on the `start` path. With nothing between them, "click
+# Update, get impatient, quit the app and reopen it" put two apply_updates on the same install,
+# racing each other's rm/mv on app/ — the bad interleavings end with no app directory at all.
+#
+# The lock is a directory (`mkdir` is atomic on POSIX filesystems — no flock dependency) whose
+# `owner` file carries "pid startedAt". But the directory alone is *not* the token: `mkdir` and
+# the owner write are two steps, and the first cut let a racer reclaim the freshly-made,
+# not-yet-populated directory and both callers end up believing they hold it (a reviewer
+# measured this at ~46% of concurrent acquires). So **the O_EXCL creation of `owner` is the real
+# token**: whoever's `set -C` (noclobber) create of it succeeds holds the lock. A process that
+# finds its directory reclaimed under it fails that create rather than clobbering — which is
+# also what stops a symlink planted at `owner` from redirecting the write onto, say,
+# ~/.control-center/.env (O_EXCL refuses an existing path, symlink included).
+#
+# Staleness is decided the way lib/update-run.ts decides it for update.status, and it is the
+# same trade: `kill -0` can't verify process *identity*, so a recycled pid reads as alive — the
+# age ceiling is what bounds that to an hour. Too eager the other way starts a second swap
+# beside a live one, hence an hour with clock tolerance rather than minutes.
+UPDATE_LOCK_DIR="$RUN_DIR/update.lock"
+UPDATE_LOCK_MAX_AGE=3600
+UPDATE_LOCK_CLOCK_TOLERANCE=300
+
+# The owner line ("pid startedAt"), read defensively. It is a regular file only — a same-uid
+# tamperer could drop a symlink here to redirect the read at an arbitrary file, or a FIFO to
+# block it forever — and the read is byte-capped: `cat` of a multi-gigabyte file planted at this
+# path would otherwise be slurped into a shell variable on *every* start/update (cmd_start reads
+# it before anything else runs). `dd` stops after one small block whatever the file's real size.
+# The owner of a lock directory (default: the live one; a second arg lets `acquire` re-judge a
+# copy it just moved aside). Read defensively — see the block above.
+update_lock_owner() {
+  f="${1:-$UPDATE_LOCK_DIR}/owner"
+  [ -f "$f" ] && [ ! -h "$f" ] || return 0
+  dd if="$f" bs=256 count=1 2>/dev/null || :
+}
+
+# "pid startedAt" if the owner file holds a well-formed one, else nothing. Central so `alive`
+# and `stale` can't disagree on what "valid" means. Both fields must be plain digits **and fit a
+# 64-bit integer** (≤18 digits): an all-digit value too big for the shell's arithmetic makes
+# `kill -0` and `$(( ))` *fatal* under dash (the container's /bin/sh), which would crash every
+# future start/update on a corrupt record — worse than the wedge the staleness rules prevent.
+update_lock_fields() {
+  lock_owner=$(update_lock_owner "${1:-}")
+  lock_pid=${lock_owner%% *}
+  lock_started=${lock_owner#* }
+  [ -n "$lock_pid" ] && [ -n "$lock_started" ] || return 1
+  case "$lock_pid$lock_started" in '' | *[!0-9]*) return 1 ;; esac
+  [ "${#lock_pid}" -le 18 ] && [ "${#lock_started}" -le 18 ] || return 1
+  printf '%s %s' "$lock_pid" "$lock_started"
+}
+
+# For messages only — digits or "unknown", because it's printed to a terminal and copied into
+# update.status, and the file is one any local process can forge.
+update_lock_owner_pid() {
+  fields=$(update_lock_fields) || { printf 'unknown'; return 0; }
+  printf '%s' "${fields%% *}"
+}
+
+# Held by a live update: well-formed owner, its process still there, started inside the window.
+# An optional directory argument judges a copy other than the live lock (used by `acquire`).
+update_lock_alive() {
+  dir=${1:-$UPDATE_LOCK_DIR}
+  [ -d "$dir" ] || return 1
+  fields=$(update_lock_fields "$dir") || return 1
+  lock_pid=${fields%% *}
+  lock_started=${fields#* }
+  kill -0 "$lock_pid" 2>/dev/null || return 1
+  lock_age=$(($(date +%s) - lock_started))
+  [ "$lock_age" -lt "$UPDATE_LOCK_MAX_AGE" ] || return 1
+  [ "$lock_age" -gt "-$UPDATE_LOCK_CLOCK_TOLERANCE" ] || return 1
+}
+
+# Provably reclaimable: a well-formed owner whose process is gone, or whose start time is outside
+# the window (a reboot's leftover on a recycled pid). A **missing or malformed** owner is
+# deliberately NOT stale — it usually means a racer is between its `mkdir` and its owner write,
+# and reclaiming there is what caused the double-acquire. `acquire_update_lock` waits one beat
+# and re-checks before treating that case as a genuine leftover.
+update_lock_stale() {
+  [ -d "$UPDATE_LOCK_DIR" ] || return 1
+  fields=$(update_lock_fields) || return 1
+  lock_pid=${fields%% *}
+  lock_started=${fields#* }
+  kill -0 "$lock_pid" 2>/dev/null || return 0
+  lock_age=$(($(date +%s) - lock_started))
+  [ "$lock_age" -ge "$UPDATE_LOCK_MAX_AGE" ] && return 0
+  [ "$lock_age" -le "-$UPDATE_LOCK_CLOCK_TOLERANCE" ] && return 0
+  return 1
+}
+
+update_lock_is_mine() {
+  fields=$(update_lock_fields) || return 1
+  [ "${fields%% *}" = "$$" ]
+}
+
+# Take the lock, or return 1 with the holder untouched. Callers must treat a false return as
+# "someone else has it", never retry-loop (the bounded loop here is only for reclaim churn).
+acquire_update_lock() {
+  mkdir -p "$RUN_DIR" 2>/dev/null || return 1
+  attempts=0
+  while :; do
+    attempts=$((attempts + 1))
+    [ "$attempts" -le 4 ] || return 1
+    if mkdir "$UPDATE_LOCK_DIR" 2>/dev/null; then
+      # Ours and empty. Claim it with an O_EXCL create of `owner` (the real token — see the
+      # header). A racer that reclaimed this directory under us, or a symlink planted at `owner`
+      # in the gap, makes this fail; we yield without destroying what may now be theirs.
+      if (
+        set -C
+        printf '%s %s\n' "$$" "$(date +%s)" >"$UPDATE_LOCK_DIR/owner"
+      ) 2>/dev/null; then
+        return 0
+      fi
+      return 1
+    fi
+    # The directory exists. A live holder is refused outright; nothing here reclaims a live lock.
+    update_lock_alive && return 1
+    # Not live: a clearly-dead/aged owner, or an ownerless/malformed one. The latter is the
+    # ambiguous case — a racer mid-claim, or a corrupt leftover — so wait a beat for a racer to
+    # publish its owner, then decide again: now-live means back off, anything else is a leftover.
+    if ! update_lock_stale; then
+      sleep 1
+      update_lock_alive && return 1
+    fi
+    # Reclaim. The staleness check above and this move are not one atomic step, so between them
+    # another process could have reclaimed and *re-acquired* this same path with a fresh, live
+    # lock. The `mv` is atomic, so it takes a consistent snapshot — and we then re-judge *that
+    # snapshot*: if the copy we took is itself live, a racer beat us to it, so put it back and
+    # yield rather than dropping a legitimate holder (which is what would leave two updates
+    # running — the exact bug this lock exists to prevent). Only a still-not-live copy is ours to
+    # drop; a planted `owner` symlink inside it is unlinked, never followed.
+    aside="$UPDATE_LOCK_DIR.stale.$$"
+    rm -rf "$aside" 2>/dev/null || :
+    mv "$UPDATE_LOCK_DIR" "$aside" 2>/dev/null || continue
+    if update_lock_alive "$aside"; then
+      mv "$aside" "$UPDATE_LOCK_DIR" 2>/dev/null || rm -rf "$aside" 2>/dev/null || :
+      return 1
+    fi
+    rm -rf "$aside" 2>/dev/null || :
+  done
+}
+
+# Owner-checked, so `die` can call it unconditionally: a process that never took the lock
+# (or lost it) removes nothing.
+release_update_lock() {
+  update_lock_is_mine || return 0
+  rm -rf "$UPDATE_LOCK_DIR" 2>/dev/null || :
+}
+
 # ── update ──────────────────────────────────────────────────────────────────────────────
 backup_db() {
   db="$DATA_DIR/platform.db"
@@ -392,6 +544,11 @@ apply_update() {
 update_run() {
   UPDATE_ATTEMPT=1
   UPDATE_STARTED=$(date +%s)
+  # Before anything else: one update at a time, install-wide. UPDATE_ATTEMPT is already set,
+  # so losing here records `failed` with this message — which is what the app's banner shows
+  # when the button-spawned attempt found a start-path update already mid-swap.
+  acquire_update_lock ||
+    die "another update is already in progress (pid $(update_lock_owner_pid)). Watch it with: tail -f $UPDATE_LOG_FILE"
   record_update running
   need_node
   need_install
@@ -403,14 +560,19 @@ update_run() {
   if ! version_gt "$latest" "$UPDATE_FROM"; then
     info "Already on the latest release ($UPDATE_FROM)."
     record_update up-to-date
+    release_update_lock
     return 0
   fi
   record_update running # now carrying the version being installed
   was_running=no
   running && was_running=yes
   apply_update "$latest"
+  # The lock is deliberately still held through this restart: cmd_start lets its own locker
+  # through, while someone else's `start` keeps refusing — otherwise the update's restart and
+  # a user's reopen could each spawn a web+runner pair.
   [ "$was_running" = yes ] && CC_SKIP_UPDATE_CHECK=1 cmd_start || :
   record_update succeeded
+  release_update_lock
 }
 
 # `control-center update` — decide where the attempt's output goes, then run it.
@@ -448,7 +610,13 @@ check_and_update() {
     return 0
   fi
   if version_gt "$latest" "$current"; then
+    # Refuse rather than start: another process is (or is about to be) mid-swap on app/, and
+    # if the server was running when it began, that update restarts the server itself — the
+    # Mac app window reconnects on its own.
+    acquire_update_lock ||
+      die "an update is already in progress (pid $(update_lock_owner_pid)) — it restarts the app itself when it finishes. Watch it with: tail -f $UPDATE_LOG_FILE"
     apply_update "$latest"
+    release_update_lock
   else
     info "Already on the latest release ($current)."
   fi
@@ -458,6 +626,14 @@ check_and_update() {
 cmd_start() {
   need_node
   need_install
+  # A live update is about to stop the server and swap app/ under us, so spawning now races the
+  # swap — and its own restart would put a second web+runner pair beside ours. Checked here, at
+  # the entry, so `restart`, `--no-update` and CC_SKIP_UPDATE_CHECK are covered too; the
+  # updater's own restart re-enters this function holding the lock, which is what the owner
+  # check lets through.
+  if update_lock_alive && ! update_lock_is_mine; then
+    die "an update is in progress (pid $(update_lock_owner_pid)) — it restarts the app itself when it finishes. Watch it with: tail -f $UPDATE_LOG_FILE"
+  fi
   [ "${CC_SKIP_UPDATE_CHECK:-}" = 1 ] || [ "${1:-}" = --no-update ] || check_and_update
 
   if running; then

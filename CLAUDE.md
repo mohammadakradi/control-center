@@ -62,8 +62,9 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
   so a path argument must exist inside the container too (the repo and `~/Dev` are mounted).
 - Lint: `pnpm lint`  (baseline: ✅ — no warnings)
 - Test: `pnpm test`  (baseline: ✅ 186 tests — Node's built-in runner via `tsx`, no extra
-  deps; specs live next to the code as `runner/*.test.ts`, `lib/*.test.ts` and
-  `lib/discovery/*.test.ts`, fixtures in `runner/__fixtures__/`. Those globs are listed
+  deps; specs live next to the code as `runner/*.test.ts`, `lib/*.test.ts`,
+  `lib/discovery/*.test.ts` and `infra/release/*.test.ts`, fixtures in
+  `runner/__fixtures__/`. Those globs are listed
   explicitly in the `test` script — a spec in a directory that isn't listed silently never
   runs. DB specs build a throwaway SQLite file from the real schema — via `drizzle-kit push`,
   or `migrateDatabase()` where the committed migrations should be exercised too — and the
@@ -425,9 +426,10 @@ only as a cheap pre-filter.
   — neither tracked, so neither shows in `git status`, a review, or a clone, and both are
   ordinary writes inside a repo, which a task's Bash tool has. Verified: without the flags a
   planted driver **executes** on `git diff HEAD -- <path>`; with them it doesn't and the diff is
-  unchanged. There's a spec for it. Note the shared-`.git` half of this is *not* fixed — hooks
-  and config are shared across all linked worktrees, so a plant from one task's worktree still
-  fires in the main checkout (backlog `bli_e0d5be33`).
+  unchanged. There's a spec for it. The shared-`.git` half (backlog `bli_e0d5be33`) is now
+  **partly** closed: hooks and config are still shared across all linked worktrees, but as of
+  2026-08-19 no *platform-issued* git command executes them — see the `NO_HOOKS` entry below.
+  Still open from that item: `filter.<driver>.clean`, which has no `-c` key to pin.
 - **A refused path and a missing one answer identically** (404), like `lib/task-access`'s "not
   yours ≡ doesn't exist". A separate "invalid path" status turned one planted symlink into an
   existence oracle for arbitrary absolute paths on the host — no race, no auth, repeatable. Only
@@ -438,8 +440,165 @@ only as a cheap pre-filter.
   on a FIFO. It now goes through the same helper, capped (it was unbounded, so a huge untracked
   file was a memory-exhaustion primitive); anything refused counts 0, as unreadable files already did.
   Its *tracked* counts still come from a whole-tree `git diff --numstat HEAD`, which does read the
-  worktree — the same plant can misreport an outside file's **line count**. Left alone knowingly:
-  it is one integer and no content, and containing it means synthesizing the whole summary.
+  worktree — the same plant can misreport an outside file's **line count**.
+  - **Re-examined 2026-08-18 and deliberately closed as won't-fix**, with the leak reproduced
+    (a tracked path hard-linked to a 137-line outside file reports `+137 −1`). Two shortcuts were
+    measured and rejected, and both are worth knowing before reopening this:
+    - *Post-filtering the numstat map with `escapesOnDisk`* is not a fix. That helper answers
+      "safe" for a path with nothing on disk — deliberately, since that is how a deleted file's
+      diff is served — so the plant is simply removed after numstat has read it and the check
+      passes. No timing skill needed; it would be a disclaimer, not a boundary.
+    - *Synthesizing the summary* is the sound direction, and the review improved the cost estimate
+      worth recording: it is **not** a subprocess per file. `git archive HEAD -- <changed paths>`
+      into a private `mkdtemp` gives the whole "before" tree in **one** spawn, `readBytesInside`
+      gives the "after" side with no spawn at all, and a single `git diff --no-index --numstat -z`
+      over the two directories keeps git as the thing computing the numbers (so they can't disagree
+      with git's) — two subprocesses total. What still makes it a real project rather than a patch:
+      it materialises every changed file's bytes twice on disk, `--no-index` across two trees does
+      not reproduce `diff.renames` so renames have to be re-paired from the status entries by hand,
+      and added/deleted/one-sided paths each need their own case. Sounder, not cheap.
+    Added/deleted are *diff* quantities rather than line counts, so any honest accounting of the
+    working tree has to read the working tree. Severity is bounded by the attacker being an agent
+    with Bash running as the **same uid as the server** — it can already read the file directly, so
+    this is a confused deputy, not an information gain.
+    - **Don't read "two integers" as the size of the leak, only its shape** (the audit's fair
+      objection): the attacker also controls HEAD's blob for that path and can re-trigger the
+      render freely over the unauthenticated loopback routes, so what it really has is a
+      chosen-plaintext *diff-distance* oracle — a content-extraction primitive in kind, just a slow
+      and coarse one. Nobody has built it, and the same-uid argument above is what keeps it
+      non-blocking, not the output shape.
+    - The audit also **falsified the bound as originally written**, via `core.worktree` putting
+      outside *filenames* in the list. That is fixed (see `repoOpts` below), which is what restores
+      it. `lib/git.test.ts` pins it: the summary is a path, a status word and two integers, and
+      never any of the file's bytes.
+- **Every git command in `gitChanges` carries `-z`, and that is correctness, not tidiness.** git
+  *quotes* a path it can't print plainly — C-style, **named** escapes for `\n \t \" \\` etc. and
+  **octal** for everything else, non-ASCII included. The old parse undid that with `JSON.parse` (a
+  different format) and applied it **only to the status path, never to the `--numstat` key**. The
+  two resulting failures are not the same failure, which is worth keeping straight:
+  - a name with `"` or a tab is quoted by *both* commands and `JSON.parse` **succeeds**, so the
+    status side became raw while the numstat key stayed quoted → lookup missed → `+0 −0`;
+  - a **non-ASCII** name is quoted by both too, but `JSON.parse` **throws** on `\3`, so both sides
+    stayed quoted and *matched* — counts were correct, but the path was displayed as
+    `"\346\227\245…"` and clicking it returned an **empty diff** (verified end to end). Untracked
+    non-ASCII files did read `+0`, because the contained line-count read got the quoted name.
+  - every renamed file read `+0 −0` too: `diff.renames` defaults to on and numstat writes a rename
+    as the unmatchable `old => new`.
+
+  Under `-z` both commands emit raw, NUL-terminated, never-quoted paths, so nothing needs
+  unquoting and nothing depends on `core.quotePath` — ordinary repo config, the same "a repo gets a
+  say in the output format" class as `--literal-pathspecs` and `--submodule=short`. Note the record
+  shapes differ: a rename is `new\0old` from `status` and an empty path field followed by
+  `old\0new` from `--numstat`; the extra field is consumed **by position**, so an old name that
+  looks like a status record (a file really called `?? evil.md`) can't forge a row.
+- **`repoOpts` pins three config keys on *every* git call in `lib/git.ts`** — the same "a
+  repository decides what git does" class as `--no-ext-diff --no-textconv`, and both leaks below
+  were found by the security audit as unverified hypotheses and reproduced on the first try:
+  - **`core.fsmonitor` names a program git executes.** Measured: it ran on `git status
+    --porcelain`, on `git diff --numstat HEAD` and on the submodule `git diff` (not on `ls-tree`,
+    `show` or `rev-parse`). `.git/config` is untracked and shared across every linked worktree, so
+    a plant from inside one task's "isolated" worktree executes **in the web server process** when
+    anyone — including another user — loads that project's page. `-c core.fsmonitor=` disables it.
+  - **`core.worktree` redirects the working tree.** A planted absolute path made `git status
+    --untracked-files=all` enumerate that directory and report *its* filenames as this project's
+    untracked changes — arbitrary directory listings, no race, nothing planted in the tree.
+    `-c core.worktree=…` does **not** override it (git resolves the worktree during setup, before
+    `-c` is layered); **`--work-tree=<cwd>` does**. On `runGit` the same flag guards a *write*:
+    `checkout` would otherwise materialise a branch into the attacker's directory.
+    - **It is sent only when `cwd` is a worktree root, and that condition is load-bearing.**
+      `--work-tree` pointed at a *subdirectory* corrupts the repo instead of failing: HEAD moves,
+      the branch's files are written rebased into that subdirectory, and the real tracked files stay
+      stale — exit 0 and a "Switched to branch" message. Reachable with no attacker, because
+      `memberPath()` (lib/workspace.ts) doesn't check that a workspace member is its own repo, and
+      the git-actions route feeds it straight to `checkout`/`pull`. Caught by round-two review after
+      my own testing only ever used correctly-rooted directories. `repoOpts` therefore gates the flag
+      on `existsSync(cwd/.git)` — the same test `isGit` uses.
+  - **Every `execFileSync` here carries a `timeout`** (30 s local, 120 s for `runGit`, since
+    `pull`/`push` are network calls). A repository can make a git command *never return* — see the
+    `filter.<driver>.clean` note below — and these are synchronous, so a blocking filter wedges the
+    event loop that also serves the SSE task streams until someone restarts the process.
+  - **`diff.renames` / `status.renames` are pinned to `true`** so the two commands can't be made
+    to describe one change differently (with `status.renames=false` a move is add+delete on one
+    side and a single rename record on the other, so the deleted name lost its lines and the
+    totals came out short). Wrong numbers, not a leak.
+- **No platform-issued git command runs a hook** (`NO_HOOKS` / `gitEnv()` in `lib/git.ts`, and the
+  same two lines in `runner/worktree.ts`'s `git()`). This is the widest member of the class above,
+  because `git worktree add` gives a task its own HEAD, index and files but **not** its own
+  `.git/hooks/` — that is one shared copy behind the main checkout and every linked worktree, and
+  nothing in it is tracked. Measured before the fix: `worktree add` runs `post-checkout`,
+  `post-index-change` and `reference-transaction`; `checkout` runs `post-checkout`; `push` runs
+  `pre-push`; `pull` runs `reference-transaction`. `ensureTaskWorktree` issues `worktree add` on
+  **every parallel dispatch**, so a single plant from inside one task's worktree re-arms itself and
+  keeps executing in the runner process.
+  - **`-c core.hooksPath=/dev/null`**, and `-c` beats a `.git/config` that points `core.hooksPath`
+    back at the planted directory — verified, or the fix would be one `git config` from undone.
+    `/dev/null` rather than an empty value: empty works only as an implementation detail (git joins
+    `<value>/<hook>`, so empty yields the absolute `/post-checkout`, resting the mitigation on `/`
+    not being writable). A fixed name under `tmpdir()` is worse than both — `/tmp` is
+    world-writable, so another local user could create it and *supply* the hooks.
+  - **`GIT_CONFIG_NOSYSTEM=1` buys less than it appears to**, and the first spec written for it was
+    dead: a system-level `core.hooksPath` is already beaten by `-c`, so that test passed with the
+    env var deleted. It was caught only by reverting each half separately — do that for any spec
+    added here. The real key is **`core.excludesFile`**, which nothing `-c`s away: a system-level
+    ignore file makes `git status --untracked-files=all` omit matching paths, so the changes list
+    silently under-reports and unsaved work renders as a clean tree. That is what the spec pins.
+  - **`process.env` is spread, not replaced**, and `gitEnv()` is a function rather than a
+    module-level constant. The spread keeps `PATH`, `HOME` and the container's `GIT_CONFIG_COUNT`
+    gh-credential wiring, without which Push breaks while every hook spec still passes; the
+    function keeps a spec's `process.env` change visible to the subprocess, without which an
+    env-planting spec passes while testing nothing.
+  - **Deliberate behavior change:** the UI's Push/Pull/Checkout/Create no longer run the project's
+    own hooks, so a repo gating pushes on a `pre-push` test run is not gated when pushing from the
+    dashboard. An agent's own `git` through its Bash tool still honors hooks, so `/swe:ship` and
+    this repo's default-branch guard are unaffected — this is about what the *server process*
+    executes on a user's behalf.
+  - **git-lfs is the legitimate casualty.** The mitigation can't tell a planted hook from a wanted
+    one, and git-lfs works *through* `post-checkout`/`post-merge`/`pre-push` — so an LFS repo gets
+    pointer files rather than content in a parallel-run worktree, and a dashboard Push won't
+    upload LFS objects. The agent's own Bash `git` still runs them, so it's a rough edge rather
+    than data loss, but don't use the Push button on an LFS repo.
+  - **What it does not close — two live RCEs in the same class, reproduced by the audit of this
+    change and knowingly left.** `credential.helper` (generic or url-scoped, in the repo's
+    `.git/config`) runs a shell command as soon as a remote answers 401 — i.e. on any real push;
+    `core.sshCommand` runs for an `ssh://` remote, and an attacker can create one with `git remote
+    set-url`. Both inherit the whole server env, so `SECRETS_MASTER_KEY`/`GH_TOKEN` leak too. The
+    one-line pins are worse than the hole and both were measured: `-c credential.helper=` also
+    clears the container's gh helper and any global one (Push breaks for everyone), and
+    `-c core.sshCommand=ssh` overrides a legitimate global setting. A sound fix must decide which
+    helpers are trusted and re-inject them — a change to how the app authenticates, not a flag.
+    Filed in the backlog; details and the rejected alternatives are in `.swe/notes.md`.
+    - **Don't read the dev container as protection.** Compose clears the host's osxkeychain helper
+      with an empty `GIT_CONFIG_VALUE_0`, and an empty value resets git's helper list — so in the
+      container a *generic* plant is already neutralized by accident. A **native install** (how
+      releases run) has no `GIT_CONFIG_*` and is fully exposed, as is a url-scoped plant either way.
+  - `POST /api/projects/[id]/git` still has no auth, so an agent can trigger checkout/pull on any
+    project over loopback — it just can't make that trigger run a *hook* it planted. Same open
+    design question as the unauthenticated backlog routes.
+- **Two pre-existing CRITICAL holes are reproduced and *not* fixed (2026-08-18). Read this before
+  trusting anything above.** Both were found by the security audit of the `-z` work; both are older
+  than it; neither has a cheap sound fix, so they are documented rather than papered over.
+  - **`filter.<driver>.clean` is arbitrary command execution in the web server process.** A clean
+    filter is a shell command in `.git/config`, bound to a path by `.gitattributes` *or*
+    `.git/info/attributes` — nothing needs committing, so none of it shows in a review or a clone.
+    Measured: it runs on `git diff --numstat HEAD` (i.e. on **every project page render**) and on the
+    submodule diff; not on `status` or `show`. `--no-ext-diff`/`--no-textconv` do **not** stop it, and
+    there is no key to `-c` away because the driver name is attacker-chosen. `--attr-source` blocks a
+    worktree `.gitattributes` but **not** `.git/info/attributes` — and this repo's git (2.39.5) rejects
+    the flag anyway, so adding it would silently zero every line count. The sound fix is the same
+    redesign the line-count won't-fix declined: stop letting git read tracked content out of the live
+    tree. **RCE is a much stronger motivation than two integers, so treat that won't-fix as "not in
+    that task" rather than settled.** Mitigated only by the `timeout` above, which bounds a hang, not
+    the execution.
+  - **A `.git` *file* redirects the entire repo, and `isGit` can't see it.** `isGit` is
+    `existsSync(path/.git)` and never checks directory-vs-file, but a one-line `gitdir: <absolute
+    path>` file is a valid redirect (the form linked worktrees use). Reproduced: with project A's
+    `.git` replaced by a pointer at repo B, `git status` in A reported B's tracked files and
+    `git show HEAD:<path>` returned **B's committed content** — which is what `trackedDiff` renders
+    into the diff modal, so it is cross-repository *content* disclosure. `--git-dir` does not help
+    (it follows the pointer), and `GET /api/projects` is unauthenticated, so every project's absolute
+    path is readable. Unfixed because a linked worktree's `.git` legitimately *is* a file, so the
+    guard must validate the resolved gitdir against allowed roots — a change to
+    `lib/discovery/projects.ts` plus the worktree machinery, not a flag.
 - **This is defence in depth, not a perimeter.** It needs write access to a project tree to
   exploit, and these routes still have no auth on the non-task path — the same gap documented
   under the backlog. What it removes is a confused deputy: the server no longer reads outside a
@@ -594,6 +753,28 @@ there is intentionally no published image and no `release` stage in the Dockerfi
   reloads. It refuses while a task is running unless forced (the restart ends the session, and
   the runner fails every non-terminal task it finds on boot), and refuses in a checkout, where
   `git pull` is the answer. Still no Docker socket anywhere.
+- **One update at a time, enforced in the script, not just the route.** `apply_update()` is
+  reachable from `update` *and* from `check_and_update()` on the `start` path, so "click
+  Update, quit the app, reopen it" used to put two swaps on the same `app/` — the route's
+  `readUpdateRun()` refusal only covers button-vs-button. Both entry points now take
+  `run/update.lock` (a `mkdir` directory whose `owner` file holds `pid startedAt`), and `start`
+  refuses outright while another process holds it live — the in-flight update restarts the
+  server itself. **The O_EXCL creation of `owner` (`set -C`), not the `mkdir`, is the real
+  mutual-exclusion token**: the `mkdir`-then-write gap let a racer reclaim the not-yet-populated
+  directory and both callers win (~46% under a reviewer's concurrency test), so the owner write
+  fails rather than clobbers when a directory is reclaimed under it — which also stops a symlink
+  planted at `owner` from redirecting the write onto `~/.control-center/.env`. Reclaim is
+  verify-after-`mv` (move the dead lock aside atomically, re-judge that copy, and put back a copy
+  that turns out to be live rather than dropping it) so a delayed reclaimer can't destroy a
+  freshly re-acquired live lock and double-acquire. Staleness matches
+  the status reader's rules (dead pid, or age outside −5 min … 1 h); an ownerless/malformed lock
+  is *not* stale (a racer mid-claim) and is only reclaimed after a one-beat recheck. Owner fields
+  are digit-bounded (≤18) before any `kill -0`/`$(( ))` — an oversized value is *fatal* under
+  dash. The owner read is a byte-capped, regular-file-only `dd` (a planted symlink or huge file
+  can't leak or DoS it). The lock stays held through the update's own restart (`cmd_start` lets
+  its own `$$` through) so its restart can't double-spawn beside a user's reopen. Specs:
+  `infra/release/control-center.test.ts` — the script's first automated coverage; they drive the
+  real script with `curl` stubbed on `PATH`, offline.
 - **Schema migrations are automatic and run before anything serves a request.** `install.sh`
   and every `control-center start` run `runner/migrate.ts` (→ `lib/db/migrate.ts`), which
   applies the versioned SQL in `drizzle/`. Three cases it handles, all covered by
@@ -842,7 +1023,8 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   as deltas onto `tasks.usage*`; shared by the live runner and `runner/backfill-usage.ts`
 - `public/` — Agent avatar images (`<namespace>-agent.png`)
 - Theme tokens/global styles: `app/globals.css`
-- Tests: `runner/*.test.ts`, `lib/*.test.ts`, `lib/discovery/*.test.ts` (`pnpm test`)
+- Tests: `runner/*.test.ts`, `lib/*.test.ts`, `lib/discovery/*.test.ts`,
+  `infra/release/*.test.ts` (`pnpm test`)
 
 ## Code graph (graphify)
 A queryable code knowledge graph lives at `graphify-out/graph.json`. To understand the

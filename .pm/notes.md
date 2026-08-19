@@ -65,6 +65,37 @@ planning decision. Keep entries short and accurate.
   tasks concurrently; assessed RISKY (overlap unknowable pre-run; shared checkout collides on
   git index/HEAD regardless) — user approved the substitute: opt-in per-task `git worktree`
   isolation, queueing stays the default, non-git projects unchanged.
+- 2026-08-17 — planned a fix for the in-app "Update now" button not reliably updating the app
+  (`.pm/tasks/20260817-191237-fix-update-button/`, 2 tasks). Verdict PARTIAL: the update
+  mechanism itself (`apply_update()` in `infra/release/control-center.sh`, driven by
+  `control-center update`/`start`) works — this dev machine's own install went 0.5.0 → 0.6.0.
+  Two real gaps in the *button* path explain the report: (1) `POST /api/updates/apply` 409s
+  whenever any task is in an active status (`ACTIVE_STATUSES` includes `awaiting_proposal`/
+  `awaiting_report` — a task simply waiting at a gate, common here), and the banner responds by
+  silently relabeling the same button "Update anyway" rather than making the block obvious,
+  easy to read as the button doing nothing; the manual stop/start path has no such check, so it
+  always proceeds. (2) The detached `control-center update` is spawned with `stdio: "ignore"`
+  (`app/api/updates/apply/route.ts`), discarding every line `apply_update()` prints — a real
+  failure (checksum, `npx pnpm install`, `next build`) leaves zero trace; the banner just times
+  out to "stalled" after 6 minutes with a "quit and reopen" message that doesn't diagnose or
+  reliably fix anything. Approved fix: (1) instrument the pipeline — capture its output to
+  `logs/update.log` and expose a real status via `/api/updates` instead of a guessed timeout
+  (swe); (2) fix the banner UX — make the active-task block unmissable and surface the real
+  failure reason once available (fe, depends on the swe task's new status surface).
+- 2026-08-19 — planned a fix for photo/file attachments failing with "the request body wasn't
+  valid form data" (`.pm/tasks/20260819-150644-fix-attachment-upload-multipart-error/`,
+  1 fullstack task). Verdict BUILD: `BAD_MULTIPART` (`lib/uploads.ts`) is a friendly-error
+  wrapper added in b9c2c3b specifically because raw `request.formData()` crashes had already
+  happened seven times in the logs — the underlying cause of the broken multipart body was
+  never diagnosed, only made readable. Ruled out: client FormData construction, middleware,
+  and body-size limits (`serverActions.bodySizeLimit` doesn't apply to Route Handlers). Leading
+  hypothesis (not confirmed — couldn't force-repro without a real WebKit engine): the
+  long-standing WebKit `fetch()`+`FormData`+`File` streaming bug, consistent with this
+  project's prior WebKit-specific upload bugs (the WKWebView file-chooser fix). Approved
+  direction: stronger failure diagnostics (expected vs. actual body size, user-agent) plus the
+  standard mitigation (pre-materialize files before appending to FormData, or use
+  `XMLHttpRequest` for the upload leg) across all three upload sites (dispatch, gate answer,
+  follow-up).
 
 ## Constraints & conventions
 <!-- stacks present, who owns what, non-obvious rules to respect when planning -->

@@ -205,6 +205,49 @@ test("removeOrphanWorktreeDir deletes only direct children of the worktrees dir"
   assert.throws(() => wt.removeOrphanWorktreeDir("a/b"));
 });
 
+test("a hook planted in the shared .git never fires on worktree lifecycle commands", () => {
+  // The re-trigger path this whole neutralization exists for. `git worktree add` gives a task
+  // its own HEAD, index and files, but `.git/hooks/` stays shared with the main checkout and
+  // every other worktree — and an agent has ordinary write access to it from inside the tree it
+  // was handed. Measured before the fix: `worktree add` runs `post-checkout`,
+  // `post-index-change` and `reference-transaction`, so one plant re-arms on every parallel
+  // dispatch, executing in the runner process indefinitely.
+  const markers = join(root, "hook-markers");
+  mkdirSync(markers, { recursive: true });
+  const names = ["post-checkout", "post-index-change", "reference-transaction"];
+  const hooks = join(repo, ".git", "hooks");
+  mkdirSync(hooks, { recursive: true });
+  for (const name of names) {
+    writeFileSync(
+      join(hooks, name),
+      `#!/bin/sh\ntouch ${JSON.stringify(join(markers, name))}\nexit 0\n`,
+      { mode: 0o755 },
+    );
+  }
+  // A repo-level `core.hooksPath` too: `-c` has to win over `.git/config`, or the fix would be
+  // one `git config` call away from being undone.
+  git(repo, ["config", "core.hooksPath", hooks]);
+
+  try {
+    // The full lifecycle: create, read the branch back, then remove.
+    const w = wt.ensureTaskWorktree(repo, "task_hookcheck");
+    assert.equal(w.branch, "task/hookcheck");
+    assert.ok(existsSync(join(w.dir, "a.txt")), "the worktree was not actually created");
+    assert.equal(wt.worktreeBranch(w.dir), "task/hookcheck");
+    assert.equal(wt.removeWorktreeIfClean(repo, w.dir), true);
+
+    assert.deepEqual(
+      names.filter((n) => existsSync(join(markers, n))),
+      [],
+      "a planted hook executed on a worktree lifecycle command",
+    );
+  } finally {
+    git(repo, ["config", "--unset", "core.hooksPath"]);
+    for (const name of names) rmSync(join(hooks, name), { force: true });
+    rmSync(markers, { recursive: true, force: true });
+  }
+});
+
 test("removeOrphanWorktreeDir on a symlink removes the link, not the target", () => {
   const target = join(root, "precious");
   mkdirSync(target, { recursive: true });
