@@ -31,9 +31,16 @@ export async function readFormData(request: Request): Promise<FormData | null> {
   try {
     return await request.formData();
   } catch (err) {
+    // content-length is what the client declared it would send; comparing it against a
+    // future occurrence's behavior (and the user-agent) is what tells "no boundary" apart
+    // from "body cut short mid-transfer" — the WebKit streaming bug this can't yet rule out.
     console.error(
       "[uploads] unreadable multipart body — content-type:",
       JSON.stringify(request.headers.get("content-type")),
+      "content-length:",
+      JSON.stringify(request.headers.get("content-length")),
+      "user-agent:",
+      JSON.stringify(request.headers.get("user-agent")),
       "-",
       (err as Error).message,
     );

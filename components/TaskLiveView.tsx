@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { ACTIVE_STATUSES, STATUS_LABEL, reportHasFindings } from "@/lib/ui";
+import { materializeFiles } from "@/lib/attachments";
 import { Button } from "@/components/ui/button";
 import { AttachmentPicker, FileDropZone } from "@/components/AttachmentPicker";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -409,24 +410,27 @@ export function TaskLiveView({
     const decision: Bubble = { kind: "decision", text: note, allow };
     setBubbles((prev) => [...prev, decision]);
     // Multipart only when there are files: an empty FormData is a body with nothing in it,
-    // and JSON is what every other gate answer has always sent.
-    const init: RequestInit = files.length
-      ? {
-          method: "POST",
-          body: (() => {
-            const fd = new FormData();
-            fd.set("allow", String(allow));
-            if (fb) fd.set("feedback", fb);
-            for (const f of files) fd.append("files", f);
-            return fd;
-          })(),
-        }
-      : {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ allow, feedback: fb }),
-        };
-    const res = await fetch(`/api/tasks/${taskId}/respond`, init).catch(() => null);
+    // and JSON is what every other gate answer has always sent. Files are materialized into
+    // in-memory Blobs before being appended (see materializeFiles), and a failed read falls
+    // into the same "didn't reach the agent" recovery path below as a failed fetch.
+    let res: Response | null;
+    try {
+      let body: BodyInit;
+      let headers: HeadersInit | undefined;
+      if (files.length) {
+        const fd = new FormData();
+        fd.set("allow", String(allow));
+        if (fb) fd.set("feedback", fb);
+        for (const f of await materializeFiles(files)) fd.append("files", f);
+        body = fd;
+      } else {
+        headers = { "content-type": "application/json" };
+        body = JSON.stringify({ allow, feedback: fb });
+      }
+      res = await fetch(`/api/tasks/${taskId}/respond`, { method: "POST", headers, body });
+    } catch {
+      res = null;
+    }
     if (!res?.ok) {
       // The answer never landed, so put the user back exactly where they were: the gate card
       // returns with their words and files still in it. Anything less loses typed feedback and
@@ -441,7 +445,7 @@ export function TaskLiveView({
         ...prev,
         {
           kind: "log",
-          text: `⚠️ That answer didn't reach the agent — ${body.error ?? "the server didn't take it"}. Nothing was sent; the gate below is still waiting.`,
+          text: `⚠️ That answer didn't reach the agent — ${body.error ?? "the server didn't take it, or an attached file couldn't be read"}. Nothing was sent; the gate below is still waiting.`,
         },
       ]);
     }
@@ -478,23 +482,25 @@ export function TaskLiveView({
     setContinueError(null);
     // Multipart only when there are files. The plain "Continue" button used to post a
     // completely empty FormData — a body whose only content is a boundary, for a request that
-    // has nothing to say — and the API accepts JSON perfectly well for that.
-    const init: RequestInit = files.length
-      ? {
-          method: "POST",
-          body: (() => {
-            const fd = new FormData();
-            if (message) fd.set("message", message);
-            for (const f of files) fd.append("files", f);
-            return fd;
-          })(),
-        }
-      : {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message: message || undefined }),
-        };
-    const res = await fetch(`/api/tasks/${taskId}/continue`, init).catch(() => null);
+    // has nothing to say — and the API accepts JSON perfectly well for that. Files are
+    // materialized into in-memory Blobs before being appended — see materializeFiles.
+    let res: Response | null;
+    try {
+      let body: BodyInit;
+      let headers: HeadersInit | undefined;
+      if (files.length) {
+        const fd = new FormData();
+        if (message) fd.set("message", message);
+        for (const f of await materializeFiles(files)) fd.append("files", f);
+        body = fd;
+      } else {
+        headers = { "content-type": "application/json" };
+        body = JSON.stringify({ message: message || undefined });
+      }
+      res = await fetch(`/api/tasks/${taskId}/continue`, { method: "POST", headers, body });
+    } catch {
+      res = null;
+    }
     setContinuing(false);
     if (!res?.ok) {
       const body = res
@@ -504,7 +510,7 @@ export function TaskLiveView({
         body.error ??
           (res
             ? `Couldn't continue this task (HTTP ${res.status}).`
-            : "Couldn't reach the server."),
+            : "Couldn't reach the server, or an attached file couldn't be read."),
       );
       return;
     }

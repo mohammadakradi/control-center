@@ -5,6 +5,7 @@ import { AlertTriangle, Check, Download, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CardSection } from "@/components/ui-cards";
+import { materializeFiles } from "@/lib/attachments";
 
 type ExportResult = {
   path: string;
@@ -81,8 +82,11 @@ export function DataSettings() {
     setImportError(null);
     setImportInfo(null);
     try {
+      // FormData so we can attach the archive; the file is materialized into an in-memory
+      // Blob before being appended — see materializeFiles.
+      const [materialized] = await materializeFiles([file]);
       const data = new FormData();
-      data.set("archive", file);
+      data.set("archive", materialized);
       const res = await fetch("/api/data/import", { method: "POST", body: data });
       const body = await res.json();
       if (!res.ok) {

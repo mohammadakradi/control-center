@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
 import { Loader2 } from "lucide-react";
 
 export type ButtonVariant =
@@ -34,8 +34,7 @@ const VARIANTS: Record<ButtonVariant, string> = {
     "border-line-strong bg-surface-2 text-fg-muted hover:bg-surface-3 hover:text-fg-strong",
   ghost:
     "border-transparent text-fg-subtle hover:bg-hover hover:text-fg-strong",
-  danger:
-    "border-danger-line bg-danger-soft text-danger hover:brightness-110",
+  danger: "border-danger-line bg-danger-soft text-danger hover:brightness-110",
   warn: "border-warn-line bg-warn-soft text-warn hover:brightness-110",
   accent: "border-info-line bg-info-soft text-info hover:brightness-110",
 };
@@ -72,6 +71,13 @@ export function Button({
   /** Leading icon; replaced by the spinner while `loading`. */
   icon?: ReactNode;
   children?: ReactNode;
+  /**
+   * The underlying `<button>`. React 19 hands `ref` to a function component as an ordinary prop,
+   * so it rides along in `...rest` and needs no `forwardRef` — only this declaration, since
+   * `ButtonHTMLAttributes` doesn't carry it. Added for a caller that has to *move* focus onto a
+   * button that survives a state change (`UpdateBanner`'s "Not now" removes itself).
+   */
+  ref?: Ref<HTMLButtonElement>;
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children">) {
   return (
     <button

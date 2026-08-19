@@ -61,6 +61,33 @@ test("a truncated multipart body yields null too", async () => {
   assert.equal(await readFormData(req), null);
 });
 
+test("the failure log carries content-length and user-agent, not just content-type", async () => {
+  // Distinguishing "no boundary" from "body cut short in transit" needs the declared
+  // length and the client that sent it — content-type and the parser's own message alone
+  // don't say enough to confirm or rule out the WebKit streaming hypothesis.
+  const calls: unknown[][] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => calls.push(args);
+  try {
+    const req = new Request("http://localhost/api/tasks", {
+      method: "POST",
+      headers: {
+        "content-type": "multipart/form-data; boundary=----abc",
+        "content-length": "4096",
+        "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0) AppleWebKit/605.1.15",
+      },
+      body: "------abc\r\ncontent-disposition: form-d",
+    });
+    assert.equal(await readFormData(req), null);
+  } finally {
+    console.error = original;
+  }
+  assert.equal(calls.length, 1);
+  const logged = calls[0].join(" ");
+  assert.match(logged, /"4096"/);
+  assert.match(logged, /AppleWebKit/);
+});
+
 test("a well-formed multipart body still parses, files included", async () => {
   const fd = new FormData();
   fd.set("projectId", "p1");

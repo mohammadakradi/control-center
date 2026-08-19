@@ -24,6 +24,10 @@ DATA_DIR="$CC_HOME/data"
 LOG_DIR="$CC_HOME/logs"
 RUN_DIR="$CC_HOME/run"
 ENV_FILE="$CC_HOME/.env"
+# What an update attempt leaves behind: the whole run, and its outcome. Read back by
+# lib/update-run.ts for /api/updates — see "update-attempt bookkeeping" below.
+UPDATE_LOG_FILE="$LOG_DIR/update.log"
+UPDATE_STATUS_FILE="$RUN_DIR/update.status"
 # This script's own path, so `update` can replace the installed command with the new version.
 case "$0" in
   /*) SELF="$0" ;;
@@ -42,6 +46,9 @@ info() { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
 die() {
   printf 'error: %s\n' "$*" >&2
+  # Every failure in this script funnels through here, which makes it the one place an update
+  # attempt can record *why* it stopped. A no-op unless one is in flight.
+  record_update failed "$*"
   exit 1
 }
 
@@ -141,6 +148,7 @@ spawn() {
       set +a
     fi
     PLATFORM_DATA_DIR="$DATA_DIR" \
+      CC_HOME="$CC_HOME" \
       APP_VERSION="$(installed_version)" \
       RUNNER_PORT="$RUNNER_PORT" \
       NODE_ENV=production \
@@ -227,6 +235,59 @@ hint_install_app() {
   everything without a terminal.
 EOF
   touch "$marker" 2>/dev/null || :
+}
+
+# ── update-attempt bookkeeping ──────────────────────────────────────────────────────────
+# An update started from the app (POST /api/updates/apply) runs detached, with nobody watching
+# its output — so an attempt records what it did, twice over: the whole run in
+# $UPDATE_LOG_FILE, and its outcome here. Before this, a failure halfway through was invisible:
+# the dashboard watched for a version number that never changed and gave up after six minutes,
+# and the reason — checksum mismatch, failed dependency install, failed build — went to
+# /dev/null with the rest of the output.
+#
+# The format is one `key=value` per line, parsed by lib/update-run.ts. Values are stripped of
+# control characters and clipped: a newline would forge a field, and the message is rendered in
+# the app. Bookkeeping must never be what breaks an update, so every step here fails quietly.
+# One field's worth of value: no control characters, clipped. A newline would forge a field —
+# the reader takes the *first* occurrence of a key, so a forged line can't replace `state`, but
+# it could replace everything written after it. `target` comes from a GitHub tag name and the
+# message from whatever failed, so neither is ours to trust.
+#
+# With `tr` or `cut` missing this yields an **empty** field rather than an unfiltered one, and
+# the update carries on: the real error is still on stdout and in the log either way.
+clean_field() {
+  printf '%s' "${1:-}" | tr -d '[:cntrl:]' | cut -c1-400
+}
+
+record_update() {
+  # Set by update_run and nothing else, so `die` can call this unconditionally.
+  [ -n "${UPDATE_ATTEMPT:-}" ] || return 0
+  mkdir -p "$RUN_DIR" 2>/dev/null || return 0
+  # `mkdir -p` is happy with a directory that already exists, so check we can actually write in
+  # it. Without this, a root-owned run/ makes the shell print a redirection error for every
+  # field we try to record — three "Permission denied" lines in the middle of an update that is
+  # otherwise going fine.
+  [ -w "$RUN_DIR" ] || return 0
+  ended=''
+  [ "$1" = running ] || ended=$(date +%s)
+  tmp="$UPDATE_STATUS_FILE.$$"
+  # Written temp-then-mv: a reader polling this every couple of seconds must never be able to
+  # read half a file.
+  {
+    printf 'state=%s\n' "$1"
+    printf 'pid=%s\n' "$$"
+    printf 'from=%s\n' "$(clean_field "${UPDATE_FROM:-}")"
+    printf 'target=%s\n' "$(clean_field "${UPDATE_TARGET:-}")"
+    printf 'startedAt=%s\n' "${UPDATE_STARTED:-}"
+    printf 'endedAt=%s\n' "$ended"
+    printf 'message=%s\n' "$(clean_field "${2:-}")"
+  } >"$tmp" 2>/dev/null && mv "$tmp" "$UPDATE_STATUS_FILE" 2>/dev/null || :
+}
+
+# The state of the last recorded attempt, or nothing.
+update_state() {
+  [ -f "$UPDATE_STATUS_FILE" ] || return 0
+  sed -n 's/^state=//p' "$UPDATE_STATUS_FILE" 2>/dev/null | head -1
 }
 
 # ── update ──────────────────────────────────────────────────────────────────────────────
@@ -324,6 +385,58 @@ apply_update() {
 
   info "Updated to $(installed_version). The previous version is kept at $CC_HOME/app.old"
   info "Schema migrations run on the next start; your database is copied to data/backup/ first."
+}
+
+# One `control-center update` attempt. Its output is already going wherever cmd_update decided,
+# and from the first line on, any `die` below records why it stopped.
+update_run() {
+  UPDATE_ATTEMPT=1
+  UPDATE_STARTED=$(date +%s)
+  record_update running
+  need_node
+  need_install
+  UPDATE_FROM=$(installed_version)
+  info "Checking for a newer release (current: $UPDATE_FROM)…"
+  latest=$(latest_release)
+  [ -n "$latest" ] || die "couldn't reach GitHub Releases."
+  UPDATE_TARGET=${latest#v}
+  if ! version_gt "$latest" "$UPDATE_FROM"; then
+    info "Already on the latest release ($UPDATE_FROM)."
+    record_update up-to-date
+    return 0
+  fi
+  record_update running # now carrying the version being installed
+  was_running=no
+  running && was_running=yes
+  apply_update "$latest"
+  [ "$was_running" = yes ] && CC_SKIP_UPDATE_CHECK=1 cmd_start || :
+  record_update succeeded
+}
+
+# `control-center update` — decide where the attempt's output goes, then run it.
+cmd_update() {
+  mkdir -p "$LOG_DIR" "$RUN_DIR"
+  # Two reasons to run without logging ourselves. `CC_UPDATE_LOG` means the app's detached
+  # spawn (app/api/updates/apply/route.ts) already has our stdout and stderr pointed at that
+  # file, and teeing as well would double every line. Directories we can't write are the other:
+  # `mkdir -p` succeeds on a directory that already exists, so a root-owned logs/ left by a
+  # stray sudo would let `tee` fail to open its file and kill the update with a silent SIGPIPE —
+  # and an unwritable run/ would leave no record for the exit status below to read, failing an
+  # update that worked. Neither is worth breaking an update over; both leave a terminal showing
+  # everything anyway.
+  if [ -n "${CC_UPDATE_LOG:-}" ] || [ ! -w "$LOG_DIR" ] || [ ! -w "$RUN_DIR" ]; then
+    update_run
+  else
+    # Run by hand: still show progress on the terminal, and keep the same record.
+    update_run 2>&1 | tee "$UPDATE_LOG_FILE"
+    # A pipeline exits with tee's status, so the attempt's own record is what we report —
+    # anything short of a recorded success is a failure, including a death that never got to
+    # record one.
+    case "$(update_state)" in
+      succeeded | up-to-date) ;;
+      *) exit 1 ;;
+    esac
+  fi
 }
 
 check_and_update() {
@@ -523,21 +636,7 @@ EOF
     (cd "$APP_DIR" && PLATFORM_DATA_DIR="$DATA_DIR" ./node_modules/.bin/tsx runner/import.ts "$@") &&
       info "Start it again with: control-center start"
     ;;
-  update)
-    need_node
-    need_install
-    current=$(installed_version)
-    latest=$(latest_release)
-    [ -n "$latest" ] || die "couldn't reach GitHub Releases."
-    if version_gt "$latest" "$current"; then
-      was_running=no
-      running && was_running=yes
-      apply_update "$latest"
-      [ "$was_running" = yes ] && CC_SKIP_UPDATE_CHECK=1 cmd_start || :
-    else
-      info "Already on the latest release ($current)."
-    fi
-    ;;
+  update) cmd_update ;;
   status)
     web_pid=$(pid_of web 2>/dev/null) || web_pid=
     runner_pid=$(pid_of runner 2>/dev/null) || runner_pid=
@@ -553,7 +652,13 @@ EOF
     ;;
   logs)
     shift 2>/dev/null || :
-    tail "$@" "$LOG_DIR/web.log" "$LOG_DIR/runner.log"
+    # The update log only exists once an update has been attempted, and `tail` errors on a
+    # file that isn't there.
+    if [ -f "$UPDATE_LOG_FILE" ]; then
+      tail "$@" "$LOG_DIR/web.log" "$LOG_DIR/runner.log" "$UPDATE_LOG_FILE"
+    else
+      tail "$@" "$LOG_DIR/web.log" "$LOG_DIR/runner.log"
+    fi
     ;;
   version)
     installed_version

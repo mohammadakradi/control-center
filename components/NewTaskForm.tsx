@@ -19,6 +19,7 @@ import { AttachmentPicker, FileDropZone } from "@/components/AttachmentPicker";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert, type ErrorAction } from "@/components/ui/error-alert";
 import { Select } from "@/components/ui/select";
+import { materializeFiles } from "@/lib/attachments";
 import { dispatchErrorAction, orderSkills } from "@/lib/ui";
 
 type Cmd = {
@@ -152,24 +153,29 @@ export function NewTaskForm({
     setBusy(true);
     setError(null);
     setErrorAction(null);
-    // FormData so we can attach files; the API accepts both multipart and JSON.
-    const fd = new FormData();
-    fd.set("projectId", projectId);
-    fd.set("agentId", agentId);
-    fd.set("command", command);
-    fd.set("requestText", requestText);
-    fd.set("model", model);
-    if (parallel && parallelOffer) fd.set("parallel", "1");
-    for (const f of files) fd.append("files", f);
-    // A rejected fetch (server restarted, upload cut off) used to escape this function
-    // entirely, leaving the button spinning on "Dispatching…" for good with nothing said —
-    // indistinguishable, from the outside, from the app ignoring you.
+    // A rejected fetch (server restarted, upload cut off) — or a file that can no longer be
+    // read — used to escape this function entirely, leaving the button spinning on
+    // "Dispatching…" for good with nothing said — indistinguishable, from the outside, from
+    // the app ignoring you.
     let res: Response;
     try {
+      // FormData so we can attach files; the API accepts both multipart and JSON. Files are
+      // materialized into in-memory Blobs before being appended — see materializeFiles.
+      const fd = new FormData();
+      fd.set("projectId", projectId);
+      fd.set("agentId", agentId);
+      fd.set("command", command);
+      fd.set("requestText", requestText);
+      fd.set("model", model);
+      if (parallel && parallelOffer) fd.set("parallel", "1");
+      for (const f of await materializeFiles(files)) fd.append("files", f);
       res = await fetch("/api/tasks", { method: "POST", body: fd });
     } catch {
       setBusy(false);
-      setError("Couldn't reach the server. Check it's still running and try again.");
+      setError(
+        "Couldn't send the request — the server might be unreachable, or an attached file " +
+          "couldn't be read. Check it's still running and try again.",
+      );
       return;
     }
     const body = await res.json().catch(() => ({}));
