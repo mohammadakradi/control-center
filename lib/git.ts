@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { escapesOnDisk, readBytesInside, readFileInside } from "./safe-read";
 
 export type FileChange = {
@@ -52,14 +52,220 @@ const TRACKED_READ_CAP = 16 * 1024 * 1024;
  */
 const NO_CUSTOM_DIFF_DRIVERS = ["--no-ext-diff", "--no-textconv"];
 
+/**
+ * Args and env that make git run **no hook and no machine-wide config**, on every invocation in
+ * this file. Unlike everything in `repoOpts` below, these are not tied to a repo being present,
+ * so they are also carried by the two calls that bypass it (`--no-index`, `git show`).
+ *
+ * **Hooks are the widest instance of "a repo decides what git does" in this file.** `.git/hooks/`
+ * is *shared* by a checkout and every linked worktree — `git worktree add` gives a task its own
+ * HEAD, index and working directory, but not its own hooks — and none of it is tracked, so a
+ * planted hook appears in no `git status`, no diff, no review and no clone. A task's Bash tool has
+ * ordinary write access there. Measured against a planted set:
+ * - `git worktree add` runs `post-checkout`, `post-index-change` and `reference-transaction` —
+ *   and `ensureTaskWorktree` (runner/worktree.ts) issues that command on **every parallel
+ *   dispatch**, so one plant re-fires by itself, in the main checkout's `.git`, indefinitely;
+ * - `git checkout` runs `post-checkout`, `git push` runs `pre-push`, `git pull` runs
+ *   `reference-transaction` — all four reachable from the project page's git controls.
+ *
+ * `core.hooksPath` is the only knob that turns the whole directory off, and `-c` beats a
+ * `.git/config` that sets it back (verified against a repo-level plant).
+ *
+ * **Why `/dev/null` and not the alternatives**, since the value is the entire mitigation:
+ * - *An empty value* also works today, but only as an implementation detail — git joins
+ *   `<value>/<hookname>`, so empty yields the absolute `/post-checkout`, and the mitigation would
+ *   be resting on `/` not being writable rather than on anything git promises.
+ * - *A fixed name under `tmpdir()`* is actively worse: `/tmp` is world-writable, so another
+ *   local user could create that directory and **supply** the hooks — turning the fix into the
+ *   attack. A per-process `mkdtemp` avoids that but adds a directory to create, keep and clean up
+ *   for no gain.
+ * - `/dev/null` exists on every POSIX system, is not a directory, and cannot be replaced without
+ *   root, so every `<hooksPath>/<hook>` lookup fails with ENOTDIR. A path that cannot resolve is
+ *   exactly the outcome wanted, which is also why a non-POSIX host degrades safely rather than
+ *   dangerously: the worst a nonsense path does is find no hooks.
+ *
+ * `GIT_CONFIG_NOSYSTEM=1` covers the other end, `/etc/gitconfig` — and it is worth being precise
+ * about what it adds, because the obvious answer is wrong. It is **not** needed to stop a
+ * system-level `core.hooksPath` or `core.fsmonitor`: `-c` outranks system config, so the pins
+ * above already win those (measured — a spec asserting otherwise passed with the env var removed,
+ * which is how this was caught). What it covers is every key we *don't* name, since there is no
+ * `-c` for a file whose contents we don't know. The one pinned by a spec is `core.excludesFile`:
+ * a system-level ignore file makes `git status --untracked-files=all` omit matching files, so the
+ * changes list silently under-reports and the omission looks exactly like a clean tree.
+ *
+ * Deliberately narrow: **repo and global config stay on.** `gitPull`/`gitPush` need `remote.*`,
+ * and the dev container wires gh's credential helper through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`
+ * env — verified that `NOSYSTEM` leaves those alone (they are a separate mechanism), so Push keeps
+ * authenticating. Note the threat here is weaker than the repo-level one either way: writing
+ * `/etc/gitconfig` needs root, and an attacker with root has no need of this.
+ *
+ * **This turns off *legitimate* hooks too, and one case is worth knowing about.** The mitigation
+ * cannot distinguish a planted hook from a wanted one, so a project relying on hooks for correct
+ * checkouts loses that here. **git-lfs** is the realistic instance: it installs `post-checkout`,
+ * `post-merge` and `pre-push`, so through the platform's own commands an LFS repo will materialise
+ * *pointer files* rather than file contents in a new parallel-run worktree, and a Push from the
+ * dashboard will not upload LFS objects. The agent's own `git` (Bash) still runs them, which is
+ * the path that actually commits work, so this is a rough edge rather than data loss — but the
+ * dashboard's Push button is the wrong thing to use on an LFS repo until that is handled.
+ *
+ * **What this does *not* do — read this before trusting the paragraph above.** This closes
+ * *hooks*. It does **not** close the wider "a repository names a program git runs" class, and two
+ * keys in it are still live on `gitPull`/`gitPush`, both reproduced by the security audit of this
+ * change with the exact flag set above:
+ * - **`credential.helper`** (generic *or* url-scoped, in the repo's own `.git/config`) runs as a
+ *   shell command the moment a remote answers 401 — the ordinary shape of any private host, so a
+ *   `push` triggers it reliably. Measured: fires.
+ * - **`core.sshCommand`** runs for an `ssh://` remote, and the attacker does not need the project
+ *   to have one — `git remote set-url` is the same ordinary `.git/config` write. Measured: fires.
+ * Because the child inherits the whole server environment (deliberately — see `gitEnv`), either
+ * one reads `SECRETS_MASTER_KEY` and `GH_TOKEN`, so this is credential disclosure, not just
+ * execution.
+ *
+ * **The one-line fixes do not work, which is the part worth recording.** Measured, not assumed:
+ * `-c credential.helper=` does clear a planted helper — and also clears the container's own
+ * `GIT_CONFIG_COUNT`-supplied gh helper and any global one, i.e. it breaks Push for every user.
+ * `-c core.sshCommand=ssh` neutralizes that plant but equally overrides a *legitimate* global
+ * `core.sshCommand`. A sound fix has to decide which helpers are trusted and re-inject them, which
+ * is a change to how this app authenticates (compose wiring, native installs, docs) rather than a
+ * flag — and inspecting `.git/config` first and refusing is check-then-use, the pattern this file
+ * has already rejected twice. Tracked in the backlog; see `.swe/notes.md`.
+ *
+ * Also unchanged and pre-existing: `filter.<driver>.clean` (no `-c` key exists — the driver name
+ * is attacker-chosen), and a `.git` *file* redirecting the whole repo past `isGit`.
+ *
+ * Finally, an agent's own `git` from its Bash tool still runs hooks, as it should — this is about
+ * what the *server process* executes on a user's behalf — and a plant is still reachable on demand
+ * through `POST /api/projects/[id]/git`, which has no auth at all.
+ */
+export const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
+
+/**
+ * Spread `process.env` — do not replace it. A bare `{ GIT_CONFIG_NOSYSTEM: "1" }` drops `PATH`,
+ * `HOME` and the container's `GIT_CONFIG_*` credential wiring, which breaks `pull`/`push` (and
+ * finds `git` only by luck). This is the whole reason it is one shared helper.
+ *
+ * It is a **function, not a module-level snapshot**, and that is not style: a snapshot taken at
+ * import never reflects a later change to `process.env`, which is both wrong (the container's
+ * `GIT_CONFIG_*` wiring is read at call time everywhere else) and untestable. Pinned by the
+ * "config from the environment still reaches git" spec, which sets `GIT_CONFIG_COUNT` *after*
+ * import and fails against a snapshot. Reading `process.env` per call costs nothing measurable
+ * next to a process spawn.
+ *
+ * Both halves resisted a naive spec, so if you are adding one here: revert the thing it claims to
+ * protect and check it actually goes red. A spec that pushes to a **local** remote does not test
+ * the credential wiring, and one that drops `PATH` does not fail either, because glibc falls back
+ * to `confstr(_CS_PATH)` and finds `/usr/bin/git` anyway. Both of those passed against a
+ * deliberately broken `gitEnv` before a reviewer caught them.
+ */
+export function gitEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, GIT_CONFIG_NOSYSTEM: "1" };
+}
+
+/**
+ * Global options every git invocation here carries, for exactly the reason
+ * `--no-ext-diff --no-textconv` are on the diff calls: **a repository decides what git does**,
+ * and `.git/config` is untracked, shared across every linked worktree, and an ordinary write for
+ * a task's Bash tool. Both of these were found by the security audit of this change as
+ * unverified hypotheses, and both reproduced on the first try.
+ *
+ * - **`-c core.fsmonitor=`** — that key names a **program git executes**. Measured: with a script
+ *   planted there, `git status --porcelain` and `git diff --numstat HEAD` both ran it, as did
+ *   `git diff --submodule=short` (`git ls-tree`, `git show` and `git rev-parse` did not). So a
+ *   plant from inside one task's "isolated" worktree executes in the web server process whenever
+ *   anyone — including a different user — loads that project's page. The empty value disables it;
+ *   the only cost is that a repo legitimately running the fsmonitor daemon does a full scan,
+ *   which is slower and correct. This is the third instance of "a repo can make git run its own
+ *   command" in this file, after `diff.<n>.textconv` and `diff.<n>.command`.
+ *
+ * - **`--work-tree=<cwd>`** — `core.worktree` **redirects the working tree**. Measured: with an
+ *   absolute path planted there, `git status --porcelain --untracked-files=all` enumerated that
+ *   directory and reported *its* filenames as untracked entries of this project, with no race and
+ *   no plant in the tree itself. Note `-c core.worktree=…` does **not** override it (git resolves
+ *   the worktree during setup, before `-c` config is layered) — `--work-tree` does. Verified to
+ *   leave a normal checkout and a linked worktree byte-identical. It is **conditional**, for the
+ *   reason spelled out above `repoOpts` below: sending it for a path that is not a worktree root
+ *   corrupts the tree, and the mutating callers cannot be assumed to pass a root.
+ *
+ * - **`-c diff.renames=true -c status.renames=true`** — not a leak, a wrong number. These are two
+ *   independent keys (`status.renames` merely *defaults* to `diff.renames`), so they can be made
+ *   to disagree: with `status.renames=false` the status side reports a move as an add plus a
+ *   delete, while `--numstat` still emits one rename record keyed to the new name — so the new
+ *   name gets the edit's counts and the deleted old name gets `+0 −0` instead of its lines, and
+ *   the summary totals come out short. Pinning both to git's default means the two commands can
+ *   never describe the same change differently. Found by the security audit.
+ *
+ * Pinning them in the two shared helpers rather than per call site is deliberate: the flags that
+ * were added per-call before this (`--no-ext-diff`, `--submodule=short`) each had to be added
+ * again to the next command someone wrote, and the audit history in `.swe/notes.md` is largely a
+ * list of times one was missed.
+ */
+// `resolve(cwd)` rather than `cwd`: `--work-tree` must be absolute to mean anything. It is
+// correct for a relative `cwd` too — Node resolves the `cwd` spawn option against `process.cwd()`
+// exactly as `resolve` does, so the two can never name different directories.
+//
+// **`--work-tree` is only sent when `cwd` is itself a worktree root, and that condition is not
+// cosmetic — sending it for a subdirectory corrupts the repository.** Told that a subdirectory is
+// the whole working tree, `git checkout`/`pull` move HEAD, write the branch's files *rebased onto
+// that subdirectory* (`sub/root.md`, `sub/sub/…`), and leave the real tracked files untouched —
+// exit 0, "Switched to branch", and a tree where `git status` then reports every real file as
+// modified and a set of phantom duplicates as untracked. Reproduced; a round-two review caught it,
+// and my own verification had missed it by only ever testing correctly-rooted directories.
+//
+// The test mirrors `isGit` in lib/discovery/projects.ts (`existsSync(path/.git)`) so the two agree
+// on what a repo root is: a normal checkout has `.git` as a directory, a linked worktree has it as
+// a file, and both are roots. Everything that reads (`gitChanges`, `gitBranchInfo`, `gitFileDiff`)
+// is already only called when that holds; the mutating helpers reach `memberPath()`
+// (lib/workspace.ts), which does *not* check it, so the guard belongs here where no caller can
+// miss it rather than in one route. When it doesn't hold, git resolves the worktree itself exactly
+// as it did before this change — so a `core.worktree` plant is unmitigated in that one case, which
+// is the honest trade: a plant is a hypothetical, silently corrupting someone's checkout is not.
+function repoOpts(cwd: string): string[] {
+  const pins = [
+    ...NO_HOOKS,
+    "-c",
+    "core.fsmonitor=",
+    "-c",
+    "diff.renames=true",
+    "-c",
+    "status.renames=true",
+  ];
+  const abs = resolve(cwd);
+  return existsSync(join(abs, ".git")) ? [...pins, `--work-tree=${abs}`] : pins;
+}
+
+/**
+ * Wall-clock ceiling on a git subprocess, because a repository can make one **never return**.
+ *
+ * `filter.<driver>.clean` names a shell command git runs over a file's contents, bound to a path by
+ * `.gitattributes` *or* `.git/info/attributes`. Measured: it executes on `git diff --numstat HEAD`
+ * and on the submodule `git diff` (not on `status` or `show`). These are `execFileSync` calls, so a
+ * filter that blocks holds the Node event loop — the process that also serves every SSE task
+ * stream — for as long as it likes, with no recovery but a restart. A timeout turns that into a
+ * failed request: `git()` already answers "" for a failure, so the page degrades to zero counts.
+ *
+ * That is a bound on the damage, **not** a fix for the execution itself — see the note in
+ * `.swe/notes.md` and the filed backlog item; no flag closes it, because `.git/info/attributes` is
+ * untracked, agent-writable, and unaffected by `--attr-source` (which this git is too old for
+ * anyway). Verified the mechanism works: a `sleep 30` clean filter is killed at the timeout with
+ * `ETIMEDOUT`/`SIGTERM` rather than blocking.
+ *
+ * The two values differ because the risks do: a local read that takes 30s is already a broken page,
+ * while `pull`/`push` are network operations where a slow-but-legitimate transfer is ordinary, and
+ * killing one of those mid-flight would be a self-inflicted failure.
+ */
+const LOCAL_GIT_TIMEOUT = 30_000;
+const NETWORK_GIT_TIMEOUT = 120_000;
+
 function git(cwd: string, args: string[]): string {
   try {
     // Trim only trailing whitespace — leading spaces are significant in
     // `git status --porcelain` (the XY status column starts at column 0).
-    return execFileSync("git", args, {
+    return execFileSync("git", [...repoOpts(cwd), ...args], {
       cwd,
       encoding: "utf8",
+      env: gitEnv(),
       maxBuffer: 16 * 1024 * 1024,
+      timeout: LOCAL_GIT_TIMEOUT,
     }).replace(/\s+$/, "");
   } catch {
     return "";
@@ -68,14 +274,20 @@ function git(cwd: string, args: string[]): string {
 
 export type GitResult = { ok: boolean; output: string };
 
-/** Run a git command capturing both stdout and stderr (git progress goes to stderr). */
+/** Run a git command capturing both stdout and stderr (git progress goes to stderr).
+ *
+ *  Carries `repoOpts` too, and here `--work-tree` guards a *write*: these are `checkout` /
+ *  `pull` / `push`, so a planted `core.worktree` would have git materialise the branch's files
+ *  into an attacker-chosen directory rather than the project. */
 function runGit(cwd: string, args: string[]): GitResult {
   try {
-    const out = execFileSync("git", args, {
+    const out = execFileSync("git", [...repoOpts(cwd), ...args], {
       cwd,
       encoding: "utf8",
+      env: gitEnv(),
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 16 * 1024 * 1024,
+      timeout: NETWORK_GIT_TIMEOUT,
     });
     return { ok: true, output: out.trim() || "Done." };
   } catch (e) {
@@ -104,47 +316,103 @@ function statusLabel(code: string): string {
   }
 }
 
-function unquote(path: string): string {
-  // git quotes paths with special chars; the quoted form is valid JSON.
-  if (path.startsWith('"') && path.endsWith('"')) {
-    try {
-      return JSON.parse(path) as string;
-    } catch {
-      return path;
+/**
+ * `-z` is on every command below, and it is a correctness fix rather than tidiness.
+ *
+ * In its default output git *quotes* a path it can't print plainly — C-style, using **named**
+ * escapes for `\a \b \f \n \r \t \v \" \\` and **octal** for everything else, non-ASCII bytes
+ * included (`"\346\227\245…"`). The old parse tried to undo that with `JSON.parse` — a different
+ * format — and, crucially, applied it **only to the status path**, never to the `--numstat` key.
+ * Measured, and the two failures are not the same failure:
+ * - A name with `"` or a tab is quoted by *both* commands. `JSON.parse` **succeeds** on it, so the
+ *   status side became the raw name while the numstat key stayed quoted — the lookup missed and
+ *   the file showed `+0 −0`.
+ * - A **non-ASCII** name is also quoted by both, but `JSON.parse` **throws** on `\3`, so the raw
+ *   quoted string survived on the status side and matched the equally-quoted numstat key. Its
+ *   counts were therefore *correct*; what broke was the path itself, which was displayed escaped
+ *   and whose diff request resolved to nothing. (An *untracked* non-ASCII file did show `+0`,
+ *   because the contained read below was handed that quoted name.)
+ * - And every renamed file showed `+0 −0`, since `diff.renames` defaults to on and numstat writes
+ *   a rename as the unmatchable `old => new`.
+ * (The two commands do also disagree outright — a name with a space is quoted by `status` and not
+ * by `--numstat` — but `JSON.parse` handled that one, so it worked.)
+ *
+ * Under `-z` both commands emit raw, NUL-terminated, never-quoted paths, so there is nothing to
+ * unquote — and nothing that varies with `core.quotePath`, which is ordinary repo config. That
+ * last part is the same reason `--literal-pathspecs` and `--submodule=short` are pinned on the
+ * diff calls: a default output shape is a format, and a repo gets a say in it.
+ *
+ * Fields are NUL-*terminated*, so the split leaves a trailing empty element. A path is never
+ * empty and neither is a `added\tdeleted\t…` record, so dropping empties is safe. (`git()`
+ * trims trailing whitespace, which cannot bite here: the last byte of this output is a NUL and
+ * `\s` does not match it.)
+ */
+function nulFields(out: string): string[] {
+  return out.split("\0").filter((f) => f !== "");
+}
+
+type LineCounts = { added: number; deleted: number };
+
+/** Tracked added/deleted per path, relative to HEAD. */
+function trackedLineCounts(cwd: string): Map<string, LineCounts> {
+  const counts = new Map<string, LineCounts>();
+  const fields = nulFields(
+    git(cwd, ["diff", ...NO_CUSTOM_DIFF_DRIVERS, "--numstat", "-z", "HEAD"]),
+  );
+  for (let i = 0; i < fields.length; i++) {
+    const parts = fields[i].split("\t");
+    if (parts.length < 3) continue;
+    // `added\tdeleted\tpath`, and only the first two tabs are separators — a filename may
+    // contain one, which is among the names the old quoted parse got wrong.
+    let path = parts.slice(2).join("\t");
+    if (path === "") {
+      // A rename or copy: the path field is empty and the next two fields hold the old name
+      // then the new one. `diff.renames` is on by default, so this is the ordinary shape for a
+      // moved file, not an exotic one — it used to arrive as the unmatchable `old => new`.
+      path = fields[i + 2] ?? "";
+      i += 2;
+      // Defensive only, and review established it is unreachable against real git: a `maxBuffer`
+      // overflow *throws*, so `git()` returns "" rather than a stream cut mid-record. Kept as a
+      // cheap bound so a malformed tail can never set a count under an empty key.
+      if (!path) continue;
     }
+    const [a, d] = parts;
+    counts.set(path, {
+      added: a === "-" ? 0 : Number(a) || 0, // "-" is git's marker for a binary file
+      deleted: d === "-" ? 0 : Number(d) || 0,
+    });
   }
-  return path;
+  return counts;
+}
+
+/** One `git status` entry: its two-letter code and the path it concerns. */
+function statusEntries(cwd: string): { code: string; path: string }[] {
+  const entries: { code: string; path: string }[] = [];
+  const fields = nulFields(
+    git(cwd, ["status", "--porcelain", "-z", "--untracked-files=all"]),
+  );
+  for (let i = 0; i < fields.length; i++) {
+    const rec = fields[i];
+    if (rec.length < 4) continue; // "XY p" is the shortest an entry can be
+    const code = rec.slice(0, 2);
+    // A rename or copy is followed by one more field holding the *old* name (`RM new\0old`).
+    // Consuming it is what keeps the old name from being listed as a change of its own — and
+    // `R`/`C` can only mean rename/copy, so there is no other code this can swallow.
+    if (code.includes("R") || code.includes("C")) i += 1;
+    entries.push({ code, path: rec.slice(3) });
+  }
+  return entries;
 }
 
 /** Summarize uncommitted working-tree changes (staged + unstaged + untracked). */
 export function gitChanges(cwd: string): GitChanges {
-  // Line counts for tracked changes relative to the last commit.
-  const lines = new Map<string, { added: number; deleted: number }>();
-  const numstat = git(cwd, [
-    "diff",
-    ...NO_CUSTOM_DIFF_DRIVERS,
-    "--numstat",
-    "HEAD",
-  ]);
-  for (const l of numstat.split("\n").filter(Boolean)) {
-    const [a, d, ...rest] = l.split("\t");
-    lines.set(rest.join("\t"), {
-      added: a === "-" ? 0 : Number(a) || 0,
-      deleted: d === "-" ? 0 : Number(d) || 0,
-    });
-  }
+  const lines = trackedLineCounts(cwd);
 
   const files: FileChange[] = [];
-  const status = git(cwd, ["status", "--porcelain", "--untracked-files=all"]);
-  for (const raw of status.split("\n").filter(Boolean)) {
-    const code = raw.slice(0, 2);
-    let path = raw.slice(3);
-    if (path.includes(" -> ")) path = path.split(" -> ")[1]; // rename → new name
-    path = unquote(path);
-
+  for (const { code, path } of statusEntries(cwd)) {
     const counts = lines.get(path) ?? { added: 0, deleted: 0 };
-    let added = counts.added ?? 0;
-    const deleted = counts.deleted ?? 0;
+    let added = counts.added;
+    const deleted = counts.deleted;
     // Only files that will actually be displayed get read. The loop walks every entry
     // `git status` reports, so a project with a large untracked tree (a missing .gitignore
     // over node_modules is the usual way) would otherwise pay a contained read — several
@@ -376,12 +644,14 @@ function diffBody(
     try {
       out = execFileSync(
         "git",
-        ["diff", ...NO_CUSTOM_DIFF_DRIVERS, "--no-index", "--", a, b],
+        [...NO_HOOKS, "diff", ...NO_CUSTOM_DIFF_DRIVERS, "--no-index", "--", a, b],
         {
           cwd: dir,
           encoding: "utf8",
+          env: gitEnv(),
           stdio: ["ignore", "pipe", "pipe"],
           maxBuffer: 16 * 1024 * 1024,
+          timeout: LOCAL_GIT_TIMEOUT,
         },
       );
     } catch (e) {
@@ -533,11 +803,17 @@ export function gitShowFile(cwd: string, ref: string, path: string): string | nu
 function gitShowBytes(cwd: string, ref: string, path: string): Buffer | null {
   if (!ref || ref.startsWith("-")) return null;
   try {
-    return execFileSync("git", ["show", "--no-textconv", `${ref}:${path}`], {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 16 * 1024 * 1024,
-    });
+    return execFileSync(
+      "git",
+      [...NO_HOOKS, "show", "--no-textconv", `${ref}:${path}`],
+      {
+        cwd,
+        env: gitEnv(),
+        stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: LOCAL_GIT_TIMEOUT,
+      },
+    );
   } catch {
     return null;
   }

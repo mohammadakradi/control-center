@@ -12,6 +12,7 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -20,7 +21,18 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitChanges, gitFileDiff, gitShowFile } from "./git";
+import {
+  gitBranchInfo,
+  gitChanges,
+  gitCheckout,
+  gitCreateBranch,
+  gitFileDiff,
+  gitPull,
+  gitPush,
+  gitShowFile,
+  gitEnv,
+  NO_HOOKS,
+} from "./git";
 
 const root = mkdtempSync(join(tmpdir(), "platform-git-test-"));
 const repo = join(root, "repo");
@@ -569,4 +581,791 @@ test("gitChanges counts untracked lines without following a link out of the repo
   // would report the secret's line count.
   assert.equal(of("leak-file.md")?.added, 0);
   assert.equal(of("leak-hard.md")?.added, 0);
+});
+
+/**
+ * `gitChanges` against paths git does not print plainly.
+ *
+ * The old parse read `git status --porcelain` and `git diff --numstat HEAD` in their default,
+ * *quoted* form and undid the quoting with `JSON.parse` — which is not the format git emits, and
+ * which it applied **only to the status path**, never to the numstat key. Measured consequences on
+ * default config, and note the first two are different failures rather than one:
+ * - A name containing `"` or a tab is quoted by **both** commands, and `JSON.parse` *succeeds* on
+ *   those escapes — so the status side became the raw name while the numstat key stayed quoted,
+ *   the lookup missed, and the file showed `+0 −0`.
+ * - A **non-ASCII** name is quoted by both too, but with **octal** escapes, and `JSON.parse`
+ *   *throws* on `\3` — so the quoted string survived on both sides, matched, and the counts were
+ *   *correct*. What broke was the path: `ChangesList` displayed `"\346\227\245…"` literally and
+ *   clicking it asked the diff route for a name not on disk, which answered with an empty diff.
+ *   An *untracked* non-ASCII file did also show `+0`, since the contained line-count read was
+ *   handed that quoted name.
+ * - A rename is `old => new` in numstat and `new`+`old` in status, and `diff.renames` defaults
+ *   to on — so an ordinary `git mv` plus an edit showed `+0 −0`.
+ * - A file whose name contains `" -> "` was mis-parsed as a rename.
+ *
+ * `-z` makes both commands emit raw, NUL-terminated, never-quoted paths, so there is nothing to
+ * unquote — and nothing that depends on `core.quotePath`, which is ordinary repo config. That is
+ * the same reason `--literal-pathspecs` and `--submodule=short` are pinned on the diff calls:
+ * a default output shape is a format, and a repo gets a say in it.
+ *
+ * The non-ASCII name here is CJK rather than something accented on purpose: `ü` has both an NFC
+ * and an NFD spelling, and macOS stores the decomposed one, so a spec using it would pass in the
+ * Linux container and fail on a host checkout for a reason that has nothing to do with the code.
+ */
+test("gitChanges reads paths git quotes: non-ASCII, quotes, tabs, renames", () => {
+  const exotic = join(tBase, "exotic");
+  mkdirSync(exotic);
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: exotic, encoding: "utf8" });
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+
+  const cjk = "日本語.md";
+  const quoted = 'quo"te.md';
+  const tabbed = "tab\tname.md";
+  const arrow = "arrow -> name.md";
+  for (const name of [cjk, quoted, tabbed, arrow])
+    writeFileSync(join(exotic, name), "one\n");
+  writeFileSync(join(exotic, "renamed-from.md"), "one\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "init"]);
+
+  // Each tracked file gains exactly one line, so every count below is 1 added / 0 deleted.
+  for (const name of [cjk, quoted, tabbed, arrow])
+    writeFileSync(join(exotic, name), "one\ntwo\n");
+  g(["mv", "renamed-from.md", "renamed-to.md"]);
+  writeFileSync(join(exotic, "renamed-to.md"), "one\ntwo\n");
+  // An untracked non-ASCII name too: that side is counted by a contained read keyed on the
+  // same parsed path, so a mangled path silently counted 0 there as well.
+  writeFileSync(join(exotic, "未追跡.md"), "a\nb\nc\n");
+
+  const changes = gitChanges(exotic);
+  const of = (p: string) => changes.files.find((f) => f.path === p);
+
+  for (const name of [cjk, quoted, tabbed, arrow]) {
+    const f = of(name);
+    assert.ok(f, `${JSON.stringify(name)} is missing from the changes list`);
+    assert.equal(f.status, "modified", `${JSON.stringify(name)} status`);
+    assert.equal(f.added, 1, `${JSON.stringify(name)} added`);
+    assert.equal(f.deleted, 0, `${JSON.stringify(name)} deleted`);
+  }
+
+  // The rename is reported under its new name, with the counts of the edit that came with it.
+  const moved = of("renamed-to.md");
+  assert.ok(moved, "the renamed file is missing from the changes list");
+  assert.equal(moved.added, 1);
+  // ...and the old name must not appear as an entry of its own: with `-z` it arrives as a
+  // second NUL-terminated field of the *same* record, and skipping it is what stops a phantom
+  // "renamed-from.md" row from being listed.
+  assert.equal(of("renamed-from.md"), undefined);
+
+  assert.equal(of("未追跡.md")?.added, 3);
+
+  // Nothing should carry git's quoting into the response — that string is what reached the UI.
+  for (const f of changes.files)
+    assert.equal(
+      f.path.includes("\\3"),
+      false,
+      `${f.path} still holds git's octal quoting`,
+    );
+});
+
+/**
+ * The rename/copy record is consumed **by position, not by content**, and this pins that.
+ *
+ * `git status --porcelain -z` writes a rename as two NUL-terminated fields — `XY new` then the
+ * bare old name — so a parser that decided what a field was by *looking* at it would read the old
+ * name as an entry of its own. That is a desync bug with a nasty shape: a file can be named
+ * `?? evil.md`, so the phantom entry would carry an attacker-chosen status code and path, and
+ * every following entry would be misaligned too. Consuming the field by index is what makes the
+ * old name's contents irrelevant.
+ *
+ * The `R`/`C` code test and git's emission of that extra field stay in lockstep across the repo
+ * config that governs it, which is the other half of this: `status.renames` is ordinary
+ * `.git/config` (writable by a task's Bash tool), and all three settings are covered below.
+ */
+test("a renamed file is one row, whatever its old name is called", () => {
+  const rn = join(tBase, "renames");
+  mkdirSync(rn);
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: rn, encoding: "utf8" });
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+  // An old name that is itself a plausible `git status` record.
+  writeFileSync(join(rn, "?? evil.md"), "one\n");
+  writeFileSync(join(rn, "plain-src.md"), "one\n");
+  writeFileSync(join(rn, "untouched.md"), "one\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "init"]);
+
+  g(["mv", "?? evil.md", "moved.md"]); // -> "R " plus the old name as a second field
+  g(["mv", "plain-src.md", "plain-dst.md"]);
+  writeFileSync(join(rn, "plain-dst.md"), "one\ntwo\n"); // -> "RM"
+  writeFileSync(join(rn, "untouched.md"), "one\ntwo\n"); // an ordinary row after both renames
+
+  const changes = gitChanges(rn);
+  const paths = changes.files.map((f) => f.path).sort();
+  assert.deepEqual(paths, [
+    "moved.md",
+    "plain-dst.md",
+    "untouched.md",
+  ]);
+  const of = (p: string) => changes.files.find((f) => f.path === p);
+  assert.equal(of("moved.md")?.status, "renamed");
+  assert.equal(of("plain-dst.md")?.added, 1);
+  // The entry *after* both renames must still be read correctly — a swallowed or un-swallowed
+  // field would shift everything below it.
+  assert.equal(of("untouched.md")?.status, "modified");
+  assert.equal(of("untouched.md")?.added, 1);
+
+  // `status.renames` and `diff.renames` are independent keys that can be set to disagree, which
+  // produced wrong counts rather than a leak: `false` on the status side reports a move as an add
+  // plus a delete, while `--numstat` still emits one rename record keyed to the new name — so the
+  // old name got `+0 −0` instead of its deleted lines and the totals came out short. `repoOpts`
+  // pins both, so a repo cannot get a say in it; the result is identical to the default above.
+  for (const setting of ["false", "copies"]) {
+    g(["config", "status.renames", setting]);
+    const underConfig = gitChanges(rn);
+    assert.deepEqual(
+      underConfig.files.map((f) => f.path).sort(),
+      ["moved.md", "plain-dst.md", "untouched.md"],
+      `status.renames=${setting} changed what the changes list reports`,
+    );
+    assert.equal(underConfig.totalAdded, 2, `totals under ${setting}`);
+  }
+  g(["config", "--unset", "status.renames"]);
+});
+
+/**
+ * Two more ways a repository decides what git does, both found by the security audit of this
+ * change as unverified hypotheses and both reproduced immediately. `.git/config` is untracked,
+ * shared across every linked worktree, and an ordinary write for a task's Bash tool.
+ */
+test("a repo cannot make `git status` run its own program", () => {
+  // `core.fsmonitor` names a program git executes. Measured before the fix: it ran on both of
+  // `gitChanges`' commands and on the submodule diff. That is code execution in the web server
+  // process, triggered by whoever loads the project page — possibly a different user.
+  const fs1 = join(tBase, "fsmonitor");
+  mkdirSync(fs1);
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: fs1, encoding: "utf8" });
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+  writeFileSync(join(fs1, "tracked.md"), "one\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "init"]);
+  writeFileSync(join(fs1, "tracked.md"), "one\ntwo\n");
+
+  const marker = join(tBase, "FSMONITOR_RAN");
+  const hook = join(fs1, "hook.sh");
+  writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 1\n`, {
+    mode: 0o755,
+  });
+  g(["config", "core.fsmonitor", hook]);
+
+  try {
+    const changes = gitChanges(fs1);
+    assert.equal(existsSync(marker), false, "core.fsmonitor executed");
+    // ...and the real answer is still produced, so this is not a "refuse everything" guard.
+    assert.equal(
+      changes.files.find((f) => f.path === "tracked.md")?.added,
+      1,
+      "the diff summary should be unchanged by the flag",
+    );
+    // The file diff path shares the same helper, so it is covered too.
+    assert.match(gitFileDiff(fs1, "tracked.md"), /\+two/);
+    assert.equal(existsSync(marker), false, "core.fsmonitor executed via the diff");
+  } finally {
+    g(["config", "--unset", "core.fsmonitor"]);
+    rmSync(marker, { force: true });
+  }
+});
+
+test("a repo cannot redirect the working tree to somewhere else on the host", () => {
+  // `core.worktree` points git's working tree at an absolute path. Before the fix, an untracked
+  // enumeration of *that* directory was reported as this project's changes — arbitrary
+  // directory listings for any path on the host, with no race and no plant inside the tree.
+  const wtBase = realpathSync(mkdtempSync(join(tmpdir(), "platform-git-wt-")));
+  const repoDir = join(wtBase, "repo");
+  const outsideDir = join(wtBase, "outside");
+  mkdirSync(repoDir);
+  mkdirSync(outsideDir);
+  writeFileSync(join(outsideDir, "a-secret-filename.md"), "SECRET\n");
+
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: repoDir, encoding: "utf8" });
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+  writeFileSync(join(repoDir, "tracked.md"), "one\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "init"]);
+  writeFileSync(join(repoDir, "tracked.md"), "one\ntwo\n");
+  g(["config", "core.worktree", outsideDir]);
+
+  try {
+    const changes = gitChanges(repoDir);
+    const paths = changes.files.map((f) => f.path);
+    assert.equal(
+      paths.includes("a-secret-filename.md"),
+      false,
+      "an outside filename was reported as a change in this project",
+    );
+    // The honest answer for the real tree, unaffected by the plant.
+    assert.deepEqual(paths, ["tracked.md"]);
+    assert.equal(changes.files[0].added, 1);
+  } finally {
+    rmSync(wtBase, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The mutating helpers, which had **no coverage at all** before this — and the regression that
+ * absence hid.
+ *
+ * `repoOpts` pins `--work-tree` to guard against a planted `core.worktree`, and `runGit` runs
+ * `checkout` / `checkout -b` / `pull` / `push`. Telling git that a *subdirectory* is the entire
+ * working tree does not fail — it "succeeds" destructively: HEAD moves, the branch's files are
+ * written **rebased into that subdirectory**, and the real tracked files are left at their old
+ * content. Exit 0, `Switched to branch 'feature'`, and a tree where every real file then reports as
+ * modified with a set of phantom duplicates beside it.
+ *
+ * That is reachable: `memberPath()` (lib/workspace.ts) resolves a workspace member and, unlike
+ * `resolveMembers()`, does **not** check the member has its own `.git` — and it is what
+ * `app/api/projects/[id]/git/route.ts` feeds to all four helpers. A member that is just a folder of
+ * the parent repo needs no attacker at all. So `repoOpts` sends `--work-tree` only for a real
+ * worktree root, and this spec is the reason.
+ */
+test("a git action in a subdirectory updates the real tree, not a copy of it", () => {
+  const nested = join(tBase, "nested");
+  mkdirSync(nested);
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: nested, encoding: "utf8" });
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+  mkdirSync(join(nested, "sub"));
+  writeFileSync(join(nested, "root.md"), "root main\n");
+  writeFileSync(join(nested, "sub", "f.md"), "sub v1\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "init"]);
+  g(["checkout", "-q", "-b", "feature"]);
+  writeFileSync(join(nested, "root.md"), "root FEATURE\n");
+  writeFileSync(join(nested, "sub", "f.md"), "sub v2\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "feat"]);
+  g(["checkout", "-q", "main"]);
+
+  // The cwd is the subdirectory — exactly what a workspace member pointing at a subfolder gives.
+  const sub = join(nested, "sub");
+  const res = gitCheckout(sub, "feature");
+  assert.equal(res.ok, true, `checkout failed: ${res.output}`);
+
+  // The real files must have been updated...
+  assert.equal(readFileSync(join(nested, "root.md"), "utf8"), "root FEATURE\n");
+  assert.equal(readFileSync(join(sub, "f.md"), "utf8"), "sub v2\n");
+  // ...and no phantom duplicates written underneath the subdirectory.
+  assert.equal(existsSync(join(sub, "root.md")), false, "a phantom sub/root.md was written");
+  assert.equal(existsSync(join(sub, "sub")), false, "a phantom sub/sub/ was written");
+  // The tree must be self-consistent: nothing modified, nothing untracked.
+  assert.deepEqual(gitChanges(nested).files, []);
+});
+
+test("checkout, branch create and pull work from a repo root", () => {
+  // The happy path for three of the four `runGit` helpers, which the `--work-tree` pin also
+  // changed. `gitPush` is deliberately not exercised: it needs a writable remote, it never touches
+  // the working tree (so the pin cannot affect it), and this repo's own hook blocks scripting one.
+  const up = join(tBase, "upstream");
+  const clone = join(tBase, "clone");
+  mkdirSync(up);
+  const gu = (args: string[]) =>
+    execFileSync("git", args, { cwd: up, encoding: "utf8" });
+  gu(["init", "-q", "-b", "main"]);
+  gu(["config", "user.email", "test@test"]);
+  gu(["config", "user.name", "test"]);
+  writeFileSync(join(up, "a.md"), "one\n");
+  gu(["add", "-A"]);
+  gu(["commit", "-qm", "init"]);
+  execFileSync("git", ["clone", "-q", up, clone], { encoding: "utf8" });
+  const gc = (args: string[]) =>
+    execFileSync("git", args, { cwd: clone, encoding: "utf8" });
+  gc(["config", "user.email", "test@test"]);
+  gc(["config", "user.name", "test"]);
+
+  assert.equal(gitCreateBranch(clone, "feature/x").ok, true);
+  assert.equal(gitBranchInfo(clone).current, "feature/x");
+  writeFileSync(join(clone, "a.md"), "one\ntwo\n");
+  gc(["add", "-A"]);
+  gc(["commit", "-qm", "local work"]);
+
+  // Switching back must actually rewrite the working tree.
+  assert.equal(gitCheckout(clone, "main").ok, true);
+  assert.equal(readFileSync(join(clone, "a.md"), "utf8"), "one\n");
+
+  // A fast-forward pull must land the upstream commit's content on disk.
+  writeFileSync(join(up, "a.md"), "one\nthree\n");
+  gu(["add", "-A"]);
+  gu(["commit", "-qm", "upstream work"]);
+  const pulled = gitPull(clone);
+  assert.equal(pulled.ok, true, `pull failed: ${pulled.output}`);
+  assert.equal(readFileSync(join(clone, "a.md"), "utf8"), "one\nthree\n");
+
+  // A failure still comes back as a result rather than throwing.
+  const bad = gitCheckout(clone, "no/such/branch");
+  assert.equal(bad.ok, false);
+  assert.match(bad.output, /no\/such\/branch/);
+});
+
+/**
+ * Hooks are the widest form of "a repository decides what git does", and the one that survives
+ * worktree isolation: `.git/hooks/` is shared by the main checkout and every linked worktree, so
+ * a script written from inside one task's tree runs in the *server* process on everyone else's
+ * git command. Nothing about it is tracked, so it appears in no status, diff, review or clone.
+ *
+ * Measured before the fix, on this git: `checkout` and `worktree add` run `post-checkout`,
+ * `push` runs `pre-push`, and every one of them runs `reference-transaction`.
+ *
+ * These specs are written to fail loudly if `NO_HOOKS`/`GIT_ENV` are removed — each plants a real
+ * executable hook and asserts the marker it would create does not exist, *and* that the command
+ * still did its job, so "neutralized" can never be satisfied by the command simply failing.
+ */
+function plantHooks(repoDir: string, markerDir: string, names: string[]): void {
+  const hooks = join(repoDir, ".git", "hooks");
+  mkdirSync(hooks, { recursive: true });
+  for (const name of names) {
+    // `touch`, then exit 0: a hook that failed would change git's behavior and could make a
+    // spec pass for the wrong reason (the command refused rather than the hook not running).
+    writeFileSync(
+      join(hooks, name),
+      `#!/bin/sh\ntouch ${JSON.stringify(join(markerDir, name))}\nexit 0\n`,
+      { mode: 0o755 },
+    );
+  }
+}
+
+function firedHooks(markerDir: string, names: string[]): string[] {
+  return names.filter((n) => existsSync(join(markerDir, n)));
+}
+
+const HOOKS = ["post-checkout", "pre-push", "post-merge", "reference-transaction"];
+
+test("a repo's hooks never run on a platform-issued git command", () => {
+  const hBase = realpathSync(mkdtempSync(join(tmpdir(), "platform-git-hooks-")));
+  const remote = join(hBase, "remote.git");
+  const work = join(hBase, "work");
+  const markers = join(hBase, "markers");
+  mkdirSync(markers);
+
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote]);
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: work, encoding: "utf8" });
+  mkdirSync(work);
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+  g(["remote", "add", "origin", remote]);
+  writeFileSync(join(work, "a.md"), "one\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "init"]);
+  g(["push", "-q", "-u", "origin", "main"]);
+
+  // The plant goes in *after* the setup above, so the fixture's own commands can't trip it.
+  plantHooks(work, markers, HOOKS);
+  // Belt and braces: a repo-level `core.hooksPath` pointing back at the planted directory. `-c`
+  // must win over `.git/config`, or the mitigation would be one `git config` call away.
+  g(["config", "core.hooksPath", join(work, ".git", "hooks")]);
+
+  try {
+    // Each mutating helper, with a real effect asserted so a silent failure can't pass.
+    assert.equal(gitCreateBranch(work, "feature/y").ok, true);
+    assert.equal(gitBranchInfo(work).current, "feature/y");
+
+    assert.equal(gitCheckout(work, "main").ok, true);
+    assert.equal(gitBranchInfo(work).current, "main");
+
+    const pushed = gitPush(work);
+    assert.equal(pushed.ok, true, `push failed: ${pushed.output}`);
+
+    // The pull must have something to fast-forward, or `post-merge` never runs even unmitigated
+    // and its place in `HOOKS` is decoration. A second clone supplies the upstream commit.
+    // (Measured: an advancing pull fires `post-merge`; an "Already up to date" one does not.)
+    const other = join(hBase, "other");
+    execFileSync("git", ["clone", "-q", remote, other]);
+    const go = (args: string[]) =>
+      execFileSync("git", args, { cwd: other, encoding: "utf8" });
+    go(["config", "user.email", "test@test"]);
+    go(["config", "user.name", "test"]);
+    writeFileSync(join(other, "b.md"), "from upstream\n");
+    go(["add", "-A"]);
+    go(["commit", "-qm", "upstream work"]);
+    go(["push", "-q", "origin", "main"]);
+
+    const pulled = gitPull(work);
+    assert.equal(pulled.ok, true, `pull failed: ${pulled.output}`);
+    assert.equal(
+      readFileSync(join(work, "b.md"), "utf8"),
+      "from upstream\n",
+      "the pull did not actually fast-forward, so post-merge was never in play",
+    );
+
+    // The read paths share `git()`, so they are covered by the same pin.
+    writeFileSync(join(work, "a.md"), "one\ntwo\n");
+    assert.equal(gitChanges(work).files.length, 1);
+    assert.match(gitFileDiff(work, "a.md"), /\+two/);
+    assert.equal(gitShowFile(work, "main", "a.md"), "one\n");
+
+    assert.deepEqual(
+      firedHooks(markers, HOOKS),
+      [],
+      "a planted hook executed on a platform-issued git command",
+    );
+  } finally {
+    rmSync(hBase, { recursive: true, force: true });
+  }
+});
+
+test("config from the environment still reaches git", () => {
+  /*
+   * The spec for `gitEnv()` itself, and it exists because the obvious version of it was hollow.
+   *
+   * Passing an explicit `env` risks two regressions that no hook spec would catch: replacing
+   * `process.env` instead of spreading it (dropping the container's
+   * `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0` gh-credential wiring, so Push breaks for every user),
+   * and snapshotting at import instead of reading per call. My first attempt asserted a push to a
+   * *local* remote still worked, which tests neither — a local push needs no credential helper,
+   * and dropping `PATH` doesn't fail either, because glibc falls back to `confstr(_CS_PATH)` and
+   * finds `/usr/bin/git` regardless. A reviewer broke `gitEnv()` in both ways and the suite stayed
+   * green.
+   *
+   * So this uses git's own env-config mechanism — the exact one compose uses — as a positive
+   * control: `GIT_CONFIG_COUNT`/`KEY_0`/`VALUE_0` set an `excludesFile` that hides the untracked
+   * file. If the spread is dropped, git never sees those vars and the file is reported; if the env
+   * is snapshotted at import, git never sees them either, since they are set here at run time.
+   * Either regression turns the assertion red. (Verified: env-supplied config is *not* system
+   * config, so `GIT_CONFIG_NOSYSTEM=1` leaves it in force — which is what makes it usable here.)
+   */
+  const eBase = realpathSync(mkdtempSync(join(tmpdir(), "platform-git-env-")));
+  const work = join(eBase, "work");
+  mkdirSync(work);
+  const ge = (args: string[]) =>
+    execFileSync("git", args, { cwd: work, encoding: "utf8" });
+  ge(["init", "-q", "-b", "main"]);
+  ge(["config", "user.email", "test@test"]);
+  ge(["config", "user.name", "test"]);
+  writeFileSync(join(work, "a.md"), "one\n");
+  ge(["add", "-A"]);
+  ge(["commit", "-qm", "init"]);
+  writeFileSync(join(work, "hidden-by-env.md"), "x\n");
+
+  const excludes = join(eBase, "excludes");
+  writeFileSync(excludes, "hidden-by-env.md\n");
+  const saved = {
+    count: process.env.GIT_CONFIG_COUNT,
+    key: process.env.GIT_CONFIG_KEY_0,
+    value: process.env.GIT_CONFIG_VALUE_0,
+  };
+  process.env.GIT_CONFIG_COUNT = "1";
+  process.env.GIT_CONFIG_KEY_0 = "core.excludesFile";
+  process.env.GIT_CONFIG_VALUE_0 = excludes;
+  try {
+    // Sanity: without the env reaching git, the file *is* listed — so the assertion below is
+    // a real distinction and not a tautology.
+    assert.deepEqual(
+      gitChanges(work).files.map((f) => f.path),
+      [],
+      "env-supplied git config never reached the subprocess",
+    );
+  } finally {
+    const restore = (k: string, v: string | undefined) => {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    };
+    restore("GIT_CONFIG_COUNT", saved.count);
+    restore("GIT_CONFIG_KEY_0", saved.key);
+    restore("GIT_CONFIG_VALUE_0", saved.value);
+    rmSync(eBase, { recursive: true, force: true });
+  }
+});
+
+test("push and pull still work with hooks off", () => {
+  // The happy path for the two network helpers: repo-level config (`remote.*`) must keep working
+  // — only *system* config is dropped. This deliberately no longer claims to test the
+  // credential-helper wiring; a push to a local remote doesn't exercise it. See the spec above
+  // for the part that actually pins `gitEnv()`.
+  const cBase = realpathSync(mkdtempSync(join(tmpdir(), "platform-git-cfg-")));
+  const remote = join(cBase, "remote.git");
+  const work = join(cBase, "work");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote]);
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: work, encoding: "utf8" });
+  mkdirSync(work);
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+  g(["remote", "add", "origin", remote]);
+  writeFileSync(join(cBase, "seed"), "x");
+
+  try {
+    writeFileSync(join(work, "a.md"), "one\n");
+    g(["add", "-A"]);
+    g(["commit", "-qm", "init"]);
+
+    // A remote named only in `.git/config` must still resolve, and the push must land.
+    const pushed = gitPush(work);
+    assert.equal(pushed.ok, true, `push failed: ${pushed.output}`);
+    assert.equal(
+      execFileSync("git", ["--git-dir", remote, "rev-parse", "main"], {
+        encoding: "utf8",
+      }).trim(),
+      g(["rev-parse", "HEAD"]).trim(),
+      "the push did not reach the remote",
+    );
+
+    // And the tracking info the UI renders comes back.
+    const info = gitBranchInfo(work);
+    assert.equal(info.hasRemote, true);
+    assert.equal(info.tracking, "origin/main");
+  } finally {
+    rmSync(cBase, { recursive: true, force: true });
+  }
+});
+
+test("machine-wide config cannot hide a file from the changes list", () => {
+  /*
+   * The spec for the `GIT_CONFIG_NOSYSTEM` half, and the key it pins is deliberately *not*
+   * `core.hooksPath`. The first version of this test used exactly that and was worthless: `-c`
+   * outranks system config, so the pin in `NO_HOOKS` already defeats a system-level hooksPath and
+   * the spec passed with the env var deleted. Caught by reverting each half separately, which is
+   * the only way that class of dead spec shows up.
+   *
+   * `core.excludesFile` is the honest one — nothing `-c`s it away, and its effect is a silent
+   * wrong answer rather than an error: a system-level ignore file makes
+   * `git status --untracked-files=all` omit matching paths, so the project page reports a clean
+   * tree over a directory full of unsaved work. `GIT_CONFIG_SYSTEM` relocates what git treats as
+   * the system file so this can run without touching the real one; the platform helper only sees
+   * it because `gitEnv()` spreads `process.env` at call time rather than snapshotting at import.
+   */
+  const sBase = realpathSync(mkdtempSync(join(tmpdir(), "platform-git-sys-")));
+  const work = join(sBase, "work");
+  mkdirSync(work);
+
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: work, encoding: "utf8" });
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+  writeFileSync(join(work, "a.md"), "one\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "init"]);
+  writeFileSync(join(work, "untracked-work.md"), "unsaved\n");
+
+  const excludes = join(sBase, "excludes");
+  writeFileSync(excludes, "*.md\n");
+  const sysConfig = join(sBase, "gitconfig");
+  writeFileSync(sysConfig, `[core]\n\texcludesFile = ${excludes}\n`);
+
+  const prev = process.env.GIT_CONFIG_SYSTEM;
+  process.env.GIT_CONFIG_SYSTEM = sysConfig;
+  try {
+    // Sanity: the fixture bites. A plain git call does hide the file.
+    assert.equal(
+      g(["status", "--porcelain", "--untracked-files=all"]).trim(),
+      "",
+      "fixture is inert — system config did not hide anything, so the assertion below is empty",
+    );
+
+    // Through the platform helper it must still be reported.
+    const paths = gitChanges(work).files.map((f) => f.path);
+    assert.deepEqual(
+      paths,
+      ["untracked-work.md"],
+      "machine-wide config hid an untracked file from the changes list",
+    );
+  } finally {
+    if (prev === undefined) delete process.env.GIT_CONFIG_SYSTEM;
+    else process.env.GIT_CONFIG_SYSTEM = prev;
+    rmSync(sBase, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The boundary of what the hook work actually bought, pinned so it can't quietly rot.
+ *
+ * The security audit of this change reproduced two keys in the *same* "a repository names a
+ * program git runs" class that `NO_HOOKS` does **not** cover, both on the `gitPull`/`gitPush`
+ * path: `credential.helper` (fires whenever a remote answers 401 — i.e. on any real push) and
+ * `core.sshCommand` (fires for an `ssh://` remote, which an attacker can set themselves with
+ * `git remote set-url`). Both execute as the server process and inherit its whole environment,
+ * `SECRETS_MASTER_KEY` and `GH_TOKEN` included.
+ *
+ * They are knowingly **not fixed here**, because the one-line pins are worse than the hole:
+ * `-c credential.helper=` also clears the container's `GIT_CONFIG_COUNT`-supplied gh helper and
+ * any global one (breaking Push for everyone), and `-c core.sshCommand=ssh` equally overrides a
+ * legitimate global setting. Both measured. A real fix has to re-inject the helpers we trust.
+ *
+ * This spec asserts the *current* behavior, so it fails the day someone changes it — at which
+ * point the fix is to update this spec and the notes, not to delete it. It deliberately uses a
+ * helper that only writes a marker, and a remote that cannot be reached.
+ */
+test("known-live: a repo-planted credential.helper still runs on push (not fixed)", () => {
+  const kBase = realpathSync(mkdtempSync(join(tmpdir(), "platform-git-cred-")));
+  const work = join(kBase, "work");
+  const marker = join(kBase, "HELPER_RAN");
+  mkdirSync(work);
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: work, encoding: "utf8" });
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+  writeFileSync(join(work, "a.md"), "one\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "init"]);
+
+  // Faking a 401 remote offline is awkward, so this asserts the decisive fact instead: the
+  // planted helper survives into git's *resolved* config under the exact flags and env the
+  // platform issues. If git can see it, git will run it when a remote asks for credentials.
+  g([
+    "config",
+    "credential.helper",
+    `!f() { touch ${marker}; echo username=x; echo password=y; }; f`,
+  ]);
+
+  // The dev container must be taken out of the picture, and finding that out was the useful
+  // part of writing this. Compose sets `GIT_CONFIG_COUNT=2` with `GIT_CONFIG_KEY_0=
+  // credential.helper` and an **empty** value — which resets the helper list — so inside the
+  // container a repo-planted *generic* helper is already neutralized, by accident, as a
+  // side-effect of wiring up gh. A **native install** (how releases actually run: no compose, no
+  // `GIT_CONFIG_*`) has no such thing, and neither does a url-scoped plant. Clearing those vars
+  // here is what makes this spec describe a real install rather than this one container.
+  const savedEnv = Object.entries(process.env).filter(([k]) =>
+    k.startsWith("GIT_CONFIG_"),
+  );
+  for (const [k] of savedEnv) delete process.env[k];
+
+  try {
+    const resolved = execFileSync(
+      "git",
+      [...NO_HOOKS, "config", "--get", "credential.helper"],
+      { cwd: work, encoding: "utf8", env: gitEnv() },
+    ).trim();
+    assert.match(
+      resolved,
+      /touch/,
+      "credential.helper is now filtered — good; update this spec and .swe/notes.md",
+    );
+    assert.equal(
+      existsSync(marker),
+      false,
+      "the helper should not have run merely from reading config",
+    );
+  } finally {
+    for (const [k, v] of savedEnv) process.env[k] = v;
+    rmSync(kBase, { recursive: true, force: true });
+  }
+});
+
+test("a path ending in whitespace keeps it", () => {
+  // `git()` strips trailing whitespace from a command's output, which was load-bearing for the
+  // old newline-delimited parse. It cannot corrupt a `-z` path — the final byte of that output
+  // is a NUL and `\s` does not match one — but the two facts sit in different functions, so it
+  // is worth a spec rather than a comment.
+  const ws = join(tBase, "trailing-ws");
+  mkdirSync(ws);
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: ws, encoding: "utf8" });
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+  const name = "trail space.md ";
+  writeFileSync(join(ws, name), "one\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "init"]);
+  writeFileSync(join(ws, name), "one\ntwo\n");
+
+  const f = gitChanges(ws).files.find((x) => x.path === name);
+  assert.ok(f, "the trailing space was trimmed off the path");
+  assert.equal(f.added, 1); // and the counts map still keyed on the untrimmed name
+});
+
+/**
+ * The bound the tracked-side residual rests on.
+ *
+ * `gitChanges` takes its tracked counts from a whole-tree `git diff --numstat HEAD`, and that
+ * command reads the working tree — so the hard-link plant this file already uses against
+ * `gitFileDiff` makes the *summary* report an outside file's line count. Reproduced while
+ * investigating: a tracked path hard-linked to a 137-line file outside the repo is reported as
+ * `+137 −1`.
+ *
+ * **That is knowingly not fixed** (2026-08-18; see `.swe/notes.md`). Every sound fix requires us
+ * to do the reading ourselves, and added/deleted are *diff* quantities rather than line counts,
+ * so it costs either a `git show` subprocess per changed file — on a page that renders on every
+ * project view, once per workspace member — or a hand-rolled line-diff whose numbers would
+ * disagree with git's for every user. The cheap-looking alternative, post-filtering the numstat
+ * map with `escapesOnDisk`, is not a fix at all: that helper answers "safe" for a path with
+ * nothing on disk (deliberately — it is how a deleted file's diff is served), so the plant is
+ * removed after numstat has read it and the check passes with no timing skill required.
+ *
+ * What makes that acceptable is strictly that the leak is *two integers*, so this spec pins
+ * exactly that: the summary is a path, a status word and two numbers, and never any of the
+ * file's bytes. If a content preview is ever added to this list, the residual stops being two
+ * integers and this fails.
+ *
+ * The `+137 −1` assertion below is a characterisation of the accepted leak, not a requirement.
+ * If you are here because you closed it: good — update this spec, don't delete it, and move the
+ * note in `.swe/notes.md` from "residual" to "fixed".
+ */
+test("the change summary reports counts, never file content", () => {
+  const leakBase = realpathSync(mkdtempSync(join(tmpdir(), "platform-git-sum-")));
+  const repoDir = join(leakBase, "repo");
+  const outsideDir = join(leakBase, "outside");
+  mkdirSync(repoDir);
+  mkdirSync(outsideDir);
+  const secret = join(outsideDir, "id_rsa");
+  writeFileSync(
+    secret,
+    `${Array.from({ length: 137 }, (_, i) => `${SECRET_LINE}-${i}`).join("\n")}\n`,
+  );
+
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: repoDir, encoding: "utf8" });
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+  writeFileSync(join(repoDir, "tracked.md"), "one\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "init"]);
+
+  // The plant: a tracked path is now a second name for a file outside the repo. There is no
+  // symlink to refuse and no target to resolve — only `nlink` can see it.
+  rmSync(join(repoDir, "tracked.md"));
+  linkSync(secret, join(repoDir, "tracked.md"));
+
+  try {
+    const changes = gitChanges(repoDir);
+    const f = changes.files.find((x) => x.path === "tracked.md");
+    assert.ok(f, "the planted file should still be listed as changed");
+
+    // No bytes of the outside file may appear anywhere in the response, under any key.
+    assert.equal(
+      JSON.stringify(changes).includes(SECRET_LINE),
+      false,
+      "the change summary leaked the outside file's content",
+    );
+    // ...and the shape stays minimal, which is what keeps the statement above true in future.
+    assert.deepEqual(Object.keys(f).sort(), [
+      "added",
+      "deleted",
+      "path",
+      "status",
+    ]);
+
+    // The accepted residual, stated out loud. See the docstring before changing this.
+    assert.equal(f.added, 137, "known residual: numstat read the outside file");
+    assert.equal(f.deleted, 1);
+  } finally {
+    rmSync(leakBase, { recursive: true, force: true });
+  }
 });

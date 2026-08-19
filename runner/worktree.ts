@@ -7,11 +7,31 @@
  * which survives cleanup — but an *uncommitted* tree is work the agent hasn't shipped yet,
  * so nothing here ever removes a dirty tree (`git worktree remove` without `--force` is the
  * built-in "only if nothing would be lost" check, and we rely on exactly that).
+ *
+ * **This is isolation of the working state, not a security boundary, and the difference is
+ * worth stating plainly because an earlier version of this comment did not.** `git worktree add`
+ * gives each linked worktree its own HEAD, index and files; it does **not** give it its own
+ * `.git/config`, `.git/hooks/` or `.git/info/attributes`. Those are one shared copy, reached from
+ * the main checkout and from every task's worktree alike, and none of them is tracked — so a plant
+ * shows up in no `git status`, no diff, no review and no clone. An agent has ordinary write access
+ * to all three from inside the tree it was given.
+ *
+ * What that means concretely: a `post-checkout` hook written from one task's worktree fires in
+ * *every* other context, and `ensureTaskWorktree` below runs `git worktree add` on each parallel
+ * dispatch, so it re-arms itself. The platform's own git calls no longer execute any of it (see
+ * `git()` and `NO_HOOKS` in lib/git.ts), which is what stops a worktree from becoming a backdoor
+ * into the server process. Two things it does not stop, both deliberate:
+ * - an agent's own `git` from its Bash tool still honors hooks and config, as a developer tool
+ *   must;
+ * - `POST /api/projects/[id]/git` can still be asked to run checkout/pull, because that route has
+ *   no auth — the same open design question as the unauthenticated backlog routes, and a bigger
+ *   change than this one.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { DATA_DIR } from "../lib/config";
+import { NO_HOOKS, gitEnv } from "../lib/git";
 
 export const WORKTREES_DIR = resolve(DATA_DIR, "worktrees");
 
@@ -48,13 +68,29 @@ export function launchMode(opts: {
   return opts.busy ? "queue" : "run";
 }
 
-/** Run git, surfacing stderr in the thrown error — "exit code 128" tells nobody anything,
- *  while "fatal: 'task/x' is already used by worktree …" is actionable. */
+/**
+ * Run git, surfacing stderr in the thrown error — "exit code 128" tells nobody anything,
+ * while "fatal: 'task/x' is already used by worktree …" is actionable.
+ *
+ * Hook and system-config neutralization matches lib/git.ts, and this is the entry point that
+ * most needs it: `worktree add` runs `post-checkout` (measured, alongside `post-index-change`
+ * and `reference-transaction`), and it is issued on every parallel dispatch against the
+ * *project's* shared `.git` — so without this a single planted hook re-executes in the runner
+ * process for as long as tasks keep being dispatched.
+ *
+ * `NO_HOOKS`/`gitEnv` are **imported from lib/git.ts rather than repeated here** — an earlier
+ * version inlined the same two lines and a reviewer rightly called it a second place to keep in
+ * sync by hand. Sharing them also means the env half is covered by lib/git.ts's specs, which is
+ * where the subtle parts live (why `/dev/null` and not an empty string or a temp directory, and
+ * why `process.env` is spread at call time rather than snapshotted). Read that comment before
+ * changing either.
+ */
 function git(cwd: string, args: string[]): string {
   try {
-    return execFileSync("git", args, {
+    return execFileSync("git", [...NO_HOOKS, ...args], {
       cwd,
       encoding: "utf8",
+      env: gitEnv(),
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 16 * 1024 * 1024,
     }).trim();
