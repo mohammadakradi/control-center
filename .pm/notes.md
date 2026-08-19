@@ -82,6 +82,20 @@ planning decision. Keep entries short and accurate.
   `logs/update.log` and expose a real status via `/api/updates` instead of a guessed timeout
   (swe); (2) fix the banner UX — make the active-task block unmissable and surface the real
   failure reason once available (fe, depends on the swe task's new status surface).
+- 2026-08-19 — planned a fix for photo/file attachments failing with "the request body wasn't
+  valid form data" (`.pm/tasks/20260819-150644-fix-attachment-upload-multipart-error/`,
+  1 fullstack task). Verdict BUILD: `BAD_MULTIPART` (`lib/uploads.ts`) is a friendly-error
+  wrapper added in b9c2c3b specifically because raw `request.formData()` crashes had already
+  happened seven times in the logs — the underlying cause of the broken multipart body was
+  never diagnosed, only made readable. Ruled out: client FormData construction, middleware,
+  and body-size limits (`serverActions.bodySizeLimit` doesn't apply to Route Handlers). Leading
+  hypothesis (not confirmed — couldn't force-repro without a real WebKit engine): the
+  long-standing WebKit `fetch()`+`FormData`+`File` streaming bug, consistent with this
+  project's prior WebKit-specific upload bugs (the WKWebView file-chooser fix). Approved
+  direction: stronger failure diagnostics (expected vs. actual body size, user-agent) plus the
+  standard mitigation (pre-materialize files before appending to FormData, or use
+  `XMLHttpRequest` for the upload leg) across all three upload sites (dispatch, gate answer,
+  follow-up).
 
 ## Constraints & conventions
 <!-- stacks present, who owns what, non-obvious rules to respect when planning -->
