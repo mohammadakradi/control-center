@@ -62,8 +62,9 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
   so a path argument must exist inside the container too (the repo and `~/Dev` are mounted).
 - Lint: `pnpm lint`  (baseline: ✅ — no warnings)
 - Test: `pnpm test`  (baseline: ✅ 186 tests — Node's built-in runner via `tsx`, no extra
-  deps; specs live next to the code as `runner/*.test.ts`, `lib/*.test.ts` and
-  `lib/discovery/*.test.ts`, fixtures in `runner/__fixtures__/`. Those globs are listed
+  deps; specs live next to the code as `runner/*.test.ts`, `lib/*.test.ts`,
+  `lib/discovery/*.test.ts` and `infra/release/*.test.ts`, fixtures in
+  `runner/__fixtures__/`. Those globs are listed
   explicitly in the `test` script — a spec in a directory that isn't listed silently never
   runs. DB specs build a throwaway SQLite file from the real schema — via `drizzle-kit push`,
   or `migrateDatabase()` where the committed migrations should be exercised too — and the
@@ -752,6 +753,28 @@ there is intentionally no published image and no `release` stage in the Dockerfi
   reloads. It refuses while a task is running unless forced (the restart ends the session, and
   the runner fails every non-terminal task it finds on boot), and refuses in a checkout, where
   `git pull` is the answer. Still no Docker socket anywhere.
+- **One update at a time, enforced in the script, not just the route.** `apply_update()` is
+  reachable from `update` *and* from `check_and_update()` on the `start` path, so "click
+  Update, quit the app, reopen it" used to put two swaps on the same `app/` — the route's
+  `readUpdateRun()` refusal only covers button-vs-button. Both entry points now take
+  `run/update.lock` (a `mkdir` directory whose `owner` file holds `pid startedAt`), and `start`
+  refuses outright while another process holds it live — the in-flight update restarts the
+  server itself. **The O_EXCL creation of `owner` (`set -C`), not the `mkdir`, is the real
+  mutual-exclusion token**: the `mkdir`-then-write gap let a racer reclaim the not-yet-populated
+  directory and both callers win (~46% under a reviewer's concurrency test), so the owner write
+  fails rather than clobbers when a directory is reclaimed under it — which also stops a symlink
+  planted at `owner` from redirecting the write onto `~/.control-center/.env`. Reclaim is
+  verify-after-`mv` (move the dead lock aside atomically, re-judge that copy, and put back a copy
+  that turns out to be live rather than dropping it) so a delayed reclaimer can't destroy a
+  freshly re-acquired live lock and double-acquire. Staleness matches
+  the status reader's rules (dead pid, or age outside −5 min … 1 h); an ownerless/malformed lock
+  is *not* stale (a racer mid-claim) and is only reclaimed after a one-beat recheck. Owner fields
+  are digit-bounded (≤18) before any `kill -0`/`$(( ))` — an oversized value is *fatal* under
+  dash. The owner read is a byte-capped, regular-file-only `dd` (a planted symlink or huge file
+  can't leak or DoS it). The lock stays held through the update's own restart (`cmd_start` lets
+  its own `$$` through) so its restart can't double-spawn beside a user's reopen. Specs:
+  `infra/release/control-center.test.ts` — the script's first automated coverage; they drive the
+  real script with `curl` stubbed on `PATH`, offline.
 - **Schema migrations are automatic and run before anything serves a request.** `install.sh`
   and every `control-center start` run `runner/migrate.ts` (→ `lib/db/migrate.ts`), which
   applies the versioned SQL in `drizzle/`. Three cases it handles, all covered by
@@ -1000,7 +1023,8 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   as deltas onto `tasks.usage*`; shared by the live runner and `runner/backfill-usage.ts`
 - `public/` — Agent avatar images (`<namespace>-agent.png`)
 - Theme tokens/global styles: `app/globals.css`
-- Tests: `runner/*.test.ts`, `lib/*.test.ts`, `lib/discovery/*.test.ts` (`pnpm test`)
+- Tests: `runner/*.test.ts`, `lib/*.test.ts`, `lib/discovery/*.test.ts`,
+  `infra/release/*.test.ts` (`pnpm test`)
 
 ## Code graph (graphify)
 A queryable code knowledge graph lives at `graphify-out/graph.json`. To understand the
