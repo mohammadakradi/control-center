@@ -4,20 +4,33 @@ import { useState } from "react";
 import type { GitChanges } from "@/lib/git";
 import { DiffModal } from "./DiffModal";
 
-/** Renders an uncommitted-changes summary; clicking a file opens its diff. */
+/** Renders an uncommitted-changes summary; clicking a file opens its diff.
+ *  The whole list is handed to the modal so it can step through the files without the user
+ *  closing and reopening it once per file. */
 export function ChangesList({
   projectId,
   member,
+  taskId,
   changes,
 }: {
   projectId: string;
   member?: string;
+  /** Scope the diffs to this task's working dir (see `DiffModal`). Omitted on the project
+   *  page, where the list is the project checkout's own uncommitted state. */
+  taskId?: string;
   changes: GitChanges;
 }) {
-  const [selected, setSelected] = useState<string | null>(null);
+  // The *index*, not the path: it is what prev/next moves, and the modal reads the path off
+  // the same list, so the two can't disagree about which file is open.
+  const [selected, setSelected] = useState<number | null>(null);
 
   if (changes.files.length === 0)
     return <p className="text-sm text-fg-faint">Working tree clean.</p>;
+
+  const paths = changes.files.map((f) => f.path);
+  // Clamped at render rather than corrected in an effect (which this build forbids): the
+  // server can hand down a shorter list while the modal is open.
+  const open = selected === null ? null : Math.min(selected, paths.length - 1);
 
   return (
     <div>
@@ -27,10 +40,10 @@ export function ChangesList({
         <span className="text-danger">−{changes.totalDeleted}</span>
       </div>
       <div className="space-y-0.5">
-        {changes.files.map((f) => (
+        {changes.files.map((f, i) => (
           <button
             key={f.path}
-            onClick={() => setSelected(f.path)}
+            onClick={() => setSelected(i)}
             title={`${f.path} — view diff`}
             className="flex w-full items-center gap-3 rounded-md px-1 py-1 text-left font-mono text-xs hover:bg-hover"
           >
@@ -49,11 +62,13 @@ export function ChangesList({
         )}
       </div>
 
-      {selected && (
+      {open !== null && (
         <DiffModal
           projectId={projectId}
           member={member}
-          path={selected}
+          taskId={taskId}
+          path={paths[open]}
+          nav={{ files: paths, index: open, onNavigate: setSelected }}
           onClose={() => setSelected(null)}
         />
       )}

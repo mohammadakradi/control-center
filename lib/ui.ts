@@ -12,25 +12,70 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
   cancelled: "Cancelled",
 };
 
-/** Semantic tone classes for a task status. Theme-aware via the tone tokens in
- *  `app/globals.css` — do not reintroduce raw palette shades here. */
-export function statusColor(status: string): string {
+/** The tone tokens a task status maps onto. One of the six documented in
+ *  `.fe/design-system.md`; `violet` is not among them (nothing about a run is a workspace). */
+export type StatusTone = "ok" | "danger" | "warn" | "info" | "muted";
+
+/**
+ * Task status → semantic tone. **The** choke point: every treatment below is a lookup on
+ * this, so a status can never be `warn` in one component and `info` in another.
+ *
+ * Extracted from `statusColor` when a second treatment appeared (`Toaster`, which needs the
+ * tone without the soft background — a floating element must sit on an opaque surface).
+ */
+export function statusTone(status: string): StatusTone {
   switch (status) {
     case "done":
-      return "bg-ok-soft text-ok border-ok-line";
+      return "ok";
     case "failed":
-      return "bg-danger-soft text-danger border-danger-line";
+      return "danger";
     case "cancelled":
-      return "bg-muted-soft text-muted border-muted-line";
+      return "muted";
     case "running":
     case "building":
     case "committing":
     case "awaiting_proposal":
     case "awaiting_report":
-      return "bg-warn-soft text-warn border-warn-line";
+      return "warn";
     default:
-      return "bg-info-soft text-info border-info-line";
+      return "info";
   }
+}
+
+const STATUS_BADGE_CLASSES: Record<StatusTone, string> = {
+  ok: "bg-ok-soft text-ok border-ok-line",
+  danger: "bg-danger-soft text-danger border-danger-line",
+  warn: "bg-warn-soft text-warn border-warn-line",
+  info: "bg-info-soft text-info border-info-line",
+  muted: "bg-muted-soft text-muted border-muted-line",
+};
+
+/** Semantic tone classes for a task status. Theme-aware via the tone tokens in
+ *  `app/globals.css` — do not reintroduce raw palette shades here. */
+export function statusColor(status: string): string {
+  return STATUS_BADGE_CLASSES[statusTone(status)];
+}
+
+/**
+ * The **border** a status tints when its background can't be toned — i.e. anything
+ * *floating* over scrolling page content, which needs an opaque surface token because
+ * `--{tone}-soft` is a translucent wash in dark mode (`ActivityBadge`'s pill learned this
+ * first; `Toaster` is the second call site).
+ *
+ * The `border` width ships **inside** each value rather than being added by the caller: two
+ * same-specificity border-colour utilities on one element race in the emitted CSS, which is
+ * the trap `GettingStarted` documents. One class string per tone, no second border class.
+ */
+const STATUS_BORDER_CLASSES: Record<StatusTone, string> = {
+  ok: "border border-ok-line",
+  danger: "border border-danger-line",
+  warn: "border border-warn-line",
+  info: "border border-info-line",
+  muted: "border border-muted-line",
+};
+
+export function statusBorderColor(status: string): string {
+  return STATUS_BORDER_CLASSES[statusTone(status)];
 }
 
 /** A backlog item's status, in words. Sentence case like `STATUS_LABEL`, so the two
@@ -239,6 +284,60 @@ export function dispatchErrorAction(
 }
 
 const ms = (ts: number | Date) => (ts instanceof Date ? ts.getTime() : ts);
+
+/** What `GET /api/tasks/:id/changes` answers. `error` is the 404 body (`lib/task-access` makes
+ *  "not yours" and "doesn't exist" identical), so it can arrive instead of the other fields. */
+export type TaskChangesResponse = {
+  available?: boolean;
+  reason?: "not-git" | "workspace";
+  scope?: "checkout" | "worktree" | "worktree-removed";
+  branch?: string | null;
+  changes?: {
+    files: { path: string; status: string; added: number; deleted: number }[];
+    totalAdded: number;
+    totalDeleted: number;
+    truncated: number;
+  } | null;
+  error?: string;
+};
+
+export type TaskChangesView =
+  /** Render no card at all — nothing to say, so an empty card would be noise. */
+  | { kind: "hidden" }
+  /** The isolated worktree is gone; `branch` is where the committed work is. */
+  | { kind: "removed"; branch: string | null }
+  | { kind: "empty"; scope: "checkout" | "worktree" }
+  | {
+      kind: "list";
+      scope: "checkout" | "worktree";
+      changes: NonNullable<TaskChangesResponse["changes"]>;
+      /** Whether the list is exclusively this run's work — drives the default expansion and
+       *  whether the "shared checkout" caveat is shown. */
+      exclusive: boolean;
+    };
+
+/**
+ * Turn a changes response into what the card should render.
+ *
+ * Extracted from `components/TaskChanges.tsx` because this is the branchiest part of that feature
+ * and `pnpm test` cannot reach `components/` — the same reason `orderSkills` lives here. An
+ * independent review flagged it as the new code with the least verification; now it has specs.
+ *
+ * Note `data === null` (still loading) and a truthy `error` both answer `hidden`: a card that may
+ * turn out to have nothing to show must not flash first, and a 404 here means the task itself is
+ * not visible to this caller, which the page already handles.
+ */
+export function taskChangesView(
+  data: TaskChangesResponse | null,
+): TaskChangesView {
+  if (!data || data.error || data.available === false) return { kind: "hidden" };
+  if (data.scope === "worktree-removed")
+    return { kind: "removed", branch: data.branch ?? null };
+  const scope = data.scope === "worktree" ? "worktree" : "checkout";
+  const changes = data.changes;
+  if (!changes || changes.files.length === 0) return { kind: "empty", scope };
+  return { kind: "list", scope, changes, exclusive: scope === "worktree" };
+}
 
 /** How long a run took (or has been running), e.g. "1h 23m", "5m 12s", "45s". */
 export function formatDuration(

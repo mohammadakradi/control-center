@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { Monitor, Moon, Sun } from "lucide-react";
+import { SegmentedControl } from "@/components/ui/segmented";
 import {
   getServerThemeMode,
   getThemeMode,
@@ -21,37 +22,23 @@ function useThemeMode(): ThemeMode {
   return useSyncExternalStore(subscribeTheme, getThemeMode, getServerThemeMode);
 }
 
-/** Three-way segmented control — used in the expanded sidebar footer. */
+/** Three-way segmented control — used in the expanded sidebar footer.
+ *  The treatment itself lives in `SegmentedControl`, which this was extracted into when the
+ *  diff viewer needed the same control for its unified/split choice. */
 export function ThemeToggle() {
   const mode = useThemeMode();
   return (
-    <div
-      role="radiogroup"
-      aria-label="Color theme"
-      className="flex items-center gap-0.5 rounded-lg border border-line bg-surface-2 p-0.5"
-    >
-      {OPTIONS.map(({ mode: m, label, Icon }) => {
-        const active = mode === m;
-        return (
-          <button
-            key={m}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            aria-label={label}
-            title={label}
-            onClick={() => setThemeMode(m)}
-            className={`flex flex-1 items-center justify-center rounded-md py-1.5 transition-colors ${
-              active
-                ? "bg-surface text-fg-strong shadow-sm"
-                : "text-fg-faint hover:text-fg-muted"
-            }`}
-          >
-            <Icon className="size-4" aria-hidden="true" />
-          </button>
-        );
-      })}
-    </div>
+    <SegmentedControl
+      value={mode}
+      onChange={setThemeMode}
+      ariaLabel="Color theme"
+      iconOnly
+      options={OPTIONS.map(({ mode: m, label, Icon }) => ({
+        value: m,
+        label,
+        icon: <Icon className="size-4" aria-hidden="true" />,
+      }))}
+    />
   );
 }
 

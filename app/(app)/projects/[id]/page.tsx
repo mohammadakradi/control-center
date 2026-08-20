@@ -192,6 +192,8 @@ export default async function ProjectDetail({
         {/* New task */}
         <CardSection
           title="New task"
+          // The command palette's "New task in <project>" links here.
+          id="new-task"
           className="lg:col-span-2"
           right={
             <span className="text-xs text-fg-faint">

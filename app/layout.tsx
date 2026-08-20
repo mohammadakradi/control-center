@@ -51,7 +51,15 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className="min-h-full">{children}</body>
+      {/* Browser extensions inject attributes onto <body> before React hydrates
+          (Grammarly adds `data-gr-ext-installed` + `data-new-gr-c-s-check-loaded`),
+          which React reports as a hydration mismatch on every dev page load. That
+          noise is indistinguishable from a real mismatch, so suppress it here —
+          suppressHydrationWarning applies per element and does NOT inherit from the
+          <html> one above. */}
+      <body className="min-h-full" suppressHydrationWarning>
+        {children}
+      </body>
     </html>
   );
 }

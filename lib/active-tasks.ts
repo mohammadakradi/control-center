@@ -34,10 +34,35 @@ export type ActiveTasksPayload = {
    */
   total: number;
   tasks: ActiveTask[];
+  /**
+   * Runs that reached a terminal status within {@link FINISHED_WINDOW_MS}, same shape as
+   * `tasks` with the terminal status in `status`.
+   *
+   * **This exists so a finished run can be reported rather than inferred.** The badge itself
+   * doesn't need it — but a task simply *vanishing* from `tasks` cannot tell `done` from
+   * `failed` from `cancelled`, and those are three different things to tell someone. Absence
+   * is ambiguous for a second reason too: `tasks` is capped at `ACTIVE_LIST_LIMIT` while
+   * `total` is not, so a still-running task can drop out of the list just by being pushed
+   * down it. `Toaster` reads this list; nothing infers from a gap.
+   *
+   * `cancelled` is carried even though nothing raises a toast for it — it is how a pending
+   * gate notice learns to retract itself when you stop the run.
+   */
+  finished: ActiveTask[];
 };
 
 /** Rows the popover carries. A dozen live agent sessions is already unusual. */
 export const ACTIVE_LIST_LIMIT = 12;
+
+/**
+ * How far back `finished` reaches.
+ *
+ * A whole minute for a 5s poll is deliberate slack, not precision: it means a dropped
+ * request, a slow render or a tab hidden for a few seconds still sees the completion on the
+ * next poll instead of losing it between two snapshots. Anything older than this is not a
+ * notification any more — the page load itself is what tells you about it.
+ */
+export const FINISHED_WINDOW_MS = 60_000;
 
 /** How long a task's name may be on the wire. `requestText` is the fallback and is whole
  *  prose — unclipped it would put kilobytes into a row that renders one truncated line. */
@@ -86,7 +111,25 @@ export type ActiveTasksState = {
   /** `null` before the first successful poll — "not known yet", not "nothing running". */
   tasks: ActiveTask[] | null;
   total: number;
+  /** Recently-terminal runs (see {@link ActiveTasksPayload.finished}). Always a list: `tasks`
+   *  alone carries the "not known yet" marker, so this doesn't need a second one. */
+  finished: ActiveTask[];
 };
+
+function sameRows(a: ActiveTask[], b: ActiveTask[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((t, i) => {
+    const o = b[i];
+    return (
+      t.id === o.id &&
+      t.status === o.status &&
+      t.name === o.name &&
+      t.project === o.project &&
+      t.createdAt === o.createdAt
+    );
+  });
+}
 
 /**
  * Whether two snapshots say the same thing.
@@ -98,38 +141,121 @@ export type ActiveTasksState = {
 export function sameActiveState(a: ActiveTasksState, b: ActiveTasksState): boolean {
   if (a === b) return true;
   if (a.total !== b.total) return false;
+  if (!sameRows(a.finished, b.finished)) return false;
   if (a.tasks === b.tasks) return true;
   if (!a.tasks || !b.tasks) return false;
-  if (a.tasks.length !== b.tasks.length) return false;
-  return a.tasks.every((t, i) => {
-    const o = b.tasks![i];
-    return (
-      t.id === o.id &&
-      t.status === o.status &&
-      t.name === o.name &&
-      t.project === o.project &&
-      t.createdAt === o.createdAt
-    );
-  });
+  return sameRows(a.tasks, b.tasks);
 }
 
-/** Reads a `/api/tasks/active` body without trusting its shape. Always a list, never the
- *  `null` "not known yet" of {@link ActiveTasksState} — a parsed response *is* knowledge. */
-export function parseActiveTasks(body: unknown): ActiveTasksPayload {
-  const raw = (body ?? {}) as Partial<ActiveTasksPayload>;
-  const list: unknown[] = Array.isArray(raw.tasks) ? raw.tasks : [];
+// ---------------------------------------------------------------------------
+// Transitions — what changed between two snapshots. Pure; see `lib/task-toasts.ts` for the
+// part that turns these into toasts.
+// ---------------------------------------------------------------------------
 
-  // Every field is rebuilt rather than spread through. `id` and `status` decide whether a row
-  // exists at all; `name` and `project` are *coerced*, because React throws outright when it
-  // is handed an object as a child and the badge sits in the layout — one malformed row would
-  // take down every page rather than one popover.
-  const tasks: ActiveTask[] = [];
+/** The two statuses where a run has stopped and is waiting on a person. */
+export const GATE_STATUSES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  "awaiting_proposal",
+  "awaiting_report",
+]);
+
+/**
+ * Terminal statuses worth telling someone about. **`cancelled` is not one of them**: you
+ * cancelled it, so a notice saying so tells you something you just did.
+ */
+export const NOTIFIED_END_STATUSES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  "done",
+  "failed",
+]);
+
+const worthRaising = (status: TaskStatus): boolean =>
+  GATE_STATUSES.has(status) || NOTIFIED_END_STATUSES.has(status);
+
+export type TaskTransitions = {
+  /** Runs that just *became* worth a notice, with the status they became. */
+  entered: ActiveTask[];
+  /** Ids whose earlier notice has stopped being true and should be withdrawn. */
+  cleared: string[];
+};
+
+const NO_TRANSITIONS: TaskTransitions = { entered: [], cleared: [] };
+
+function statusById(state: ActiveTasksState): Map<string, TaskStatus> {
+  const map = new Map<string, TaskStatus>();
+  for (const t of state.tasks ?? []) map.set(t.id, t.status);
+  // Terminal wins: within one snapshot a task is in exactly one of the two lists, but a
+  // stale row would otherwise mask the newer state.
+  for (const t of state.finished) map.set(t.id, t.status);
+  return map;
+}
+
+/**
+ * What moved between two snapshots, in the terms a notifier cares about.
+ *
+ * Knows nothing about toasts on purpose — `lib/task-toasts.ts` owns that mapping, so this can
+ * be unit-tested without a store, and a second consumer (a title-bar count, a sound) wouldn't
+ * have to re-derive it.
+ *
+ * Three rules earn their place:
+ * - **`prev.tasks === null` is a baseline, not an empty list.** Treating "not known yet" as
+ *   "nothing was happening" would raise a toast for every gate already pending the moment any
+ *   page loads — the first thing you'd see after opening the app is a stack of notices about
+ *   states you can already read on screen.
+ * - **Only a *gate* notice is ever withdrawn.** "Awaiting your approval" stops being true the
+ *   moment the run moves on; "this run failed" never does. Retracting terminal notices would
+ *   also quietly reintroduce the timed dismissal `lib/toast.ts` deliberately refuses — they'd
+ *   disappear on their own once the run aged out of {@link FINISHED_WINDOW_MS}.
+ * - **A same-status row is not a transition.** Every poll re-sends a pending gate; only a
+ *   *change* raises, which is what keeps one gate from toasting every five seconds.
+ */
+export function taskTransitions(
+  prev: ActiveTasksState,
+  next: ActiveTasksState,
+): TaskTransitions {
+  if (prev.tasks === null) return NO_TRANSITIONS;
+
+  const before = statusById(prev);
+  const after = statusById(next);
+
+  const entered: ActiveTask[] = [];
+  for (const t of [...(next.tasks ?? []), ...next.finished]) {
+    if (!worthRaising(t.status)) continue;
+    if (before.get(t.id) === t.status) continue;
+    entered.push(t);
+  }
+  const raised = new Set(entered.map((t) => t.id));
+
+  const cleared: string[] = [];
+  for (const [id, status] of before) {
+    if (!GATE_STATUSES.has(status)) continue;
+    // Being re-raised in a *new* state — the replacement carries the update, and clearing it
+    // first would tear the card out and put a new one back for the same run.
+    if (raised.has(id)) continue;
+    const now = after.get(id);
+    // Gone from both lists is treated as gone: either it finished long enough ago to age out
+    // of the window, or it was pushed past `ACTIVE_LIST_LIMIT` by newer runs. Neither leaves
+    // "waiting for you" worth showing, and the badge still carries the count.
+    if (now !== undefined && GATE_STATUSES.has(now)) continue;
+    cleared.push(id);
+  }
+
+  return { entered, cleared };
+}
+
+/**
+ * Every field is rebuilt rather than spread through. `id` and `status` decide whether a row
+ * exists at all; `name` and `project` are *coerced*, because React throws outright when it is
+ * handed an object as a child and both readers sit in the layout — one malformed row would
+ * take down every page rather than one popover.
+ */
+function parseRows(list: unknown): ActiveTask[] {
+  const rows: ActiveTask[] = [];
+  if (!Array.isArray(list)) return rows;
   for (const row of list) {
     if (!row || typeof row !== "object") continue;
     const t = row as Record<string, unknown>;
     if (typeof t.id !== "string" || !t.id) continue;
     if (typeof t.status !== "string") continue;
-    tasks.push({
+    rows.push({
       id: t.id,
       name: typeof t.name === "string" ? t.name : null,
       project: typeof t.project === "string" ? t.project : null,
@@ -137,9 +263,18 @@ export function parseActiveTasks(body: unknown): ActiveTasksPayload {
       createdAt: typeof t.createdAt === "number" ? t.createdAt : 0,
     });
   }
+  return rows;
+}
+
+/** Reads a `/api/tasks/active` body without trusting its shape. Always lists, never the
+ *  `null` "not known yet" of {@link ActiveTasksState} — a parsed response *is* knowledge. */
+export function parseActiveTasks(body: unknown): ActiveTasksPayload {
+  const raw = (body ?? {}) as Partial<ActiveTasksPayload>;
+  const tasks = parseRows(raw.tasks);
 
   return {
     tasks,
+    finished: parseRows(raw.finished),
     total:
       typeof raw.total === "number" && raw.total >= tasks.length
         ? raw.total
@@ -153,7 +288,7 @@ export function parseActiveTasks(body: unknown): ActiveTasksPayload {
 
 /** Frozen so the server snapshot is a stable reference — `useSyncExternalStore` compares
  *  snapshots by identity and would loop on a fresh object each read. */
-const UNKNOWN: ActiveTasksState = { tasks: null, total: 0 };
+const UNKNOWN: ActiveTasksState = { tasks: null, total: 0, finished: [] };
 
 let state: ActiveTasksState = UNKNOWN;
 const listeners = new Set<() => void>();

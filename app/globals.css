@@ -78,6 +78,20 @@
   --muted: #3f3f46;
   --muted-line: #d4d4d8;
 
+  /* Syntax highlighting (see the `.hljs-*` block below). These *reference* the tone and text
+     tokens rather than restating their values, so a highlighted file reads as part of this app
+     and a future contrast fix to `--ok` or `--warn` can't silently stop matching the syntax
+     colour that was copied from it. Only `--syn-type` is a hue this palette doesn't already
+     have. Every value clears AA on `sunken`, `surface-2` and both diff row washes
+     (`ok-soft`/`danger-soft`), in both themes — re-check if you retune one of the referents. */
+  --syn-keyword: var(--violet);
+  --syn-string: var(--ok);
+  --syn-number: var(--warn);
+  --syn-function: var(--info);
+  --syn-type: #0f766e;
+  --syn-comment: var(--fg-faint);
+  --syn-punct: var(--fg-subtle);
+
   --scrollbar: #c9c9cf;
 }
 
@@ -134,6 +148,14 @@
   --muted: #d4d4d4;
   --muted-line: rgb(115 115 115 / 0.3);
 
+  --syn-keyword: var(--violet);
+  --syn-string: var(--ok);
+  --syn-number: var(--warn);
+  --syn-function: var(--info);
+  --syn-type: #5eead4;
+  --syn-comment: var(--fg-faint);
+  --syn-punct: var(--fg-subtle);
+
   --scrollbar: #2a2a2e;
 }
 
@@ -187,6 +209,39 @@
   --color-muted-soft: var(--muted-soft);
   --color-muted: var(--muted);
   --color-muted-line: var(--muted-line);
+
+  /* The only custom animation in the app: a toast arriving. Short and small on purpose — it
+     exists so a card appearing in the corner registers as *new* rather than as something that
+     was always there, not as decoration. `prefers-reduced-motion` collapses it globally at the
+     bottom of this file, so the card still appears, just instantly. */
+  --animate-toast-in: toast-in 160ms ease-out;
+
+  /* A loading placeholder breathing, for route-level `loading.tsx` skeletons (`Skeleton` in
+     `components/ui-cards.tsx`). Opacity only, and that is deliberate on two counts: a sweeping
+     gradient would need its own background-size/position animation on *every* bar — a page
+     skeleton has 47–59 of them (measured) — while opacity stays on the compositor; and the dip bottoms out
+     at .45 rather than fading to nothing, so the layout it is standing in for never looks
+     like it flickered away.
+
+     The reduced-motion block at the bottom of this file is what makes it accessible, and it
+     works because the keyframe declares *only* the 50% stop: with `animation-duration: 0.01ms`
+     and `iteration-count: 1` forced, the bar settles back at its own opacity: 1. So it renders
+     as a plain static placeholder — visible, not animated. Verified with the emulated media
+     query, not assumed. */
+  --animate-skeleton: skeleton-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+}
+
+@keyframes skeleton-pulse {
+  50% {
+    opacity: 0.45;
+  }
 }
 
 @layer base {
@@ -213,6 +268,91 @@
 .scroll-thin::-webkit-scrollbar-thumb {
   background: var(--scrollbar);
   border-radius: 9999px;
+}
+
+/* ---------------------------------------------------------------------------
+   Syntax highlighting
+
+   The one place in this app where colour is applied by class name rather than by a Tailwind
+   utility: `lib/highlight.ts` returns highlight.js' own scope names (`hljs-keyword`, …), so
+   the theme has to be CSS. That is also *why* highlight.js was chosen over Shiki, which emits
+   inline styles from a bundled editor theme and so can't follow these variables.
+
+   Both themes come from the `--syn-*` variables above — no `dark:` variant, and nothing here
+   hardcodes a colour. Scopes are grouped onto seven roles; an unlisted scope inherits the
+   surrounding `text-fg`, which is a legitimate answer rather than a gap.
+--------------------------------------------------------------------------- */
+.hljs-comment,
+.hljs-quote {
+  color: var(--syn-comment);
+  /* Also the one non-colour signal in here, which is why it is worth the italics. */
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-doctag {
+  color: var(--syn-keyword);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-char,
+.hljs-symbol,
+.hljs-addition {
+  color: var(--syn-string);
+}
+
+.hljs-number,
+.hljs-literal,
+.hljs-bullet {
+  color: var(--syn-number);
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--syn-function);
+}
+
+.hljs-type,
+.hljs-built_in,
+.hljs-class,
+.hljs-tag,
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-params,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: var(--syn-type);
+}
+
+.hljs-meta,
+.hljs-operator,
+.hljs-punctuation,
+.hljs-formula,
+.hljs-link,
+.hljs-code {
+  color: var(--syn-punct);
+}
+
+/* `diff`'s own grammar, for a `.diff`/`.patch` file opened in the file viewer. The tone
+   tokens rather than `--syn-*`: these mean the same thing as the diff viewer's rows. */
+.hljs-deletion {
+  color: var(--danger);
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 600;
 }
 
 @media (prefers-reduced-motion: reduce) {

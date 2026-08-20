@@ -16,6 +16,7 @@ import { db } from "@/lib/db";
 import { agents, projects, taskEvents } from "@/lib/db/schema";
 import { Avatar } from "@/components/AgentAvatar";
 import { TaskLiveView } from "@/components/TaskLiveView";
+import { TaskChanges } from "@/components/TaskChanges";
 import { RunDuration } from "@/components/RunDuration";
 import { UsageBreakdown } from "@/components/UsageDisplay";
 import { Chip } from "@/components/ui-cards";
@@ -121,6 +122,18 @@ export default async function TaskPage({
           <UsageBreakdown usage={taskUsage(task)} className="mt-2.5" />
         </div>
       </div>
+
+      {/* What the run changed on disk. Fetched client-side rather than server-rendered here:
+          it costs git subprocesses, and this way the transcript paints without waiting for
+          them — and the card can refresh itself when the run ends without reloading the page.
+          `status` is what triggers that (TaskLiveView calls `router.refresh()` on the end
+          event, so a finished run's final tree is read once the status here changes). */}
+      <TaskChanges
+        taskId={task.id}
+        projectId={task.projectId}
+        status={task.status}
+        className="mb-5"
+      />
 
       <TaskLiveView
         taskId={task.id}

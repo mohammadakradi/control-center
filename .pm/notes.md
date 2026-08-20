@@ -97,6 +97,18 @@ planning decision. Keep entries short and accurate.
   `XMLHttpRequest` for the upload leg) across all three upload sites (dispatch, gate answer,
   follow-up).
 
+- 2026-08-19 — planned "beat T3 Code on UI/UX" (`.pm/tasks/20260819-222248-beat-t3-ui-ux/`,
+  6 tasks). T3 Code (github.com/pingdotgg/t3code, MIT, Theo/ping.gg) is the direct competitor:
+  open-source control plane for coding agents; praised for instant three-panel workspace,
+  turn-by-turn unified+split diff review, one-click PR, terminal, shortcuts. We already beat it
+  on gated workflows, pm/backlog loop, security, token vault, usage, theming, PWA/Mac app.
+  Confirmed gaps → tasks: per-task diff panel (swe), diff viewer highlighting/split/nav (fe),
+  global toast system off `lib/active-tasks.ts` (fe), search API (swe), ⌘K palette (fe),
+  loading-skeleton/prefetch instant-feel pass (fe). User approved REJECTING: in-app terminal
+  (security model collision — T3 criticized for exactly this), commit/PR-from-UI buttons
+  (git-through-agents is the design stance; `/swe:ship` is the PR flow), full SPA rewrite
+  (incremental perceived-speed work instead), kanban backlog.
+
 ## Constraints & conventions
 <!-- stacks present, who owns what, non-obvious rules to respect when planning -->
 - Single stack: full-stack Next.js 16 App Router (App Router pages/API in `app/`) + a

@@ -4,6 +4,8 @@ import { Sidebar } from "@/components/Sidebar";
 import { MobileTabBar, MobileTopBar } from "@/components/MobileNav";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { ActivityBadge } from "@/components/ActivityBadge";
+import { Toaster } from "@/components/Toaster";
+import { CommandPalette } from "@/components/CommandPalette";
 
 export default async function AppLayout({
   children,
@@ -35,6 +37,13 @@ export default async function AppLayout({
         </main>
       </div>
       <MobileTabBar />
+      {/* Mounted once for the whole app: it owns the global ⌘K listener and renders nothing
+          until opened. Above `Toaster` so a toast still floats over the palette's scrim. */}
+      <CommandPalette />
+      {/* Last child on purpose. Toasts and `Modal` are both `z-50`, so DOM order is what
+          decides which floats over the other — and a notice that a gate is waiting is exactly
+          the thing that must not end up behind a modal scrim. */}
+      <Toaster />
     </div>
   );
 }

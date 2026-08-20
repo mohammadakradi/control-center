@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Copy, Loader2, Send } from "lucide-react";
+import { CodeView } from "@/components/CodeView";
 import { Markdown } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert, type ErrorAction } from "@/components/ui/error-alert";
@@ -254,7 +255,13 @@ export function FileModal({
         action={createErrAction}
         className="border-b border-danger-line bg-danger-soft px-4 py-2 text-xs"
       />
-      <div className="scroll-thin overflow-auto p-4">
+      {/* Focusable so the keyboard can scroll it — see the same note in `DiffModal`. */}
+      <div
+        role="region"
+        aria-label={path}
+        tabIndex={0}
+        className="scroll-thin overflow-auto p-4"
+      >
         {err ? (
           <p role="alert" className="p-3 text-sm text-danger">
             {err}
@@ -268,9 +275,7 @@ export function FileModal({
         ) : isMarkdown ? (
           <Markdown>{content}</Markdown>
         ) : (
-          <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-fg-muted">
-            {content}
-          </pre>
+          <CodeView code={content} path={path} />
         )}
       </div>
     </Modal>
