@@ -15,6 +15,7 @@ import {
   isOpenBacklogStatus,
   orderSkills,
   statusColor,
+  taskChangesView,
   taskDisplayTitle,
 } from "./ui";
 import type { BacklogStatus } from "./db/schema";
@@ -196,4 +197,81 @@ test("a body with no next step gets no link, and never a broken one", () => {
   // A non-string id would interpolate to `/tasks/[object Object]` — a link that looks real.
   assert.equal(dispatchErrorAction({ taskId: { id: "x" } }), null);
   assert.equal(dispatchErrorAction({ taskId: "" }), null);
+});
+
+/**
+ * `taskChangesView` — the task page's Changes card, whose branches an independent review
+ * flagged as the least-verified new code. What matters in each case is that the card never
+ * makes a claim the data doesn't support: a shared checkout must not read as "this task's
+ * work", and a cleaned-up worktree must not read as "working tree clean".
+ */
+const changesOf = (n: number) => ({
+  files: Array.from({ length: n }, (_, i) => ({
+    path: `f${i}.ts`,
+    status: "modified",
+    added: 1,
+    deleted: 0,
+  })),
+  totalAdded: n,
+  totalDeleted: 0,
+  truncated: 0,
+});
+
+test("taskChangesView hides the card while loading, on error, and when unavailable", () => {
+  // Still loading: a card that might vanish must not flash first.
+  assert.equal(taskChangesView(null).kind, "hidden");
+  // A 404 body — "not yours" and "doesn't exist" are the same answer (lib/task-access).
+  assert.equal(taskChangesView({ error: "not found" }).kind, "hidden");
+  assert.equal(taskChangesView({ available: false, reason: "not-git" }).kind, "hidden");
+  assert.equal(taskChangesView({ available: false, reason: "workspace" }).kind, "hidden");
+});
+
+test("taskChangesView reports a removed worktree as its own state, not as clean", () => {
+  // "Working tree clean" would be a different — and false — claim: the work is on the branch.
+  assert.deepEqual(
+    taskChangesView({ available: true, scope: "worktree-removed", branch: "task/abc" }),
+    { kind: "removed", branch: "task/abc" },
+  );
+  // A detached HEAD at cleanup stores no branch, and `undefined` must normalise to null.
+  assert.deepEqual(
+    taskChangesView({ available: true, scope: "worktree-removed" }),
+    { kind: "removed", branch: null },
+  );
+});
+
+test("taskChangesView marks only a worktree run's list as exclusively this task's", () => {
+  const wt = taskChangesView({
+    available: true,
+    scope: "worktree",
+    changes: changesOf(2),
+  });
+  assert.equal(wt.kind, "list");
+  assert.equal(wt.kind === "list" && wt.exclusive, true);
+
+  // The checkout is shared with whatever else runs there, so the card must caveat it.
+  const co = taskChangesView({
+    available: true,
+    scope: "checkout",
+    changes: changesOf(2),
+  });
+  assert.equal(co.kind === "list" && co.exclusive, false);
+});
+
+test("taskChangesView treats a missing or empty file list as empty, keeping the scope", () => {
+  assert.deepEqual(taskChangesView({ available: true, scope: "worktree", changes: changesOf(0) }), {
+    kind: "empty",
+    scope: "worktree",
+  });
+  // `changes` absent entirely (a truncated/unexpected body) must not throw or render a list.
+  assert.deepEqual(taskChangesView({ available: true, scope: "checkout" }), {
+    kind: "empty",
+    scope: "checkout",
+  });
+});
+
+test("taskChangesView defaults an unknown scope to the cautious one", () => {
+  // An unrecognised scope must not be treated as exclusively this task's work.
+  const v = taskChangesView({ available: true, changes: changesOf(1) });
+  assert.equal(v.kind === "list" && v.scope, "checkout");
+  assert.equal(v.kind === "list" && v.exclusive, false);
 });

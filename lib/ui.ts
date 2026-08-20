@@ -240,6 +240,60 @@ export function dispatchErrorAction(
 
 const ms = (ts: number | Date) => (ts instanceof Date ? ts.getTime() : ts);
 
+/** What `GET /api/tasks/:id/changes` answers. `error` is the 404 body (`lib/task-access` makes
+ *  "not yours" and "doesn't exist" identical), so it can arrive instead of the other fields. */
+export type TaskChangesResponse = {
+  available?: boolean;
+  reason?: "not-git" | "workspace";
+  scope?: "checkout" | "worktree" | "worktree-removed";
+  branch?: string | null;
+  changes?: {
+    files: { path: string; status: string; added: number; deleted: number }[];
+    totalAdded: number;
+    totalDeleted: number;
+    truncated: number;
+  } | null;
+  error?: string;
+};
+
+export type TaskChangesView =
+  /** Render no card at all — nothing to say, so an empty card would be noise. */
+  | { kind: "hidden" }
+  /** The isolated worktree is gone; `branch` is where the committed work is. */
+  | { kind: "removed"; branch: string | null }
+  | { kind: "empty"; scope: "checkout" | "worktree" }
+  | {
+      kind: "list";
+      scope: "checkout" | "worktree";
+      changes: NonNullable<TaskChangesResponse["changes"]>;
+      /** Whether the list is exclusively this run's work — drives the default expansion and
+       *  whether the "shared checkout" caveat is shown. */
+      exclusive: boolean;
+    };
+
+/**
+ * Turn a changes response into what the card should render.
+ *
+ * Extracted from `components/TaskChanges.tsx` because this is the branchiest part of that feature
+ * and `pnpm test` cannot reach `components/` — the same reason `orderSkills` lives here. An
+ * independent review flagged it as the new code with the least verification; now it has specs.
+ *
+ * Note `data === null` (still loading) and a truthy `error` both answer `hidden`: a card that may
+ * turn out to have nothing to show must not flash first, and a 404 here means the task itself is
+ * not visible to this caller, which the page already handles.
+ */
+export function taskChangesView(
+  data: TaskChangesResponse | null,
+): TaskChangesView {
+  if (!data || data.error || data.available === false) return { kind: "hidden" };
+  if (data.scope === "worktree-removed")
+    return { kind: "removed", branch: data.branch ?? null };
+  const scope = data.scope === "worktree" ? "worktree" : "checkout";
+  const changes = data.changes;
+  if (!changes || changes.files.length === 0) return { kind: "empty", scope };
+  return { kind: "list", scope, changes, exclusive: scope === "worktree" };
+}
+
 /** How long a run took (or has been running), e.g. "1h 23m", "5m 12s", "45s". */
 export function formatDuration(
   start: number | Date | null | undefined,

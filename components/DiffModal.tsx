@@ -36,11 +36,15 @@ function DiffView({ diff }: { diff: string }) {
 export function DiffModal({
   projectId,
   member,
+  taskId,
   path,
   onClose,
 }: {
   projectId: string;
   member?: string;
+  /** Diff the file in this task's own working dir — a parallel run executes in an
+   *  isolated git worktree, so its changes aren't in the project checkout at all. */
+  taskId?: string;
   path: string;
   onClose: () => void;
 }) {
@@ -50,6 +54,7 @@ export function DiffModal({
   useEffect(() => {
     const params = new URLSearchParams({ path });
     if (member) params.set("member", member);
+    if (taskId) params.set("task", taskId);
     fetch(`/api/projects/${projectId}/diff?${params.toString()}`)
       .then((r) => r.json())
       .then((d: { diff?: string; error?: string }) => {
@@ -57,7 +62,7 @@ export function DiffModal({
         else setErr(d.error ?? "Could not load diff");
       })
       .catch((e) => setErr((e as Error).message));
-  }, [projectId, member, path]);
+  }, [projectId, member, taskId, path]);
 
   return (
     <Modal

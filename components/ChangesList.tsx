@@ -8,10 +8,14 @@ import { DiffModal } from "./DiffModal";
 export function ChangesList({
   projectId,
   member,
+  taskId,
   changes,
 }: {
   projectId: string;
   member?: string;
+  /** Scope the diffs to this task's working dir (see `DiffModal`). Omitted on the project
+   *  page, where the list is the project checkout's own uncommitted state. */
+  taskId?: string;
   changes: GitChanges;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
@@ -53,6 +57,7 @@ export function ChangesList({
         <DiffModal
           projectId={projectId}
           member={member}
+          taskId={taskId}
           path={selected}
           onClose={() => setSelected(null)}
         />

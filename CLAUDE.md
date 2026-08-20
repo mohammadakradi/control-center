@@ -305,6 +305,58 @@ translate HTTP. An item can be dispatched as a real task and links back to it.
   - Still a mitigation, not a fix — a model can be argued with. The control is a person reading
     an item before pressing Run.
 
+## A task's own changes (the task page's Changes card)
+`GET /api/tasks/[id]/changes` answers "what did *this run* change", for both a plain checkout run
+and a parallel run's isolated worktree. `lib/task-root.ts` resolves the root; `gitChanges` /
+`gitFileDiff` are consumed **unchanged**, so all the hardening in the section below applies
+untouched — this feature adds no git call of its own.
+- **The only input is the task id.** No path, no directory, no project parameter: the root comes
+  from the rows (`findOwnedTask` → the task, its `projectId` → the project). So the containment
+  machinery below isn't bypassed here, it simply isn't reachable. Owner scoping is the whole
+  boundary, and "not yours" answers exactly like "doesn't exist" (`lib/task-access`).
+- **"Is this directory still a worktree" is a stricter question than it looks, and two weaker
+  answers were both reproduced.** For a directory git no longer recognises, git walks *up* — and
+  `data/worktrees/` is **inside the platform's own repo in a dev checkout** — so the panel rendered
+  the platform checkout's entire change set under the task's name. `existsSync(workdir)` misses it;
+  `existsSync(workdir + "/.git")` **also** misses it, because that is true for an **empty directory
+  named `.git`** and for a symlink to a non-git directory, and git walks straight past both (found
+  by the security audit, no race needed — one `mv .git .git.real && mkdir .git` from inside the
+  worktree). `isTaskWorktree` (`lib/task-root.ts`) therefore requires: `.git` is a **regular file**
+  (`lstat`, so a symlink is judged as itself, and nothing non-regular is ever opened — a planted
+  FIFO would block the request), small enough to be a pointer, holding a `gitdir:` that **exists**
+  and resolves **under the project's own `.git`** — which is also what bounds a *retargeted*
+  pointer, the documented "`.git` file redirects a whole repo" class, at the one place holding both
+  `project.path` and `task.workdir`. Containment is skipped when the project is *itself* a linked
+  worktree (its `.git` is a file, so its worktrees' admin data lives under the main repo): a false
+  negative there would silently show "no changes" for a legitimate run.
+  - **Not race-free.** `.git` can go away between the check and git's own discovery in the child;
+    the audit reproduced that across the spawn window. Closing it needs `GIT_CEILING_DIRECTORIES`
+    on every invocation in `lib/git.ts` (the audit verified it works and leaves legitimate repos
+    byte-identical) — shared git hardening this feature consumes unchanged, so it is filed, not
+    smuggled in. What survives the clauses above leaks file *names* and line counts, never content.
+  - `lib/task-root.test.ts` pins each clause **and** characterises the leak it prevents; reverting
+    the guard to either weaker form turns four specs red (verified by reverting).
+- **A removed worktree never falls back to the project checkout**, the same stance the diff route
+  already takes: the checkout's uncommitted state belongs to whatever is running there now, so
+  showing it as a finished isolated run's work would credit this task with someone else's edits.
+  It reports its own `worktree-removed` scope and names the branch the commits are on.
+- **The card states whose changes it is showing**, because "Changes" on a task page implies
+  ownership it can't always claim: a worktree run's list *is* exclusively that run's (so it renders
+  expanded), while a checkout run's is a shared tree's (collapsed, with a line saying so).
+- **Not polled** — two git subprocesses per load, in the process that also serves the SSE streams.
+  It refreshes when the run ends (`TaskLiveView`'s `router.refresh()` changes the server-rendered
+  `status` prop) and on demand. Changes during a long run aren't live; that's the trade.
+- Clicking a file opens the diff through the existing `/api/projects/[id]/diff?…&task=<id>`, which
+  resolves the same worktree — `ChangesList`/`DiffModal` take an optional `taskId` for exactly that
+  and send nothing extra when it's absent (the project page's own list is unchanged). Note those
+  two routes still gate on a bare `existsSync(task.workdir)`; this card is what makes `?task=`
+  one-click reachable, so moving them onto `resolveTaskWorkRoot` is filed.
+- **The card's render decisions live in `taskChangesView` (`lib/ui.ts`), not in the component.**
+  `pnpm test` cannot reach `components/`, and this is the branchiest part of the feature — which
+  scope is exclusive, when to hide the card entirely, when "empty" is honest — so it sits beside
+  `orderSkills` with specs. A stale response can't overwrite a newer one either: two loads overlap
+  when a run ends mid-refresh, so `load()` stamps a sequence number and drops superseded replies.
+
 ## Reading files out of a project tree
 `GET /api/projects/[id]/{file,diff}` take a caller-supplied relative path and read it under a
 root the user registered — `project.path`, a workspace member, or a task's git worktree, which
@@ -938,7 +990,9 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `app/tasks/[id]/` — Task live view (SSE + gate actions via the authenticated
   `/api/tasks/[id]/{stream,respond,reply,stop}` proxy routes — the browser never talks
   to the runner directly). `respond` and `continue` accept multipart, so a gate answer or a
-  follow-up can carry files; `reply` exists on the runner but no UI calls it
+  follow-up can carry files; `reply` exists on the runner but no UI calls it. Also hosts the
+  **Changes** card (`components/TaskChanges.tsx`) — what this run changed on disk, see
+  "A task's own changes" below
 - `app/settings/` — Per-user settings (Anthropic token vault card)
 - `app/usage/` — Per-user usage page: spend summary + Claude plan-limit bars. A top-level
   nav entry, not a Settings sub-section (moved out of Settings 2026-08-02)
@@ -951,6 +1005,9 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   `.pm/tasks/` specs and reflects finished runs), `POST` (add one), `PATCH …/[itemId]`,
   `POST …/[itemId]/run` (dispatch it as a task). Logic lives in `lib/backlog.ts`; the routes
   only translate HTTP
+- `app/api/tasks/[id]/changes/` — This task's own uncommitted-changes summary, resolved to the
+  root the run actually used. Takes no path or directory parameter; logic is in
+  `lib/task-root.ts` and `gitChanges` is consumed unchanged
 - `components/` — All reusable UI components (bespoke)
 - `components/ui-cards.tsx` — Core primitives: `card`, `CardSection`, `PageHeader`,
   `EmptyState`, `Chip`, `Tile`, `Fact`
@@ -986,6 +1043,9 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   (the file route), `escapesOnDisk` (the git callers, which hand a path to a subprocess and
   can't hold an fd) and `isUsableRelPath` (the lexical gate both routes share). See "Reading
   files out of a project tree" below
+- `lib/task-root.ts` — Which directory a *task's* files and changes are read from: the project
+  checkout, the git worktree a parallel run used, or neither once that worktree is cleaned up.
+  Spawns nothing (row + two `existsSync`); see "A task's own changes" below
 - `lib/ui.ts` — Shared UI logic with no DOM: status labels/tones, `taskDisplayTitle`, and
   `orderSkills` (skill order + whether `onboard` is offered). Kept out of the components so
   `pnpm test` can cover it
