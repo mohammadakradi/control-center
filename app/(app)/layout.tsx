@@ -4,6 +4,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { MobileTabBar, MobileTopBar } from "@/components/MobileNav";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { ActivityBadge } from "@/components/ActivityBadge";
+import { Toaster } from "@/components/Toaster";
 
 export default async function AppLayout({
   children,
@@ -35,6 +36,10 @@ export default async function AppLayout({
         </main>
       </div>
       <MobileTabBar />
+      {/* Last child on purpose. Toasts and `Modal` are both `z-50`, so DOM order is what
+          decides which floats over the other — and a notice that a gate is waiting is exactly
+          the thing that must not end up behind a modal scrim. */}
+      <Toaster />
     </div>
   );
 }

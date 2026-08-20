@@ -83,7 +83,12 @@ as a surface behind text, since the tone colours are tuned for text-on-soft cont
 | `muted` | cancelled, neutral chips | `#3f3f46` on `#f4f4f5` | `#d4d4d4` on `neutral-500/15` |
 
 All tone text/background pairs were contrast-checked: **AA or better in both themes.**
-`statusColor()` in `lib/ui.ts` is the single choke point mapping task status → tone.
+`statusTone()` in `lib/ui.ts` is the single choke point mapping task status → tone; both
+treatments are lookups on it — `statusColor()` (soft background, for a badge sitting *on* a
+card) and `statusBorderColor()` (border only, for anything **floating**, which needs an opaque
+surface because the soft tones are translucent in dark mode). The border *width* ships inside
+each `statusBorderColor` value: two same-specificity border-colour utilities on one element
+race in the emitted CSS, which is the trap `GettingStarted` documents.
 
 **`text-{t}/80` is the established "secondary line inside a toned block"** — a tone-tinted
 equivalent of dropping from `fg` to `fg-subtle`. Used by `TokenNudge` and `GettingStarted`'s
@@ -173,6 +178,11 @@ keeps the width correct on first paint instead of flashing after hydration.
 - Borders: `border border-line` (cards/tiles); `border border-line-strong` (inputs, secondary buttons); tone borders use `border-{tone}-line`
 - Cards are a flat `bg-surface` — the old `from-white/[0.015]` sheen was removed (it inverted badly in light mode)
 - Motion: `animate-spin` (Loader2 spinner for active states) and `transition-colors`; no custom easing. **`prefers-reduced-motion: reduce` is honoured globally** in `globals.css` (animations/transitions collapse to ~0s)
+- **One custom keyframe: `--animate-toast-in`** (`@theme inline` + a top-level `@keyframes` in
+  `globals.css`) — a 160ms fade-and-rise for a toast arriving, so a card appearing in the corner
+  registers as *new* rather than as something that was always there. The global reduced-motion
+  block collapses it, which is the right degradation: the card still appears, just instantly.
+  Reach for a keyframe only where the motion carries meaning like this one does.
 
 ## Icons & assets
 - Icon set: **lucide-react `^1.21.0`** — import as named exports: `import { IconName } from "lucide-react"`
@@ -237,6 +247,7 @@ keeps the width correct on first paint instead of flashing after hydration.
 | `PlanLimits` | `components/PlanLimits.tsx` | — | Claude plan rate-limit windows as utilization bars. Client component; fetches `/api/usage` and **renders nothing at all** (no card, no skeleton, no error) unless the SDK reports limits as available — which on this app it normally doesn't. |
 | `AttachmentPicker` | `components/AttachmentPicker.tsx` | `files: File[]`, `onAdd: (files: File[]) => void`, `onRemove: (idx: number) => void` | File attach bar (Paperclip + chips); shared by `NewTaskForm` and `TaskLiveView` change-request box |
 | `Markdown` | `components/Markdown.tsx` | `children: string`, `onFileClick?: (path: string) => void` | `react-markdown` with GFM + remark-breaks; normalizes agent bullet glyphs; clickable `.fe/.swe` test-scenario / `.pm/tasks` file paths |
+| `Toaster` + `toast()` | `components/Toaster.tsx`, `lib/toast.ts` | `toast({status, title, project, taskId?, key?})`, `dismissToast(id)`, `dismissToastByKey(key)`, `dismissAllToasts()` | **The** notification layer, mounted **once and last** in `app/(app)/layout.tsx` — last because toasts and `Modal` are both `z-50`, so DOM order is what keeps a gate notice off the wrong side of a modal scrim. Cards are `bg-surface` + a tone-tinted border from `statusBorderColor()`, never `bg-{tone}-soft`: this floats over scrolling content and the soft tones are translucent in dark mode (`ActivityBadge`'s pill learned it first). The status **is** the headline — a reused `StatusBadge` spells out which gate is waiting or how the run ended, so no second vocabulary can drift from `STATUS_LABEL` and nothing is carried by colour alone; a nameless run says "no description" in `fg-faint`, the same phrase `TaskList` uses. **Nothing auto-dismisses and there is deliberately no `duration` option**: WCAG 2.2.1 wants timed content pausable, and these are events you may not have been at the screen for — so sticky + dismissible instead, kept from becoming clutter by `key` (a newer toast for the same subject *replaces* the older one in place, rather than moving the card out from under a pointer heading for its Dismiss button), `TOAST_LIMIT` = 4 oldest-dropped, and the watcher retracting a gate notice once that run moves on. The container is **always in the DOM** so its `aria-live="polite"` region pre-exists the first toast (a region mounted *with* its content announces nothing), which forces `pointer-events-none` on it with `pointer-events-auto` per card — a permanently-mounted fixed corner element would otherwise swallow clicks for the life of the page. **One polite region for every tone, no `role="alert"` on failures**: nesting an assertive alert inside a polite region is two announcements for one event (`UpdateBanner`'s trap). Layout is `inset-x-4 bottom-24` (clearing the mobile tab bar, the same 6rem `<main>` reserves) → `sm:right-4 sm:w-96 md:bottom-6`. Uses the app's one custom keyframe, `--animate-toast-in`. The stack is bottom-anchored so it grows *upward*, which puts the newest card nearest the corner and makes the **oldest** what the cap and the `max-h`/`overflow-y-auto` scroll container give up — the right way round, since oldest is the longest-pending gate. That scroll container carries `-m-2 p-2` (or `overflow` shears the flat sides off every card's `shadow-2xl`) and both it and `pointer-events-auto` apply **only while there are toasts**, because padding on the always-mounted empty region would put a click-swallowing strip over the corner for the life of the page. **Known limitation:** while a `Modal` is open its focus trap makes a toast's link keyboard-unreachable — the card is still visible and Escape closes the modal. This is the correct trade, not a shortcut: the WAI-ARIA APG requires a modal dialog to contain focus, so making the link Tab-reachable would itself be the violation. |
 
 ## Accessibility baseline
 - Target: **WCAG AA**. Every text/background token pair in both themes was contrast-checked

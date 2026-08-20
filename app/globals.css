@@ -209,6 +209,19 @@
   --color-muted-soft: var(--muted-soft);
   --color-muted: var(--muted);
   --color-muted-line: var(--muted-line);
+
+  /* The only custom animation in the app: a toast arriving. Short and small on purpose — it
+     exists so a card appearing in the corner registers as *new* rather than as something that
+     was always there, not as decoration. `prefers-reduced-motion` collapses it globally at the
+     bottom of this file, so the card still appears, just instantly. */
+  --animate-toast-in: toast-in 160ms ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
 }
 
 @layer base {

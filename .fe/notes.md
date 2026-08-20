@@ -265,6 +265,68 @@ returns 3 and omits the other user's, which is the `ownedBy()` contract holding 
 is polled from every page. Markup was inspected by temporarily seeding
 `getServerActiveTasksSnapshot()` + the open state, since the badge SSRs to `null` by design.
 
+## Toasts — the attention layer, and why it reads truth instead of inferring it (2026-08-20)
+`components/Toaster.tsx` + `lib/toast.ts` + `lib/task-toasts.ts`. Anywhere in the app, a run
+reaching a gate or finishing raises a dismissible card linking to it. Six decisions worth not
+relitigating:
+
+- **`/api/tasks/active` had to grow a `finished` list; inferring completion from absence cannot
+  work.** The obvious build is "diff the active list, and a task that vanished is over" — and it
+  is wrong twice. It can't tell `done` from `failed` from `cancelled`, which are the three
+  different things you'd want to be told; and `tasks` is capped at `ACTIVE_LIST_LIMIT` (12) while
+  `total` isn't, so a *still-running* task drops out of the list just by being pushed down it.
+  The route now `or`s in terminal rows with `endedAt` inside `FINISHED_WINDOW_MS` — one query, no
+  second round trip on a route polled from every page — and nothing anywhere infers from a gap.
+- **The 60s window is not a dismissal timer, and one rule keeps it from becoming one.** Only a
+  *gate* notice is ever retracted. "Awaiting your approval" stops being true the moment the run
+  moves on; "this run failed" never does — so if terminal notices were also cleared when their
+  row aged out of the window, every completion toast would quietly vanish after a minute, which
+  is exactly the timed auto-dismiss `lib/toast.ts` refuses to have. There's a spec pinning it
+  (`a terminal notice is never withdrawn`), and reverting the gate-only filter turns it red.
+- **Nothing auto-dismisses.** WCAG 2.2.1 wants content that disappears on a timer to be pausable
+  or extendable; sticky-and-dismissible sidesteps that instead of owing it a hover-pause, a
+  focus-pause and a re-announce. The product argument is the same one: a gate toast that expired
+  after six seconds while you were in another window is the problem this was built to fix. What
+  stops it becoming clutter is `key` (same subject → replace in place, not a second card),
+  `TOAST_LIMIT` = 4, gate retraction, and dismiss-on-navigate.
+- **The diff can't live in the component.** It needs the *previous* snapshot and
+  `useSyncExternalStore` only hands you the current one — so keeping it in component state means
+  `setState` in an effect (a hard error in this build) and doing it in render is a side effect in
+  render. `lib/task-toasts.ts` holds it in module scope beside the store it mirrors, ref-counted
+  so a remount can't install two watchers. `Toaster` only mounts it and reads.
+- **The container is always mounted, which is *why* it needs `pointer-events-none`.** A live
+  region has to exist before content is inserted for a screen reader to announce that content, so
+  rendering `null` when empty announces nothing — but a permanently-mounted `fixed` corner element
+  then swallows clicks on whatever is under it for the life of the page. `pointer-events-auto` goes
+  on each card. One polite region for every tone, deliberately: no `role="alert"` on the failures,
+  because an assertive alert nested in a polite region is two announcements for one event
+  (`UpdateBanner`'s trap).
+- **`bg-surface` + a tone-tinted border, never `bg-{tone}-soft`** — the third time this rule has
+  been needed. The soft tones are translucent in dark mode and this floats over scrolling content.
+  Same reason "Dismiss all" is `variant="secondary"` rather than `ghost`: a transparent button
+  floating over an arbitrary paragraph is unreadable. Caught by looking at it, not by reasoning.
+- **The stack scrolls, and `TOAST_LIMIT` is not a substitute for that.** Bottom-anchored means it
+  grows upward, so on a short viewport (a phone in landscape) the *topmost* card leaves the
+  screen — and topmost is oldest, i.e. the longest-pending gate. Lowering the cap doesn't fix it;
+  three cards overflow a landscape phone too. The awkward part is that the scroll container needs
+  `-m-2 p-2` (`overflow` clips at the padding edge and would shear the flat sides off every
+  card's `shadow-2xl`) and that both the padding and `pointer-events-auto` must be conditional on
+  there being toasts — padding on the always-mounted empty live region would give it height and
+  reintroduce exactly the click-swallowing corner strip `pointer-events-none` exists to prevent.
+  Found by design review; I had talked myself out of it on the grounds that "Dismiss all" stays
+  reachable, which is true but loses the card you most wanted.
+
+**Verifying it without a gate to trigger.** Real gates cost a model call and minutes. Instead,
+temporarily append a scripted `emit(parseActiveTasks(…))` after the real one in `poll()`,
+auto-advancing one step per poll — that exercises everything from `parseActiveTasks` down
+(transitions, keying, retraction, layout) with no writes to the live DB, and the route's own SQL
+is checked separately by widening `FINISHED_WINDOW_MS` and curling it. Screen was locked, so
+`screencapture -R` fails ("could not create image from rect"); `screencapture -l <windowid>`
+captures a window's own backing store regardless, and the id comes from
+`CGWindowListCopyWindowInfo` via a four-line `swiftc` script. Chrome's
+`--blink-settings=preferredColorScheme=1` forces light mode without touching the OS appearance
+or the app's own `localStorage`, which is how the light-theme pass got done.
+
 ## `fg-ghost` is the regression this project keeps having (2026-08-13)
 Third time. A design audit found **ten** more uses of `text-fg-ghost` on real text after the
 token doc already recorded fixing it twice. All ten are now `fg-faint`; a grep for
