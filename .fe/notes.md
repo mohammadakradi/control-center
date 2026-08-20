@@ -465,6 +465,117 @@ silently renders at 500 and crops — which looks exactly like a horizontal-over
 page at once. The control that catches it is screenshotting a *centred* layout (`/signin`): if
 it renders off-centre, the width is a lie, not the CSS.
 
+## Driving a real browser: use CDP, not `--screenshot` (2026-08-20)
+**Supersedes half of the "Verifying a modal without a browser" note below.** That note's
+warning is real — macOS Chrome clamps a `--window-size=390` headless window to a **500px**
+minimum layout width, so mobile screenshots silently render at 500 and crop. But the
+conclusion drawn from it ("check your viewport is real, screenshot a centred layout") is
+working around the wrong tool. Chrome's DevTools Protocol has no such clamp, and Node 22+ ships
+a global `WebSocket`, so a **~60-line dependency-free CDP driver** gets you the whole thing:
+`Emulation.setDeviceMetricsOverride` honours 390px exactly (verified: `innerWidth` reports 390,
+not 500), `Emulation.setEmulatedMedia` flips `prefers-color-scheme` so **dark mode needs no
+`localStorage` seeding**, and `Runtime.evaluate` lets you *click real controls* and read values
+back — so a modal no longer has to be verified by temporarily seeding its `useState`.
+
+What that bought on this task, none of which static reasoning would have caught:
+- focus **stays on the Next button** across a file change (the `key={path}` remount could have
+  dropped it — this project's `UpdateBanner` note is emphatic that focus claims must be
+  measured, and it was right);
+- the focus trap's tab order and both wrap directions, read out of the live DOM;
+- `scrollWidth` vs `clientWidth` at 390px, which is how you prove "no horizontal overflow"
+  rather than squinting at a screenshot;
+- a **DOM node count** (3 vs ~300 000) as the proof that a perf guard fires.
+
+Keep `--virtual-time-budget` in mind for the plain `--screenshot` path (see the 2026-08-13
+note) — with CDP you don't need it, because you control when the shot is taken.
+
+## Syntax highlighting: lowlight, lazily, themed by class (2026-08-20)
+`DiffModal` rendered raw diff text coloured by first character and `FileModal` showed code as
+flat monospace. Both now share a highlighter. The decisions worth not relitigating:
+
+- **lowlight (highlight.js) over Shiki, for three independent reasons.** It emits **class
+  names**, so the theme is CSS and lives in `globals.css` with every other token — Shiki emits
+  inline `style` from a bundled editor theme and cannot follow light/dark from our variables
+  without a second mechanism. It returns a **hast tree**, so the viewers build React elements;
+  highlight.js' own API returns an HTML *string*, which would mean `dangerouslySetInnerHTML`
+  over file contents. And it is pure JS — Shiki needs a WASM regex engine, under a Next build
+  already far off the public release train.
+- **`lib/highlight.ts` is only ever reached through `await import()`**, and that is load-bearing,
+  not tidiness: it statically pulls in all 22 grammars, which the bundler puts in **one ~120 KB
+  chunk that no page's initial script list references** (verified by grepping the built chunks
+  and the SSR'd HTML). Type-only imports of it (`import type { CodeLine }`) are erased and
+  don't drag it back in — one keyword away from undoing the whole thing, same trap as
+  `lib/update-ui.ts`'s `import type` from `lib/update-run.ts`.
+- **`highlight.js` is a direct dependency even though lowlight pins it.** `lib/highlight.ts`
+  imports `highlight.js/lib/languages/<x>` directly (registering 22 grammars rather than
+  lowlight's `common` set of 37 — smaller, and `common` doesn't include `dockerfile`), and
+  pnpm's strict layout won't resolve a transitive package. Those subpaths also ship **no type
+  declarations**, hence `types/highlight-languages.d.ts`; note the `import` sits *inside* the
+  `declare module` block, because a top-level import would make the file a module and a
+  `declare module` in a module is an augmentation, which can't use a wildcard.
+- **Highlighting is per *side of a hunk*, never per line.** Re-lexing each row independently
+  colours a line inside a block comment as code. Each side of every hunk is concatenated and
+  highlighted as one document, then split back by line count — which is why `hunkSides` exists
+  and why a hunk contributing **zero** lines to a side must not push an empty string into that
+  concatenation (it would add a phantom line and shift every later hunk by one; a new file,
+  whose only hunk has no old side, is the common case).
+- **The invariant the tests defend is that re-joining the tokens reproduces the input exactly.**
+  A flattening bug doesn't look like a bug — it drops or duplicates a character mid-review and
+  what's on screen still reads plausibly. Every highlighter test asserts the round trip before
+  it asserts anything about colour.
+- **Innermost class wins when flattening.** highlight.js nests (`hljs-subst` inside
+  `hljs-string`); concatenating the ancestor chain would put two equal-specificity `.hljs-*`
+  rules on one span and let emitted-CSS order pick the colour — the same trap as
+  `GettingStarted`'s two border-colour utilities.
+- **`--syn-*` reference their tokens (`var(--violet)`, `var(--ok)`, …) rather than restating
+  the hex.** The first version copied the values; the design review correctly called that the
+  project's own "hardcoded value a token already expresses" anti-pattern, one level down inside
+  the token layer. Six of seven are tone/text tokens; only `--syn-type` is a new hue. Contrast
+  was checked against **four** backgrounds per theme — `sunken`, `surface-2` and both diff row
+  washes, which are *translucent* in dark mode and so composite over `sunken`. A syntax colour
+  sits on a tinted row, not just on a card.
+
+## The diff viewer: two views, one set of rows (2026-08-20)
+- **The split view re-groups the rows the unified view already parsed** — it never diffs
+  anything itself, so the two literally cannot disagree about what changed. `pairRows` zips a
+  deletion run against the addition run that follows it; a test asserts no row is ever lost.
+- **Wrap-around prev/next, not disabled buttons at the ends.** `disabled` drops focus to
+  `<body>` when the focused element gets it (this project has now hit that three times —
+  `UpdateBanner`, the backlog `Select`, here), so pressing Next through a file list by keyboard
+  would dump you at the top of the page on the last press. The counter and the live region make
+  the wrap obvious. Measured: focus stays on the button.
+- **The fetching body is a `key={path}` child**, so navigating gets fresh state. The
+  alternative — resetting `diff`/`err` when the prop changes — is `setState` in an effect,
+  which this build hard-errors on. The nav buttons live in the stable parent, so the remount
+  can't take focus with it.
+- **A changed dialog name is not announced**, so an `sr-only aria-live="polite"` line says
+  "File 6 of 17: <path>". It renders empty when there is nothing to navigate, so a single-file
+  diff doesn't chatter.
+- **Three caps, three different jobs, all disclosed on screen and none of them truncating
+  content**: no highlighting past 200 KB (`CodeView`) or 3 000 rows (`DiffView`); no per-line
+  rows past 5 000 lines in either. The row cap is the one that matters and it was a **blocking
+  audit finding** — `DIFF_CAP` bounds a diff to 200 000 *characters, not lines*, so a file of
+  many short lines fits under it while producing tens of thousands of rows, five elements deep
+  and doubled in split view. Measured on a real 60 000-line diff: 3 DOM nodes instead of
+  ~300 000. If you add a view here, give it the row guard too.
+- **The old prefix-colouring `<pre>` is kept as `RawDiff` and is not dead code.** The diff
+  endpoint can return text no git ever wrote — `untrackedDiff` synthesizes its own — so
+  `parseUnifiedDiff` returning `null` has to land somewhere. Everything it *does* recognise is
+  pinned by fixtures taken from the real endpoint: mode-only changes with no hunks, both binary
+  wordings, `@@ -0,0 +1 @@` with the count omitted, submodule pointer lines, `\ No newline`,
+  a diff cut mid-hunk, an empty new file and a deleted empty file.
+- **`+`/`−` are rendered characters, not just backgrounds**, so add/delete is never colour
+  alone; they are `select-none` so copying a block gives you the code. Line numbers are
+  `text-fg-faint` (a sighted user reads them) but `aria-hidden` (announcing a number before
+  every line is noise).
+- **The scrollable body is `role="region" tabIndex={0}`.** A scroll box with nothing focusable
+  inside it cannot be scrolled by keyboard at all (WCAG 2.1.1). It becomes the modal's last tab
+  stop, which `Modal`'s trap picks up correctly.
+
+**Operational: this change adds dependencies, so the Docker dev flow needs `pnpm dev:clean`
+first.** `node_modules` lives in a named volume; a container started before this lands has
+neither `lowlight` nor `highlight.js` and will fail to build. (The auditor hit exactly this.)
+
 ## The update banner has states, and the copy for them is unit-tested (2026-08-18)
 `components/UpdateBanner.tsx` held four independent booleans (`applying`, `stalled`, `error`,
 `activeTasks`) and derived its wording from the combinations. That is *why* it had the two bugs

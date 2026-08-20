@@ -91,6 +91,40 @@ blocking step for the explanatory sentence under a warn-toned heading. Only ever
 matching `bg-{t}-soft`, and only for a supporting line; a *primary* string in a toned block
 stays at full `text-{t}`.
 
+### Syntax highlighting (`--syn-*`)
+The one place in the app where colour is applied by **class name** rather than a Tailwind
+utility. `lib/highlight.ts` returns highlight.js' own scope names (`hljs-keyword`,
+`hljs-string`, …) and a block at the bottom of `globals.css` maps them onto seven roles. That
+mapping is also *why* highlight.js was chosen over Shiki — Shiki emits inline `style`
+attributes from a bundled editor theme and can't follow these variables.
+
+| Variable | Scopes | Value |
+|---|---|---|
+| `--syn-keyword` | `keyword`, `selector-tag`, `doctag` | `var(--violet)` |
+| `--syn-string` | `string`, `regexp`, `char`, `symbol`, `addition` | `var(--ok)` |
+| `--syn-number` | `number`, `literal`, `bullet` | `var(--warn)` |
+| `--syn-function` | `title`, `section`, `name`, `selector-id`, `selector-class` | `var(--info)` |
+| `--syn-type` | `type`, `built_in`, `class`, `tag`, `attr`, `property`, `variable`, `params`, … | `#0f766e` / `#5eead4` |
+| `--syn-comment` | `comment`, `quote` (also *italic*) | `var(--fg-faint)` |
+| `--syn-punct` | `meta`, `operator`, `punctuation`, `formula`, `link`, `code` | `var(--fg-subtle)` |
+
+Six of the seven **reference** an existing tone or text token rather than restating its hex, so
+highlighted code reads as part of this app *and* can't silently drift from it — the first
+version of this copied the values, which is the project's own "hardcoded value a token already
+expresses" anti-pattern one level down, inside the token layer (caught in design review). Only
+`--syn-type` is a hue this palette didn't already have, so it stays a literal in both blocks.
+`hljs-deletion` uses `--danger` directly, because in a `.diff` file it means exactly what the
+diff viewer's red rows mean.
+
+**Every value was contrast-checked against four backgrounds in both themes** — `sunken`,
+`surface-2`, and the two diff row washes `ok-soft` / `danger-soft` (which are *translucent* in
+dark mode, so they composite over `sunken`). Lowest ratio is 4.57:1; all clear AA. Re-run that
+check if you change one — a syntax colour sits on a tinted row, not just on the card.
+
+An unlisted scope inherits the surrounding `text-fg`, which is a legitimate answer rather than
+a gap. The variables are deliberately **not** in `@theme inline`: nothing applies them as a
+Tailwind utility, so exposing them would generate utilities nothing uses.
+
 ### Sidebar collapse variant
 `@custom-variant rail` (keyed off `data-sidebar="collapsed"` on `<html>`) styles the
 collapsed rail in pure CSS — `w-60 rail:w-16`, `rail:hidden`, `rail:justify-center`. This
@@ -109,9 +143,15 @@ keeps the width correct on first paint instead of flashing after hydration.
   (12px), used deliberately and sparingly: the sidebar's "Navigate" eyebrow and `v{version}`
   footer, `Fact`'s mono tag, `WorkspaceSourceControl`, `FolderPicker`. Kept as arbitrary
   values rather than promoted to tokens *or* folded into `text-xs`: folding would visibly
-  loosen the collapsed rail and the fact tags, and a two-value scale used in four places
+  loosen the collapsed rail and the fact tags, and a small scale used in a handful of places
   doesn't earn `@theme` entries. Don't reach for them for anything a user reads at length —
   they exist for eyebrows, tags and version stamps.
+  **Call sites** (keep this list current — it is what tells the next audit these are deliberate
+  rather than drift): the sidebar's "Navigate" eyebrow and `v{version}` footer, `Fact`'s mono
+  tag, `WorkspaceSourceControl`, `FolderPicker`, and — added 2026-08-20 with the diff viewer —
+  `CodeView`'s `GUTTER` line-number column plus `DiffView`'s diff-header block and `@@` hunk
+  bar. The three viewer cases are load-bearing: the gutter has to fit five digits inside a
+  fixed 44px column, and the two metadata rows must sit *below* the code they introduce.
 - Mono font used for: file paths, git hashes, code content, tag labels in `Fact`
 
 ## Spacing & layout
@@ -167,7 +207,10 @@ keeps the width correct on first paint instead of flashing after hydration.
 | `StatusBadge` | `components/StatusBadge.tsx` | `status: TaskStatus` | Icon + label badge; spinner on active |
 | `Sidebar` | `components/Sidebar.tsx` | — | Desktop primary nav (`md+`): sticky full-height column, brand, links with an accent active indicator, footer with the theme control + collapse toggle. Collapses to a 64px icon rail via the `rail:` CSS variant (persisted in `localStorage`). Never duplicate. |
 | `MobileTopBar` / `MobileTabBar` | `components/MobileNav.tsx` | — | Below `md`: a slim sticky top bar (brand + theme icon) and a fixed bottom tab bar. Layout `<main>` carries `pb-24` to clear the tab bar. Tabs are `flex-1 min-w-0`. **Now at 7 tabs** (Backlog landed 2026-08-12), which is past what the bar can label: seven tracks at 320px are ~45px, narrower than any of these words. So the label is `sr-only sm:not-sr-only` — **icons only below 640px**, labels back from `sm` up, and the word is the link's accessible name at every width either way. `py-3 sm:py-2.5` keeps the icon-only tap target at 44px. The alternative considered and rejected was an iOS-style "More" tab: it would bury two destinations behind a second tap and a new interaction pattern. The top bar's right cluster ends with `ActivityBadge` — **last on purpose**, since its popover is anchored to its own right edge and any icon after it steals that much width from a 320px screen. |
-| `ThemeToggle` / `ThemeToggleIcon` | `components/ThemeToggle.tsx` | — | Light/dark/system control. `ThemeToggle` is a 3-way `radiogroup` (expanded sidebar); `ThemeToggleIcon` is a single cycling button (rail + mobile). Reads state via `useSyncExternalStore` off `<html>`. |
+| `ThemeToggle` / `ThemeToggleIcon` | `components/ThemeToggle.tsx` | — | Light/dark/system control. `ThemeToggle` is now a thin wrapper over `SegmentedControl` (expanded sidebar); `ThemeToggleIcon` is a single cycling button (rail + mobile). Reads state via `useSyncExternalStore` off `<html>`. |
+| `SegmentedControl` | `components/ui/segmented.tsx` | `value`, `onChange`, `options: {value,label,icon?}[]`, `ariaLabel`, `iconOnly?`, `className?` | **The** segmented control, for a small fixed set of **client-side** choices — the theme (`ThemeToggle`) and the diff viewer's unified/split. Extracted from `ThemeToggle` when the second call site appeared; it gained two things the hand-rolled copy never had: **roving tabindex + ←/→/↑/↓/Home/End** (a radio group is one tab stop, and focus follows selection), and the accessible name as an **`sr-only` span rather than an `aria-label`**, so an icon-only segment and a labelled one are named the same way. Deliberately **not** what `SpendRangeNav`/`ProjectFilterNav` use: those *navigate* (URL state driving a server component), so they're links with `aria-current`. Reach for `role="radiogroup"` only when the state genuinely can't leave the client. An unmatched `value` still leaves the first segment tabbable, or the group would drop out of the tab order entirely. |
+| `CodeView` / `useHighlightedLines` / `CodeTokens` | `components/CodeView.tsx` | `code`, `path` | Read-only file view: line numbers + syntax highlighting + wrapping. Used by `FileModal` for anything that isn't markdown. `useHighlightedLines(code, language)` is the shared hook — it **lazily `import()`s `lib/highlight.ts`** (~120 KB of grammars, code-split out of every page's bundle) and stores the result *with the inputs that produced it*, so the previous file's colours can never be painted onto the new file's lines for a frame. It renders plain text first and swaps in colour when the chunk lands, so a slow or failed load costs colour and nothing else. Two disclosed caps: no highlighting past **200 KB** (`HIGHLIGHT_MAX_BYTES`), and past **5 000 lines** it drops to a single `<pre>` — the gutter and per-line rows are what make a huge file expensive. Both say so on screen; neither truncates content. `GUTTER` is the shared gutter class (`fg-faint`, not `fg-ghost` — a sighted user reads line numbers — but `aria-hidden`, because announcing a number before every line is noise). |
+| `DiffView` | `components/DiffView.tsx` | `diff`, `path`, `view: "unified" \| "split"` | Renders a unified diff as rows, in either layout. **Both views are built from the same parsed rows** (`lib/diff-parse.ts`), so the split view re-groups what git already computed rather than diffing anything itself and the two can't disagree. Highlighting is per *side of a hunk*, not per line — a line inside a block comment would otherwise be re-lexed as code. Add/delete is carried by a rendered `+`/`−` character as well as the `ok-soft`/`danger-soft` wash, so it is never colour-alone; the sign is `select-none` so copying gives you the code. Falls back to the **original prefix-colouring `<pre>`** whenever `parseUnifiedDiff` returns null, which is the whole reason that path is kept: the diff endpoint can return text no version of git ever wrote (`untrackedDiff` synthesizes its own). Split panes get `min-w-176` and scroll sideways *inside the modal* below ~700px rather than crushing to two unreadable columns. **Two caps, both disclosed, neither truncating**: no highlighting past 3 000 rows, and past **5 000** rows (`ROWS_MAX`, the same number as `CodeView`'s) the whole diff renders as one `<pre>`. That second one was a blocking audit finding — `DIFF_CAP` bounds a diff to 200 000 *characters, not lines*, so a file of many short lines fits under it while producing tens of thousands of five-element rows, doubled again in split view. Measured on a real 60 000-line diff: 3 DOM nodes instead of ~300 000. **Give any new view here the same guard.** |
 | `nav-links` | `components/nav-links.tsx` | `NAV_LINKS`, `isActive()` | Single source of truth for the primary nav items (Dashboard · Agents · Projects · **Backlog** · Tasks · Usage · Settings), shared by sidebar and mobile nav. Add a route here and both navs pick it up. `isActive` matches by prefix, so `/tasks/<id>` keeps Tasks lit. Backlog sits before Tasks because that's the order work moves through them. The mobile bar stopped labelling tabs at seven — check the `MobileTabBar` row before adding an eighth. |
 | `Avatar` | `components/AgentAvatar.tsx` | `namespace: string`, `size?: number` (default 48) | Per-agent photo/initials avatar; fallback to monogram disc on 404 |
 | `AgentContributors` | `components/AgentContributors.tsx` | `namespaces: string[]`, `size?: number` (default 28), `ringClass?: string` (default `ring-surface-2`) | Overlapping avatar ring with a group `aria-label`; shows "no runs yet" when empty |
