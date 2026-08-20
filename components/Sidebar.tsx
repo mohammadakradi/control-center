@@ -17,6 +17,7 @@ import {
 import { ThemeToggle, ThemeToggleIcon } from "@/components/ThemeToggle";
 import { NAV_LINKS, isActive } from "@/components/nav-links";
 import { SignOutButton } from "@/components/SignOutButton";
+import { PaletteTrigger } from "@/components/CommandPalette";
 
 /** Desktop primary navigation. Hidden below `md`, where `MobileNav` takes over.
  *
@@ -51,6 +52,16 @@ export function Sidebar({
           <img src="/logo.svg" alt="" width={26} height={26} aria-hidden="true" />
           <span className="rail:hidden">Agent Control Center</span>
         </Link>
+      </div>
+
+      {/* Search. Above the nav because it *is* the fast way through the nav, and because a
+          keyboard shortcut nobody can see may as well not exist. Two mounts, one per collapse
+          state — the same shape the theme control uses in the footer. */}
+      <div className="px-3 pb-3 rail:hidden">
+        <PaletteTrigger className="w-full" />
+      </div>
+      <div className="hidden justify-center px-2 pb-3 rail:flex">
+        <PaletteTrigger iconOnly />
       </div>
 
       {/* Links */}

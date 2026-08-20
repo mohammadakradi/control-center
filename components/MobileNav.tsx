@@ -7,6 +7,7 @@ import { ThemeToggleIcon } from "@/components/ThemeToggle";
 import { NAV_LINKS, isActive } from "@/components/nav-links";
 import { SignOutButton } from "@/components/SignOutButton";
 import { ActivityBadge } from "@/components/ActivityBadge";
+import { PaletteTrigger } from "@/components/CommandPalette";
 
 /** Slim mobile header — carries the brand and the theme control, which live in
  *  the sidebar footer on desktop. Hidden from `md` up. */
@@ -26,6 +27,9 @@ export function MobileTopBar({ userEmail }: { userEmail?: string }) {
         <span className="truncate">Agent Control Center</span>
       </Link>
       <div className="flex shrink-0 items-center gap-1">
+        {/* A phone has no ⌘K, so without this button the command palette would not exist
+            below `md` at all. */}
+        <PaletteTrigger iconOnly />
         <ThemeToggleIcon />
         {userEmail ? (
           <SignOutButton iconOnly className="p-2" />

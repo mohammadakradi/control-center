@@ -19,6 +19,10 @@ export function Modal({
   /** Optional buttons rendered next to the close button. */
   actions,
   onClose,
+  /** Where the panel sits in the viewport. `top` is for a dialog whose content grows and
+   *  shrinks while it's open — centring one of those makes it jump vertically on every
+   *  keystroke (the command palette). Everything else stays centred. */
+  align = "center",
   /** Width cap for the panel, e.g. `max-w-3xl`. */
   className = "max-w-3xl",
   children,
@@ -27,6 +31,7 @@ export function Modal({
   header?: ReactNode;
   actions?: ReactNode;
   onClose: () => void;
+  align?: "center" | "top";
   className?: string;
   children: ReactNode;
 }) {
@@ -86,7 +91,12 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-overlay p-4 backdrop-blur-sm"
+      className={`fixed inset-0 z-50 flex justify-center bg-overlay p-4 backdrop-blur-sm ${
+        // `pt-[10vh]` rather than a fixed offset: on a short viewport a fixed one either wastes
+        // most of the height or leaves no room, and `items-start` alone pins the panel to the
+        // 1rem gutter.
+        align === "top" ? "items-start sm:pt-[10vh]" : "items-center"
+      }`}
       onClick={() => onCloseRef.current()}
     >
       <div

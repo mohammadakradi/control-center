@@ -1,4 +1,4 @@
-name: platform
+name: control-center
 
 # `pnpm dev` runs this. One container runs both the Next.js dashboard (:3001) and
 # the runner daemon (:4319) via `pnpm dev:container`. The app is host-coupled by
