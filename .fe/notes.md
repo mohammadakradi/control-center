@@ -5,6 +5,100 @@ _Read before acting · update after every decision or change · keep entries sho
 ## Next.js version warning
 This project uses Next.js `16.2.9` — far beyond the public release train. Per `AGENTS.md`, read `node_modules/next/dist/docs/` before writing any Next.js code. Route params are typed as `Promise<{id: string}>` (async params), and pages use `export const dynamic = "force-dynamic"`.
 
+## `loading.tsx` is the prefetch switch, not a spinner (2026-08-20)
+Route skeletons for every `app/(app)/**` route, on `Skeleton`/`SkeletonPage` (`ui-cards.tsx`) and
+the composite shapes in `components/Skeletons.tsx`. The design-system doc covers the components;
+what belongs here is the Next-16.2.9 behaviour, because all of it was measured and none of it is
+guessable from the component code.
+
+- **A `force-dynamic` route is not prefetched at all without a loading boundary.** The docs'
+  own table (`02-guides/prefetching.md`) reads "Dynamic page → **Prefetched: No, unless
+  `loading.js`**", and that is literal. Measured with `curl -H 'RSC: 1' -H 'Next-Router-Prefetch: 1'`
+  against `/projects/[id]`: **254 bytes, 5.7 ms**, and the body is the route *tree* only
+  (`{"f":[[["",{"children":["(app)",…]}]],"q":"","i":…}`) — no UI. Every page here is
+  `force-dynamic`, so before this change `<Link>` prefetch was firing on every link in the app
+  and buying **nothing**. With a `loading.tsx` the same request returns **20 KB carrying a
+  rendered skeleton**. So these files are a performance feature that happens to look like a
+  spinner, and deleting one silently un-prefetches that route.
+  - **Which skeleton the prefetch carries is not the one you'd guess, and it doesn't matter.**
+    A prefetch stops at the *first* loading boundary from the root, and `app/(app)/loading.tsx`
+    sits above every other segment — so the cached payload for **every** route holds the
+    dashboard skeleton (grep a prefetch of `/projects/[id]`: one hit for `Loading dashboard…`,
+    zero for `Loading project…`). It would be reasonable to conclude from that alone that the
+    nine tailored skeletons are dead weight, or that clicking flashes a dashboard shape first.
+    **Both are wrong**, and only measuring the visible sequence settles it: on a click the
+    route-specific skeleton is the *only* one that ever renders, at **13 ms**. A `loading.tsx`
+    is client-side JS, so React renders the correct Suspense fallback locally the instant
+    navigation starts — it never waits for a server payload to learn its shape. The prefetch's
+    job is warming the route tree and the segment code, not supplying the skeleton.
+    Found by the frontend audit, which was right about the payload; the flash it implied does
+    not exist. Don't restructure the group to "fix" this — a `(dashboard)` route group would
+    add a directory level for no measurable gain.
+- **Therefore: measure in a production build, never `pnpm dev`.** "Automatic prefetching runs
+  only in production" (same doc). A dev-server measurement of this work would have shown a
+  no-op. Recipe: `pnpm build`, then the `next start` recipe further down this file, then drive it
+  with the CDP driver.
+- **What it bought, click → first visual change** (CDP `MutationObserver` on `<main>`, seeded DB
+  of 4 projects / 96 tasks):
+
+  | navigation | before | after (queue drained) |
+  |---|---|---|
+  | Projects → project | **2696 ms** | **17 ms** |
+  | nav → /backlog | 720 ms | 6 ms |
+  | nav → /tasks | 238 ms | 20 ms |
+  | nav → /usage | 55 ms | 4 ms |
+
+  The 2.7 s was real and worth understanding: `/projects/[id]` re-scans the project, reads git
+  branch info and walks the working tree, and with no boundary above it **the previous page stays
+  on screen for the whole render**. Nothing was slow to *appear* — there was nothing to appear.
+- **The prefetch-storm worry was unfounded, and it was worth checking rather than assuming.**
+  `/tasks` renders 45 in-viewport links; once boundaries make them prefetchable that's 61 RSC
+  prefetch requests per page load. Measured total transfer: **6.2 KB** (compressed, deduped). So
+  default prefetch stays on everywhere and **no `prefetch={false}` was added**. Re-measure before
+  adding one; the cheap instinct here is wrong in both directions.
+- **A prefetch does not execute the page, and that is proved by side effect rather than by
+  timing** — which matters, because it's the claim the whole prefetch decision rests on. Timing
+  is only suggestive; this app conveniently has pages that *write* when they render.
+  `/projects/[id]` runs `refreshProject` (updates the project row) and `/backlog` runs the
+  `.pm/tasks/` scan (inserts `backlog_items`). So: poison the row
+  (`default_branch='SENTINEL', is_git=0`), clear `backlog_items`, fire **25** prefetch-shaped
+  requests at both routes (`-H 'RSC: 1' -H 'Next-Router-Prefetch: 1'`), and re-read. Result:
+  sentinel **intact**, `backlog_items=0`. Then the positive control — **one** request with `RSC: 1`
+  and *no* prefetch header — rewrote `default_branch` and inserted 30 backlog rows. The detector
+  demonstrably works, and 50 prefetches tripped none of it. Reuse this shape for any future
+  "does X actually run the page" question; it beats reasoning about response sizes.
+- **The shared layout is why this works at all.** `(app)/layout.tsx` awaits `getSignedInUser()`,
+  i.e. reads cookies, and `loading.md` warns that a layout touching runtime data blocks
+  navigation. It doesn't here, because layouts **do not rerender** on client navigation
+  (`layout.md` → Caveats): the sidebar, mobile bars, toasts and `ActivityBadge` all stay live and
+  interactive under the skeleton. Confirmed in the screenshots — the nav entry stays lit and the
+  activity pill keeps polling while the skeleton is up. Don't move page data into that layout.
+- **`app/(app)/loading.tsx` is the dashboard's boundary *and* the group's fallback.** There is no
+  way to scope a `loading.tsx` to only its own segment's `page.tsx`, and a `<Suspense>` inside the
+  page can't help (the page function itself is what suspends, so the boundary must sit above it).
+  Every route today has its own, so this only renders for `/`; a route added later inherits a
+  dashboard-shaped skeleton, which is strictly better than the old behaviour.
+- **Holding a skeleton still long enough to look at it** needs no source change: drain the
+  prefetch queue, then `Network.emulateNetworkConditions` with `latency: 3000` and click. The
+  skeleton comes from the prefetch cache instantly while the real render is stalled behind the
+  latency. That's how the light/dark and 390px passes were done.
+- **`unstable_instant` is not available to us.** It's the export the docs' AI-agent hint pushes
+  for instant navigation, and it "only works when `cacheComponents` is enabled"
+  (`route-segment-config/instant.md`). Turning that on means every uncached read in the app must
+  sit behind `<Suspense>` or `use cache` or the build fails — an architecture change, not a flag.
+  Filed rather than smuggled in.
+- **View transitions work here but were deliberately not shipped.** Verified, not assumed:
+  `experimental.viewTransition: true` validates and `pnpm build` passes with it (prints
+  `✓ viewTransition`), and `import { ViewTransition } from "react"` typechecks as this project is
+  configured — even though `@types/react`'s `index.d.ts` doesn't declare it (it's in
+  `canary.d.ts`) and the installed `react@19.2.4` doesn't export it. The runtime component comes
+  from Next's vendored React (`next/dist/compiled/react` exports it). Three reasons it stayed out:
+  the measured problem is already solved without it; the flag changes React's integration for
+  **every** navigation in an app whose main view is a live SSE transcript, an interaction not
+  worth validating for polish; and it needs its own reduced-motion CSS, because the global reset
+  in `globals.css` matches `*, *::before, *::after` and so does **not** reach
+  `::view-transition-old(*)`/`-new(*)`/`-group(*)`. Clean follow-up — nothing here blocks it.
+
 ## Tailwind CSS v4 — no config file
 Tailwind v4 uses a CSS-first config model. There is NO `tailwind.config.ts`. Custom theme tokens go into the `@theme inline {}` block in `app/globals.css`. Utility classes are generated from CSS variables automatically. Don't create a `tailwind.config.*` file — it's not the v4 pattern.
 
@@ -326,6 +420,94 @@ captures a window's own backing store regardless, and the id comes from
 `CGWindowListCopyWindowInfo` via a four-line `swiftc` script. Chrome's
 `--blink-settings=preferredColorScheme=1` forces light mode without touching the OS appearance
 or the app's own `localStorage`, which is how the light-theme pass got done.
+
+## The command palette — ⌘K, and why so little of it is in the component (2026-08-20)
+`components/CommandPalette.tsx` + `lib/command-palette.ts` (+ specs). Decisions worth not
+relitigating:
+
+- **A client component may only `import type` from `lib/search.ts`.** That module opens the
+  database at import time, so *one* value import — even a constant as small as
+  `MIN_QUERY_LENGTH` — pulls `better-sqlite3` into the browser bundle. Which is why the palette
+  does **not** re-declare the minimum query length: it sends whatever was typed and reads
+  `tooShort` off the response. That field exists for exactly this, the endpoint answers it in
+  under a millisecond without touching SQL, and the alternative is a duplicated constant that
+  can silently drift from the one the server enforces. Same trap as `lib/pm-spec.ts` and
+  `lib/update-ui.ts`'s `import type`.
+- **The dialog body is an inner component mounted only while open.** A reopened palette must
+  have an empty query and the highlight back at the top; doing that as a reset would be
+  `setState` in an effect (a hard error here), and doing it in render is a side effect in
+  render. Mounting fresh gives it for free — the same reasoning as `DiffModal`'s `key={path}`
+  child. Measured: reopening really does show an empty field.
+- **⌘K is ignored while another `[role="dialog"]` is up.** `Modal` puts its Escape handler on
+  `document`, so a palette opened over the backlog's Add-item dialog means one Escape closing
+  both and two focus traps fighting over one Tab. Verified by opening that dialog and pressing
+  ⌘K: still exactly one dialog, still the other one.
+- **Two staleness guards, because they cover different failures.** `AbortController` stops the
+  in-flight request for a query that no longer exists; comparing the **echoed `q`** catches a
+  reply that lands anyway. And a third thing that looks redundant but isn't: emptying the field
+  clears the held results *in the change handler*, or typing → clearing → typing something new
+  would render the first query's hits under the third one.
+- **A keyword matches by prefix; visible text matches anywhere.** Found by a spec, not by
+  thinking: `theme` carried the keyword `appearance`, so typing `app` to reach a project called
+  `app-0` put all three theme rows above it. A keyword is a word you start typing, so a prefix
+  is the honest test — substring matching lets an invisible term hijack a query aimed elsewhere
+  (`token` on Settings would do it to `ok`).
+- **The flat row index is computed in the pure module, not counted during render.** A
+  `flatIndex += 1` inside the section map is rejected outright by
+  `react-hooks/immutability`, and it's the right rejection: an off-by-one across groups is
+  invisible — the highlight simply lands one row away from what Enter opens. `paletteSections`
+  stamps each section's `start` **after** empty sections are dropped, and a spec walks every
+  row asserting `flat[start + i] === entry`.
+- **Row icons must be one flat record keyed by a string.** A `Map.get()` and a ternary chain
+  are both rejected by `react-hooks/static-components` as "creating a component during render".
+  `StatusBadge`'s `ICON[status] ?? Fallback` is the shape that passes.
+- **`sr-only sm:not-sr-only` for the task status badge**, not `hidden sm:flex`. Measured across
+  the breakpoint: below 640px the span is `position:absolute`, `clip-path:inset(50%)`, 1px wide
+  — so "Awaiting change approval" stops taking 184px of a 320px row, while staying in the row's
+  accessible name. `display:none` would have dropped the status from the name entirely. (Note
+  for the next person measuring this: `getBoundingClientRect().width > 0` **cannot** tell
+  `sr-only` from visible, because Tailwind's `sr-only` is 1px, not 0.)
+- **A `listbox` may only contain options and groups**, so the "No matches" sentence sits
+  *outside* it in the scroll container, and a capped group discloses itself **in its heading**
+  (where it becomes part of the group's accessible name) rather than as a stray line among the
+  rows.
+- **Home/End are deliberately not hijacked.** APG lists them for a listbox, but this is an
+  *editable* combobox and they move the text caret. ↑↓ are overridden (in a single-line input
+  they'd jump to the ends of the text), and they **wrap** — `SegmentedControl.move` already
+  does, so that's the house convention.
+- **The mobile trigger is not a nicety.** A phone has no ⌘K, so without the icon in
+  `MobileTopBar` the feature does not exist below `md`. The risk was that bar's 320px width
+  budget, which `.fe/notes.md` says the `ActivityBadge` is what tips over — measured with the
+  badge stubbed in: brand 122px (truncated to "Agent Con…") + 166px of controls = 320, no
+  overflow. The brand is what gives, exactly as that note prescribes.
+- **`⌘K` vs `Ctrl K` goes through `useSyncExternalStore`** with a server snapshot of `⌘K`, the
+  `lib/theme.ts` shape. The value can never change, so `subscribeShortcutHint` returns a no-op
+  unsubscribe — that's the point, not an omission. Rendering the wrong one and fixing it in an
+  effect would be both a hydration mismatch and a state write in an effect.
+
+**A `router.push` to the URL you are already on is a no-op, and that was a real bug here.**
+"New task in *project*" pushes `/projects/<id>#new-task`. Pressed while already on that project's
+page *and already at that hash*, nothing happened — the palette closed, the page did not move,
+and the card stayed 591px off screen. The plain same-pathname case (no hash yet) scrolls fine on
+its own, which is why this only shows up on the second press. `scrollToFragment` fixes it, and it
+is deferred one frame **because `Modal` locks `body` scroll while open** — run synchronously it
+fires before React commits the unmount that releases the lock, and the scroll is swallowed. On a
+cross-page navigation the element doesn't exist yet, so it no-ops and the router does the work.
+Raised as a maybe by the design review; the worst case turned out to be real, the easy case
+turned out not to be. Both are measured.
+
+**Verified in a real browser via the CDP driver** (see the note above), because every
+interesting claim here is about focus or a breakpoint: focus lands on the field and returns
+**to the sidebar trigger** on Escape (measured, not assumed); Tab cycles field ↔ close and
+nothing else; ↑↓ wrap both ways with exactly one `aria-selected`; Enter navigates and closes;
+the theme action changes `<html>` without navigating; no horizontal overflow at 320/390/768/1280
+in both themes; and the empty / "keep typing" / API-error states each render their own copy with
+the static rows still usable. Task rows were exercised by **patching `window.fetch` in the page
+through CDP** rather than writing rows into the live database — the same instinct as the toast
+work's scripted `emit()`, with no source change at all. One gotcha for the next person: pass
+`prefers-color-scheme` to `Emulation.setEmulatedMedia` **explicitly for light too** — headless
+Chrome's default here is dark, so a "light" pass that only omits the dark override silently
+screenshots dark twice.
 
 ## `fg-ghost` is the regression this project keeps having (2026-08-13)
 Third time. A design audit found **ten** more uses of `text-fg-ghost` on real text after the

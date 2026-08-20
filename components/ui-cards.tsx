@@ -33,6 +33,57 @@ export function PageHeader({
   );
 }
 
+/** One placeholder block in a route-level `loading.tsx` skeleton. Size it with `className`
+ *  (`h-4 w-32`); everything else — surface, radius, the breathing animation — is fixed so
+ *  the 47–59 bars on a page can't drift apart.
+ *
+ *  `bg-surface-3` is the one real choice here: skeletons sit *inside* `card`s, which are
+ *  `bg-surface`, and `surface-2` is only #f4f4f5 against #ffffff in light mode — nearly
+ *  invisible. `surface-3` is the token that reads as "something belongs here" on both themes.
+ *
+ *  A `span` with `block` rather than a `div`, so a bar standing in for a line of text is
+ *  still valid inside a `<p>`. `aria-hidden` because a bar is decoration even when it isn't
+ *  inside `SkeletonPage` — the loading *state* is announced once, by that wrapper. */
+export function Skeleton({ className = "" }: { className?: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`block animate-skeleton rounded-md bg-surface-3 ${className}`}
+    />
+  );
+}
+
+/** The wrapper every `loading.tsx` uses, so the accessibility of a loading state is decided
+ *  once instead of ten times.
+ *
+ *  `role="status"` (implicitly a polite live region) carries one `sr-only` sentence naming
+ *  what is loading, and the bars underneath are `aria-hidden` — a screen reader gets
+ *  "Loading projects…", not thirty anonymous boxes. Deliberately **no `aria-busy`** on this
+ *  element: `aria-busy="true"` on a live region tells AT to withhold its contents, which
+ *  would suppress the very sentence this exists to announce.
+ *
+ *  `className` defaults to the `space-y-6` almost every page wraps itself in, so a skeleton
+ *  inherits the real page's rhythm; detail pages that space blocks manually pass `""`. */
+export function SkeletonPage({
+  label,
+  className = "space-y-6",
+  children,
+}: {
+  /** What is loading, as a sentence — "Loading projects…". */
+  label: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div role="status">
+      <span className="sr-only">{label}</span>
+      <div aria-hidden="true" className={className}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 /** Placeholder for an empty list or section. */
 export function EmptyState({
   icon,
@@ -61,18 +112,21 @@ export function EmptyState({
 export function CardSection({
   title,
   right,
+  id,
   className = "",
   children,
 }: {
   title: string;
   /** Optional right-aligned header content (icon, count, caption). */
   right?: ReactNode;
+  /** Anchor target, for a card something else deep-links to (`#new-task`). */
+  id?: string;
   /** Extra classes — e.g. `lg:col-span-2` for full-width sections. */
   className?: string;
   children: ReactNode;
 }) {
   return (
-    <section className={`${card} min-w-0 ${className}`}>
+    <section id={id} className={`${card} min-w-0 ${className}`}>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <h2 className="text-base font-semibold text-fg-strong">{title}</h2>
         {right}
