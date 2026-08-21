@@ -18,6 +18,7 @@ import {
   type Task,
 } from "./db/schema";
 import { daemonStartTask } from "./daemon-client";
+import { findFeature } from "./features";
 import { canRunTasks, secretsConfigured } from "./secrets";
 import { newId } from "./util";
 
@@ -97,6 +98,13 @@ export type DispatchInput = {
    * worktrees to make) and workspaces (several member repos make "the" worktree ambiguous).
    */
   parallel?: boolean;
+  /**
+   * Which feature this run belongs to — from the backlog item being run, or chosen for a
+   * manual dispatch. Refused up front unless it names a feature of `projectId`: a feature
+   * groups work on one project, so a forged id would link this run into another project's
+   * grouping (and, once the runner merges onto feature branches, into another repo's branch).
+   */
+  featureId?: string | null;
 };
 
 /** Titles are shown in lists and are not free-form input — cap them like the generated ones
@@ -149,6 +157,17 @@ export async function createAndStartTask(input: DispatchInput): Promise<Dispatch
     }
   }
 
+  // Same stance as `parallel`: refuse before the row exists rather than dropping the link.
+  // A task silently landing in no feature would be invisible in every grouped view, and once
+  // the runner merges a feature's work this is what decides which branch the run targets.
+  if (input.featureId && !findFeature(input.projectId, input.featureId)) {
+    return {
+      ok: false,
+      status: 400,
+      error: "featureId does not name a feature of this project",
+    };
+  }
+
   const id = input.taskId ?? newId("task");
 
   // Snapshot the agent's current version so history records which version ran this task.
@@ -172,6 +191,7 @@ export async function createAndStartTask(input: DispatchInput): Promise<Dispatch
       model: resolveModel(input.model),
       attachments: input.attachments ?? [],
       parallel: input.parallel ?? false,
+      featureId: input.featureId ?? null,
     })
     .run();
 

@@ -46,10 +46,16 @@ function sourceInstall(): string {
     "INSERT INTO agents (id, name, namespace, source_path, plugin_id) VALUES (?,?,?,?,?)",
   ).run("a1", "A", "swe", dir, "plug");
   db.prepare(
+    "INSERT INTO features (id, project_id, name, branch, source_dir) VALUES (?,?,?,?,?)",
+  ).run("f1", "p1", "Checkout flow", "feature/checkout-flow", ".pm/tasks/20260821-090000-checkout");
+  db.prepare(
     `INSERT INTO tasks (id, project_id, agent_id, command, request_text, status, user_id,
-       usage_input_tokens, usage_output_tokens, usage_cost_usd)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-  ).run("t1", "p1", "a1", "task", "do it", "done", "user_a", 1234, 567, 0.42);
+       feature_id, usage_input_tokens, usage_output_tokens, usage_cost_usd)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run("t1", "p1", "a1", "task", "do it", "done", "user_a", "f1", 1234, 567, 0.42);
+  db.prepare(
+    "INSERT INTO backlog_items (id, project_id, title, feature_id, source) VALUES (?,?,?,?,?)",
+  ).run("bli1", "p1", "Planned work", "f1", "manual");
   db.prepare(
     "INSERT INTO task_events (task_id, type, payload, ts) VALUES (?,?,?,?)",
   ).run("t1", "text", JSON.stringify({ text: "hello" }), Date.now());
@@ -79,6 +85,7 @@ test("an export carries tasks, transcripts and their usage figures", () => {
   assert.equal(byTable.tasks, 1);
   assert.equal(byTable.task_events, 1, "the transcript travels — it's where usage is recomputed from");
   assert.equal(byTable.projects, 1);
+  assert.equal(byTable.features, 1, "and the feature the work was grouped under");
 
   const db = new BetterSqlite3(destDb);
   const task = db.prepare("SELECT * FROM tasks WHERE id = 't1'").get() as Record<string, number>;
@@ -86,6 +93,37 @@ test("an export carries tasks, transcripts and their usage figures", () => {
   assert.equal(task.usage_output_tokens, 567);
   assert.equal(task.usage_cost_usd, 0.42);
   db.close();
+});
+
+test("a feature travels, and so does what it groups", () => {
+  // Be exact about what each half of this test proves, because the two halves are not the same
+  // kind of claim. The **ordering** assertion pins a documented invariant, not a live
+  // constraint: the export sets `foreign_keys = OFF`, and `control-center import` copies the
+  // archive's database file wholesale rather than replaying rows, so nothing currently fails if
+  // the order is wrong (see `EXPORTED_TABLES` for why it is kept anyway). The **content**
+  // assertions are the live part — a feature row and its reserved branch have to survive a
+  // table-by-table rebuild, or a grouping is silently dropped on the way to another machine.
+  const sourceDb = sourceInstall();
+  const destDb = join(workspace(), "export.db");
+  const { tables } = buildExportDatabase({ sourceDb, destDb, migrationsFolder });
+
+  const order = tables.map((t) => t.table);
+  assert.ok(
+    order.indexOf("features") < order.indexOf("tasks") &&
+      order.indexOf("features") < order.indexOf("backlog_items"),
+    `features must be copied before what references it — got ${order.join(", ")}`,
+  );
+  assert.equal(tables.find((t) => t.table === "features")?.copied, 1);
+
+  const db = new BetterSqlite3(destDb);
+  const feature = db.prepare("SELECT * FROM features WHERE id='f1'").get() as Record<
+    string,
+    string
+  >;
+  db.close();
+  assert.equal(feature.branch, "feature/checkout-flow", "the reserved branch travels");
+  assert.equal(feature.source_dir, ".pm/tasks/20260821-090000-checkout");
+  assert.equal(feature.status, "active");
 });
 
 test("sessions never travel", () => {

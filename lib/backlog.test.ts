@@ -36,6 +36,7 @@ process.env.PLATFORM_DB = dbFile;
 type Backlog = typeof import("./backlog");
 type Schema = typeof import("./db/schema");
 let backlog: Backlog;
+let features: typeof import("./features");
 let db: typeof import("./db").db;
 let schema: Schema;
 let eq: typeof import("drizzle-orm").eq;
@@ -85,6 +86,7 @@ before(async () => {
   });
 
   backlog = await import("./backlog");
+  features = await import("./features");
   ({ db } = await import("./db"));
   schema = await import("./db/schema");
   ({ eq } = await import("drizzle-orm"));
@@ -256,6 +258,39 @@ test("request folders are walked newest-first, so a cap sheds the oldest work", 
   }
 });
 
+test("a folder whose specs trip the cap still reports itself as a feature", () => {
+  // This is why `scanRequestDirs` sets a `capped` flag and breaks out of both loops instead of
+  // returning early, the way it used to. An early return skipped the code that records the
+  // request — so the specs already collected from the folder the cap landed in would be
+  // imported with no feature to belong to, silently ungrouped, on every load.
+  const big = ".pm/tasks/29990102-000000-capped-with-index";
+  mkdirSync(resolve(projectDir, big), { recursive: true });
+  writeFileSync(specPath("index.md", big), "# Work that trips the budget\n");
+  const body = "x".repeat(250 * 1024);
+  for (let i = 1; i <= 12; i += 1) {
+    writeFileSync(specPath(`${String(i).padStart(2, "0")}-big.md`, big), body);
+  }
+  try {
+    const scan = backlog.scanPmSpecs(projectDir);
+    assert.equal(scan.truncated, true, "the fixture must actually trip the cap");
+    const mine = scan.specs.filter((sp) => sp.requestDir === big);
+    assert.ok(mine.length > 0 && mine.length < 12, "some specs read, not all — mid-folder");
+    // Two claims, and the second one is a documented trade rather than a nicety. The folder is
+    // still a feature — that is the `capped`-flag behaviour this test exists for. But its name
+    // falls back to the folder's, because reading `index.md` is gated on the same byte budget
+    // the specs just exhausted. Deliberate: a prettier name is not worth another read past a
+    // cap that exists to bound an unauthenticated request. A truncated scan therefore groups
+    // its work correctly and labels it less well.
+    assert.deepEqual(
+      scan.requests.filter((r) => r.sourceDir === big),
+      [{ sourceDir: big, title: "Capped with index" }],
+      "the folder the cap landed in must still be a feature, or its imported specs have none",
+    );
+  } finally {
+    rmSync(resolve(projectDir, big), { recursive: true, force: true });
+  }
+});
+
 test("the scan stops at its byte budget and reports that it was truncated", () => {
   // Otherwise 500 specs × 256KB is a 128MB synchronous read, and a 128MB response, on an
   // unauthenticated GET in the process that also serves the live task streams.
@@ -282,6 +317,7 @@ test("the scan stops at its byte budget and reports that it was truncated", () =
 test("a project with no .pm/tasks scans empty rather than throwing", () => {
   assert.deepEqual(backlog.scanPmSpecs(join(root, "nonexistent")), {
     specs: [],
+    requests: [],
     skipped: 0,
     truncated: false,
   });
@@ -356,6 +392,167 @@ test("a second request folder is added beside the first", () => {
   assert.equal(item.title, "More work", "falls back to the first heading");
   assert.equal(item.assignee, "swe", "no frontmatter → the generalist agent");
   rmSync(resolve(projectDir, second), { recursive: true, force: true });
+});
+
+// ------------------------------------------------------- features from folders
+
+test("the scan reports one request per folder that holds work, named by its index.md", () => {
+  const scan = backlog.scanPmSpecs(projectDir);
+  assert.deepEqual(scan.requests, [
+    { sourceDir: REQUEST, title: "The request" },
+    // index.md's heading, not the file name and not the folder name.
+  ]);
+  assert.equal(
+    scan.specs.every((s) => s.requestDir === REQUEST),
+    true,
+    "every spec names the folder its feature is derived from",
+  );
+});
+
+test("a folder with an index but no specs is not a feature", () => {
+  const empty = ".pm/tasks/20260813-090000-no-work-here";
+  mkdirSync(resolve(projectDir, empty), { recursive: true });
+  writeFileSync(specPath("index.md", empty), "# Nothing planned yet\n");
+  const scan = backlog.scanPmSpecs(projectDir);
+  assert.equal(
+    scan.requests.some((r) => r.sourceDir === empty),
+    false,
+    "an empty request folder is a folder, not a feature",
+  );
+  rmSync(resolve(projectDir, empty), { recursive: true, force: true });
+});
+
+test("sync derives the folder's feature and links its items to it", () => {
+  backlog.syncProjectBacklog({ id: "p1", path: projectDir });
+  const items = backlog.listBacklog("p1").filter((i) => i.sourcePath?.startsWith(REQUEST));
+  assert.ok(items.length >= 2);
+  const featureIds = new Set(items.map((i) => i.featureId));
+  assert.equal(featureIds.size, 1, "one folder, one feature, for every spec inside it");
+  const [featureId] = [...featureIds];
+  assert.ok(featureId, "the items are grouped, not left null");
+
+  const feature = features.findFeature("p1", featureId!)!;
+  assert.equal(feature.name, "The request");
+  assert.equal(feature.sourceDir, REQUEST);
+  assert.equal(feature.branch, "feature/the-request");
+  // And the join gives a list the whole grouping without a second query.
+  assert.deepEqual(items[0].feature, {
+    id: feature.id,
+    name: "The request",
+    branch: "feature/the-request",
+    status: "active",
+  });
+});
+
+test("syncing again reuses the feature rather than minting a second one", () => {
+  const before = features.listFeatures("p1").length;
+  backlog.syncProjectBacklog({ id: "p1", path: projectDir });
+  backlog.syncProjectBacklog({ id: "p1", path: projectDir });
+  assert.equal(features.listFeatures("p1").length, before);
+});
+
+test("an item that predates features is grouped by the next sync, not left behind", () => {
+  // The state every existing install is in: a pm-sync row with no feature. Clearing it by hand
+  // is the only way to reach that state now, and the sync must self-heal it — otherwise the
+  // feature would only ever group work planned after this migration.
+  const row = itemBySource(`${REQUEST}/01-backend-add-thing.md`)!;
+  db.update(schema.backlogItems)
+    .set({ featureId: null })
+    .where(eq(schema.backlogItems.id, row.id))
+    .run();
+
+  const report = backlog.syncProjectBacklog({ id: "p1", path: projectDir });
+  assert.equal(report.updated, 1, "re-grouping is a change to the row, and is reported as one");
+  assert.ok(itemBySource(`${REQUEST}/01-backend-add-thing.md`)?.featureId);
+});
+
+test("two request folders are two features, and no item crosses between them", () => {
+  const other = ".pm/tasks/20260814-090000-other-batch";
+  mkdirSync(resolve(projectDir, other), { recursive: true });
+  writeFileSync(specPath("index.md", other), "# A separate concern\n");
+  writeFileSync(specPath("01-thing.md", other), "# Thing\n\nbody\n");
+  backlog.syncProjectBacklog({ id: "p1", path: projectDir });
+
+  const mine = itemBySource(`${other}/01-thing.md`)!;
+  const theirs = itemBySource(`${REQUEST}/01-backend-add-thing.md`)!;
+  assert.ok(mine.featureId && theirs.featureId);
+  assert.notEqual(mine.featureId, theirs.featureId);
+  assert.equal(features.findFeature("p1", mine.featureId!)?.name, "A separate concern");
+
+  rmSync(resolve(projectDir, other), { recursive: true, force: true });
+  // Leave the shared backlog as it was found: later specs assert its exact contents.
+  db.delete(schema.backlogItems).where(eq(schema.backlogItems.id, mine.id)).run();
+  db.delete(schema.features).where(eq(schema.features.id, mine.featureId!)).run();
+});
+
+test("a symlinked index.md never names a feature after a file outside the project", () => {
+  const linked = ".pm/tasks/20260815-090000-linked-index";
+  mkdirSync(resolve(projectDir, linked), { recursive: true });
+  writeFileSync(specPath("01-real-work.md", linked), "# Real work\n\nbody\n");
+  symlinkSync(outsideSecret, specPath("index.md", linked));
+
+  const scan = backlog.scanPmSpecs(projectDir);
+  const request = scan.requests.find((r) => r.sourceDir === linked)!;
+  assert.ok(request, "the folder still has work, so it is still a feature");
+  assert.equal(
+    request.title.includes(SECRET),
+    false,
+    "the link is refused, so the target can never become a feature name",
+  );
+  assert.equal(
+    request.title,
+    "Linked index",
+    "with no readable index it falls back to the folder name, timestamp stripped",
+  );
+  rmSync(resolve(projectDir, linked), { recursive: true, force: true });
+});
+
+test("a load returns the project's features alongside its items", () => {
+  const load = backlog.loadProjectBacklog({ id: "p1", path: projectDir });
+  assert.ok(load.features.length >= 1);
+  assert.equal(
+    load.features.some((f) => f.sourceDir === REQUEST),
+    true,
+  );
+});
+
+test("at the feature cap a new folder is ungrouped, and an existing one keeps its feature", () => {
+  // The cap has to be consulted *after* looking the folder up, or reaching it would unglue
+  // every already-grouped item in the project on the next load — the sync writes the derived
+  // feature straight onto the row, so "couldn't derive one" and "belongs to none" are the same
+  // value. `ensureRequestFeature` resolving an existing folder before the cap is what keeps
+  // those apart, and this is the spec that notices if that order is reversed.
+  const row = itemBySource(`${REQUEST}/01-backend-add-thing.md`)!;
+  const groupedAs = row.featureId;
+  assert.ok(groupedAs);
+
+  const capped = features.MAX_FEATURES_PER_PROJECT;
+  const already = features.featureCount("p1");
+  for (let n = already; n < capped; n += 1) {
+    db.insert(schema.features)
+      .values({ id: `fpad${n}`, projectId: "p1", name: `Pad ${n}`, branch: `feature/pad-${n}` })
+      .run();
+  }
+  // A brand-new folder can get no feature now…
+  const over = ".pm/tasks/20260816-090000-over-cap";
+  mkdirSync(resolve(projectDir, over), { recursive: true });
+  writeFileSync(specPath("01-work.md", over), "# Over cap\n\nbody\n");
+  backlog.syncProjectBacklog({ id: "p1", path: projectDir });
+  const stranded = itemBySource(`${over}/01-work.md`)!;
+  assert.equal(stranded.featureId, null, "ungrouped, not refused");
+  // …and the items of a folder already derived keep theirs, through the same capped sync.
+  assert.equal(
+    itemBySource(`${REQUEST}/01-backend-add-thing.md`)?.featureId,
+    groupedAs,
+    "reaching the cap must not unglue the groupings already made",
+  );
+
+  rmSync(resolve(projectDir, over), { recursive: true, force: true });
+  // Leave the shared backlog as it was found: later specs assert its exact contents.
+  db.delete(schema.backlogItems).where(eq(schema.backlogItems.id, stranded.id)).run();
+  for (let n = already; n < capped; n += 1) {
+    db.delete(schema.features).where(eq(schema.features.id, `fpad${n}`)).run();
+  }
 });
 
 test("sync is scoped to one project", () => {
@@ -675,17 +872,17 @@ test("a closed item stops counting against the project cap", () => {
 // --------------------------------------------------------------- input parsing
 
 test("a new item needs a title", () => {
-  assert.deepEqual(backlog.parseNewBacklogItem({}), {
+  assert.deepEqual(backlog.parseNewBacklogItem({}, "p1"), {
     ok: false,
     error: "title is required",
   });
-  assert.deepEqual(backlog.parseNewBacklogItem({ title: "   " }), {
+  assert.deepEqual(backlog.parseNewBacklogItem({ title: "   " }, "p1"), {
     ok: false,
     error: "title cannot be empty",
   });
   // A body that isn't an object at all (no JSON, a string, null) is not a title.
-  assert.equal(backlog.parseNewBacklogItem(null).ok, false);
-  assert.equal(backlog.parseNewBacklogItem("title=x").ok, false);
+  assert.equal(backlog.parseNewBacklogItem(null, "p1").ok, false);
+  assert.equal(backlog.parseNewBacklogItem("title=x", "p1").ok, false);
 });
 
 test("a new item keeps only the fields it's allowed to set", () => {
@@ -701,7 +898,7 @@ test("a new item keeps only the fields it's allowed to set", () => {
     source: "pm-sync",
     linkedTaskId: "task_someone_elses",
     statusOverride: true,
-  });
+  }, "p1");
   assert.equal(parsed.ok, true);
   assert.deepEqual(parsed.ok && parsed.value, {
     title: "Trimmed",
@@ -729,7 +926,7 @@ test("field validation rejects the wrong types and the too-long", () => {
     [{ status: null }, /status must be one of/],
   ];
   for (const [body, expected] of cases) {
-    const parsed = backlog.parseBacklogEdit(body);
+    const parsed = backlog.parseBacklogEdit(body, "p1");
     assert.equal(parsed.ok, false, `should have rejected ${JSON.stringify(body)}`);
     if (!parsed.ok) assert.match(parsed.error, expected);
   }
@@ -739,20 +936,20 @@ test("pm is a valid assignee for an item, though never for a spec", () => {
   // An item routed to pm is a problem to investigate, not work to build — the run route turns
   // it into `/pm:plan`. Specs stay fe/swe only, which `targetNamespace` covers.
   for (const assignee of ["fe", "swe", "pm"]) {
-    const parsed = backlog.parseBacklogEdit({ assignee });
+    const parsed = backlog.parseBacklogEdit({ assignee }, "p1");
     assert.equal(parsed.ok, true, `${assignee} must be accepted`);
     assert.deepEqual(parsed.ok && parsed.value, { assignee });
   }
 });
 
 test("an edit distinguishes absent from cleared", () => {
-  const untouched = backlog.parseBacklogEdit({ status: "done" });
+  const untouched = backlog.parseBacklogEdit({ status: "done" }, "p1");
   assert.deepEqual(untouched.ok && untouched.value, { status: "done" });
 
-  const cleared = backlog.parseBacklogEdit({ assignee: null, priority: "" });
+  const cleared = backlog.parseBacklogEdit({ assignee: null, priority: "" }, "p1");
   assert.deepEqual(cleared.ok && cleared.value, { assignee: null, priority: null });
   // "" clears the assignee too — an empty select in a form means "unset", not an error.
-  const emptyAssignee = backlog.parseBacklogEdit({ assignee: "" });
+  const emptyAssignee = backlog.parseBacklogEdit({ assignee: "" }, "p1");
   assert.deepEqual(emptyAssignee.ok && emptyAssignee.value, { assignee: null });
 });
 
@@ -763,6 +960,53 @@ test("fileOwnedEdits names the fields a spec file owns", () => {
     backlog.fileOwnedEdits({ description: "d", assignee: "fe", priority: "P1" }),
     ["description", "assignee", "priority"],
   );
+  // A synced item's feature is derived from the `.pm/tasks/<request>/` folder it lives in and
+  // re-derived on every load, so it is the folder's to set — not a client's.
+  assert.deepEqual(backlog.fileOwnedEdits({ featureId: null }), ["featureId"]);
+});
+
+test("an item can be assigned to a feature of its own project, and to no other", () => {
+  const mine = features.createFeature("p1", { name: "Grouping by hand" })!;
+  const theirs = features.createFeature("p2", { name: "Another project's" })!;
+
+  assert.deepEqual(backlog.parseBacklogEdit({ featureId: mine.id }, "p1"), {
+    ok: true,
+    value: { featureId: mine.id },
+  });
+  // Null and "" both unassign; a form can't send null.
+  assert.deepEqual(backlog.parseBacklogEdit({ featureId: null }, "p1"), {
+    ok: true,
+    value: { featureId: null },
+  });
+  assert.deepEqual(backlog.parseBacklogEdit({ featureId: "" }, "p1"), {
+    ok: true,
+    value: { featureId: null },
+  });
+
+  // The one that matters: a real feature id, from a project the caller isn't editing.
+  const forged = backlog.parseBacklogEdit({ featureId: theirs.id }, "p1");
+  assert.equal(forged.ok, false, "a cross-project featureId must be refused, not stored");
+  assert.equal(backlog.parseBacklogEdit({ featureId: "f_nope" }, "p1").ok, false);
+  assert.equal(backlog.parseBacklogEdit({ featureId: 7 }, "p1").ok, false);
+});
+
+test("a hand-added item can be filed straight into a feature", () => {
+  const feature = features.createFeature("p1", { name: "Filed into" })!;
+  const item = backlog.createBacklogItem("p1", {
+    title: "Grouped from birth",
+    featureId: feature.id,
+    source: "manual",
+  });
+  assert.equal(item.featureId, feature.id);
+  const view = backlog.listBacklog("p1").find((i) => i.id === item.id)!;
+  assert.equal(view.feature?.name, "Filed into");
+
+  // And an unassigned one reads as ungrouped rather than as a missing join.
+  const loose = backlog.createBacklogItem("p1", { title: "Loose", source: "manual" });
+  assert.equal(backlog.listBacklog("p1").find((i) => i.id === loose.id)?.feature, null);
+
+  db.delete(schema.backlogItems).where(eq(schema.backlogItems.id, item.id)).run();
+  db.delete(schema.backlogItems).where(eq(schema.backlogItems.id, loose.id)).run();
 });
 
 // ------------------------------------------------------------- dispatch guard

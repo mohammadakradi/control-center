@@ -32,12 +32,26 @@ import {
 import { resolve } from "node:path";
 import { migrateDatabase, readMigrations } from "./db/migrate";
 
-/** Copied in dependency order so foreign keys resolve; `sessions` is deliberately absent. */
+/**
+ * Copied in reference order — a row's targets are copied before it; `sessions` is deliberately
+ * absent (live login cookies).
+ *
+ * Worth being honest about what enforces this: **nothing, today.** The export sets
+ * `foreign_keys = OFF` on the destination (below) precisely because rows arrive table by table,
+ * and `control-center import` copies the archive's database file wholesale rather than replaying
+ * rows into a live one. So the order is currently a statement of the reference graph, not a
+ * constraint being satisfied. It is kept — and pinned by a spec — because it costs nothing, the
+ * archive's schema *does* carry these foreign keys, and the day anything replays these tables
+ * row-wise (or turns enforcement on mid-copy) the order is the difference between an import and
+ * a pile of dangling references.
+ */
 const EXPORTED_TABLES = [
   "users",
   "projects",
   "agents",
   "project_agents",
+  // Before `tasks` and `backlog_items`: both carry a `feature_id` pointing here.
+  "features",
   "tasks",
   "task_events",
   // After `tasks`: a backlog item can point at the task it was dispatched as.

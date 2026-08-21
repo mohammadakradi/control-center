@@ -86,6 +86,10 @@ export async function POST(_req: Request, { params }: Ctx) {
     // that has none), so the task list reads with the same words as the backlog it came from
     // and nobody pays a Haiku round-trip to get a worse summary of text we already summarised.
     title: item.title,
+    // The run inherits the item's feature, so a feature's tasks and its planned work are the
+    // same group. Not client-supplied: it is read off the row the sync owns, and re-read above
+    // after that sync, so running a newly planned spec lands in the right feature first time.
+    featureId: item.featureId,
   });
 
   if (!outcome.ok) {

@@ -107,6 +107,50 @@ export type Attachment = {
   size: number; // bytes
 };
 
+/** Where a feature is in its life. Only `active` is ever written by the code that creates
+ *  features — the other two are a human (or a later lifecycle step) closing one out. */
+export type FeatureStatus = "active" | "done" | "cancelled";
+
+/**
+ * A feature: the unit work is actually organised around, spanning several tasks.
+ *
+ * Two things create one, mirroring how backlog items arrive. The pm agent plans a batch into
+ * `.pm/tasks/<request>/`, and the backlog sync derives one feature per request folder — that
+ * folder *is* the grouping, it was just buried inside `backlog_items.source_path` before. Or a
+ * user creates one by hand and assigns items and tasks to it.
+ *
+ * Project-scoped and shared, exactly like the project and its backlog: a feature describes
+ * planned work on a folder, not one person's view of it. The tasks it groups stay private to
+ * whoever ran them (lib/task-access.ts).
+ */
+export const features = sqliteTable(
+  "features",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    // The feature's git branch — `feature/<slug>`, reserved here and created for real by the
+    // runner on the first feature-linked run. Immutable once assigned: renaming the feature
+    // must not orphan a ref that may already exist in the repo (or be checked out).
+    branch: text("branch").notNull(),
+    status: text("status").notNull().$type<FeatureStatus>().default("active"),
+    // The `.pm/tasks/<request>` folder this was derived from, project-relative. Unique per
+    // project so the sync is idempotent; null for hand-made features (SQLite treats NULLs as
+    // distinct in a unique index, so any number of them coexist — same trick as `source_path`).
+    sourceDir: text("source_dir"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => [
+    uniqueIndex("features_source_dir_unq").on(t.projectId, t.sourceDir),
+    // One branch per project: two features pointing at one ref would merge each other's work.
+    uniqueIndex("features_branch_unq").on(t.projectId, t.branch),
+  ],
+);
+
 export type TaskStatus =
   | "queued"
   | "running"
@@ -138,6 +182,11 @@ export const tasks = sqliteTable("tasks", {
   agentId: text("agent_id")
     .notNull()
     .references(() => agents.id, { onDelete: "cascade" }),
+  // Which feature this run belongs to, if any. `set null` so closing out a feature never
+  // deletes the history of the work done under it. Set at dispatch (from the backlog item, or
+  // passed in for a manual run) and freely reassignable afterwards — unlike a synced backlog
+  // item's grouping, nothing on disk re-derives a task's.
+  featureId: text("feature_id").references(() => features.id, { onDelete: "set null" }),
   command: text("command").notNull(), // onboard | task | fix | review | ship | workspace
   // The agent's plugin version at the time this task ran (snapshot — the agent may be
   // upgraded later, so history records which version actually did the work). Null for
@@ -219,6 +268,11 @@ export const backlogItems = sqliteTable(
     // is idempotent; null for hand-added items (SQLite treats NULLs as distinct in a unique
     // index, so any number of them coexist).
     sourcePath: text("source_path"),
+    // Which feature this item belongs to. For a synced spec the sync owns it — it is derived
+    // from the item's `.pm/tasks/<request>/` folder and re-derived on every load, so the API
+    // refuses to edit it, the same as the other fields the file owns. Hand-added items are
+    // assigned freely. `set null` so closing out a feature doesn't take the work with it.
+    featureId: text("feature_id").references(() => features.id, { onDelete: "set null" }),
     source: text("source").notNull().$type<BacklogSource>().default("manual"),
     // The task most recently dispatched from this item. `set null` so deleting a task's
     // history doesn't take the backlog item with it.
@@ -264,6 +318,7 @@ export const taskEvents = sqliteTable("task_events", {
 
 export type Agent = typeof agents.$inferSelect;
 export type BacklogItem = typeof backlogItems.$inferSelect;
+export type Feature = typeof features.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskEvent = typeof taskEvents.$inferSelect;

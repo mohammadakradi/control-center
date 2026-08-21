@@ -11,6 +11,7 @@ import {
   isPmTaskSpec,
   isSpecAssignee,
   parseFrontmatter,
+  requestTitle,
   specBody,
   specSourcePath,
   specTitle,
@@ -159,4 +160,44 @@ test("specBody leaves a file with no frontmatter alone", () => {
   assert.equal(specBody(""), "");
   // A horizontal rule mid-document is not a frontmatter fence.
   assert.equal(specBody("# Title\n\n---\n\nMore.\n"), "# Title\n\n---\n\nMore.\n");
+});
+
+// ------------------------------------------------------- naming a request folder
+
+test("requestTitle prefers the index's frontmatter title, then its heading", () => {
+  assert.equal(
+    requestTitle("---\ntitle: Grouping work by feature\n---\n# Something else\n", "20260821-135656-x"),
+    "Grouping work by feature",
+  );
+  assert.equal(
+    requestTitle("# Feature grouping, branches, and parallel runs\n\nRequest…\n", "20260821-135656-x"),
+    "Feature grouping, branches, and parallel runs",
+  );
+});
+
+test("with no readable index, the folder name becomes the name", () => {
+  // The timestamp prefix is noise in a heading, and this is the fallback every project without
+  // an index.md gets — including one whose index the scan refused to read.
+  assert.equal(
+    requestTitle(null, "20260821-135656-feature-grouping-branches-parallel"),
+    "Feature grouping branches parallel",
+  );
+  // Date-only folders (the older layout) and underscores are handled too.
+  assert.equal(requestTitle(null, "20260821-tidy_up_the_docs"), "Tidy up the docs");
+  // Something that isn't the pm shape at all is still readable rather than blank.
+  assert.equal(requestTitle(null, "adhoc"), "Adhoc");
+  assert.equal(requestTitle(null, ".pm/tasks/20260821-135656-nested-path"), "Nested path");
+});
+
+test("requestTitle never falls back to the word index", () => {
+  // `specTitle` would: its last resort is the file stem, which is "index" for every request
+  // folder in the project. That is the whole reason this function exists.
+  assert.equal(requestTitle("no heading here at all\n", "20260821-135656-real-name"), "Real name");
+  assert.equal(requestTitle("", "20260821-135656-real-name"), "Real name");
+});
+
+test("a folder whose name is only a timestamp still gets a name", () => {
+  // Degenerate but reachable, and pinned so nobody has to guess: the date prefix comes off and
+  // the time is what is left. Ugly, and still better than a blank group heading.
+  assert.equal(requestTitle(null, "20260821-135656"), "135656");
 });

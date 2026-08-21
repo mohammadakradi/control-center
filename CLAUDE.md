@@ -61,7 +61,7 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
   wrapped — run those with `docker exec platform …`. Caveat: arguments pass through untouched,
   so a path argument must exist inside the container too (the repo and `~/Dev` are mounted).
 - Lint: `pnpm lint`  (baseline: ✅ — no warnings)
-- Test: `pnpm test`  (baseline: ✅ 186 tests — Node's built-in runner via `tsx`, no extra
+- Test: `pnpm test`  (baseline: ✅ 562 tests — Node's built-in runner via `tsx`, no extra
   deps; specs live next to the code as `runner/*.test.ts`, `lib/*.test.ts`,
   `lib/discovery/*.test.ts` and `infra/release/*.test.ts`, fixtures in
   `runner/__fixtures__/`. Those globs are listed
@@ -74,7 +74,11 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 - Typecheck: `npx tsc --noEmit`
 - **Schema changes: `pnpm db:generate` then `pnpm db:migrate`.** `db:generate` writes a
   versioned SQL file into `drizzle/` (review it — that file is what runs on every user's
-  machine); `db:migrate` applies what's pending, snapshotting first. Commit the migration with
+  machine, and it is **not** always a faithful rendering of the schema: drizzle-kit drops the
+  `ON DELETE` clause from an `ALTER TABLE ADD COLUMN`, which SQLite does accept, so a new
+  nullable FK column silently ships as `no action`. `drizzle/0004` was hand-completed for exactly
+  that. Editing the SQL doesn't disturb `db:generate`'s idempotency — CI compares the snapshot);
+  `db:migrate` applies what's pending, snapshotting first. Commit the migration with
   the schema change: the release workflow refuses to publish when they disagree.
 - `pnpm db:push` is **dev-only** and no longer the migration path — it diffs the schema against
   a live database and has rebuilt the `tasks` table (`__new_tasks` + copy + drop) rather than
@@ -156,6 +160,69 @@ match). Creating an account starts a private workspace instead of unlocking the 
 - **This is app-level separation, not OS-level.** Anyone with filesystem access can read
   `~/.control-center/.env` and the vault. Separate macOS accounts get separate installs and are
   genuinely isolated; two people sharing one login are not.
+
+## Features (how work is grouped)
+A `feature` is the unit work is actually organised around — several tasks and several backlog
+items, one branch. `lib/features.ts` owns every rule; the routes under
+`app/api/projects/[id]/features/` translate HTTP, the same split `lib/backlog.ts` uses.
+- **For pm-planned work a feature costs nobody anything, because the grouping already existed
+  on disk.** It was the `.pm/tasks/<request>/` folder, buried inside
+  `backlog_items.source_path` and never read out. The backlog sync now derives one feature per
+  request folder that holds at least one spec (`ensureRequestFeature`, keyed on
+  `(projectId, sourceDir)` by a unique index, so it is a no-op on every load after the first)
+  and links that folder's items to it. An empty request folder is a folder, not a feature.
+- **The name comes from the request's `index.md`** — its frontmatter `title`, else its first
+  heading — falling back to the folder name with the timestamp prefix stripped. Deliberately not
+  `specTitle`, whose last resort is the *filename*, which is the word "index" for every request
+  folder in the project. That read goes through `readSpecFile` like a spec's (O_NOFOLLOW,
+  `nlink === 1`, regular files only, size-capped) and is charged to the same scan byte budget: a
+  symlinked `index.md` must no more be able to name a feature after `~/.ssh/id_rsa` than a
+  symlinked spec can put it in a row.
+- **`features.branch` is a reserved name, and it is immutable.** `feature/<slug>`, minted from
+  the name by `featureSlug` — an **allowlist** (`[a-z0-9-]`, cut at a word boundary, no leading,
+  trailing or doubled dash), because this string becomes a **git ref** that task 02 hands to
+  `git` in the runner process. The allowlist is what makes a leading `-` (which git reads as an
+  option), `..`, `~^:?*[\`, whitespace and a trailing `.`/`.lock` unrepresentable rather than
+  filtered. `lib/features.test.ts` runs the minted names through `git check-ref-format` — the
+  regex is an argument, git is the authority. Renaming a feature (or editing its `index.md`)
+  changes the name and never the branch: the ref may already exist, and moving it would orphan
+  the work on it.
+- **One branch per project** (`features_branch_unq`), since two features on one ref would merge
+  each other's work. Colliding names get `-2`, `-3`… then the feature's own id; a lost race on
+  the unique index is retried once with the id-suffixed form.
+- **A synced item's feature is file-owned, so `featureId` is in `FILE_OWNED_FIELDS`** and a
+  `PATCH` of it answers 409 naming the file. There is deliberately no `statusOverride`-style
+  precedence flag for it: status is the one thing *no file knows*, whereas the request folder
+  genuinely does know the grouping, so giving it two owners would be inventing a conflict.
+  Someone who wants a spec grouped elsewhere moves the file — or groups its **task**, which is
+  freely assignable, because nothing on disk re-derives a task's feature.
+- **The sync writes the derived feature as a plain assignment, not `featureId ?? row.featureId`.**
+  What keeps a grouped item grouped is that `ensureRequestFeature` resolves an already-derived
+  folder *before* it consults `MAX_FEATURES_PER_PROJECT` — so reaching the cap strands only
+  *new* folders' items and can't unglue the rest of the project. The fallback was tried first and
+  removed: no test could be made to fail with it in place, and in the one state that *is*
+  constructible (a feature row deleted with FK enforcement off) it preserved a dangling id.
+  `lib/backlog.test.ts` pins the ordering by failing if the cap check moves up.
+- **A cross-project `featureId` is refused on every path that accepts one** — dispatch, the task
+  PATCH, and both backlog writers — via `parseFeatureRef`/`findFeature`, the stance
+  `sourcePath`/`linkedTaskId` already get. Refused rather than dropped: silently unlinking would
+  hide the run from every grouped view, and storing it would put this project's work on another
+  repo's feature branch once task 02 merges. Addressing a feature through the wrong project
+  answers 404, not 403, so ids can't be probed across projects.
+- **`PATCH /api/tasks/[id]` is the only owner-scoped one** (`findOwnedTask`, so "not yours" ≡
+  "doesn't exist", checked before the body is read). It takes `featureId` and nothing else — a
+  task's status belongs to its run, its request text is what the agent was handed. The
+  project-scoped feature routes have no auth, like every other project-scoped route here.
+- **`MAX_FEATURES_PER_PROJECT` (500) counts every row**, not just open ones as the backlog's cap
+  does: nothing closes a feature automatically, and the sync can create one per request folder on
+  an unauthenticated GET, so this is what bounds a repo full of `.pm/tasks/` folders.
+- `features` is in `EXPORTED_TABLES` **before** `tasks` and `backlog_items` (both carry a
+  `feature_id`), so a grouping survives export/import. Both FKs are `set null` — closing out a
+  feature must never delete the history of the work done under it. Note drizzle-kit **omits
+  `ON DELETE` from an `ALTER TABLE ADD COLUMN`**, so `drizzle/0004_pretty_vapor.sql` was
+  hand-completed after generation; a spec asserts the committed SQL, not the ORM's intent.
+- Task 02 owns the real git branch (creating it, basing worktrees on it, merging into it) and
+  task 04 the grouped UI. Nothing in this layer runs `git`.
 
 ## The backlog (per-project planned work)
 Each project has a durable queue of planned work in `backlog_items`, fed from two directions:
@@ -1056,6 +1123,12 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   `.pm/tasks/` specs and reflects finished runs), `POST` (add one), `PATCH …/[itemId]`,
   `POST …/[itemId]/run` (dispatch it as a task). Logic lives in `lib/backlog.ts`; the routes
   only translate HTTP
+- `app/api/projects/[id]/features/` — Per-project features: `GET` (list — a plain read, it never
+  touches the disk; the `.pm/tasks/` walk that *derives* features belongs to the backlog load),
+  `POST` (create by hand), `PATCH …/[featureId]` (close one out, or rename a hand-made one).
+  Logic and every bound are in `lib/features.ts`. See "Features" above
+- `app/api/tasks/[id]/` — `GET` task detail + event log, and `PATCH` to move the task into a
+  feature or out of one (`{ featureId }` only). The one owner-scoped feature route
 - `app/api/tasks/[id]/changes/` — This task's own uncommitted-changes summary, resolved to the
   root the run actually used. Takes no path or directory parameter; logic is in
   `lib/task-root.ts` and `gitChanges` is consumed unchanged
@@ -1075,9 +1148,15 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `lib/secrets.ts` — Encrypted per-user Anthropic token vault (`data/secrets/`, master
   key from `SECRETS_MASTER_KEY`; write-only API, tokens never leave the server)
 - `lib/backlog.ts` — The per-project backlog (`backlog_items`): scans/syncs the pm agent's
-  `.pm/tasks/` specs, validates API input, and owns the status rules (a manual status wins
-  over both the sync and the linked task; see "The backlog" below)
-- `lib/pm-spec.ts` — Reading a pm task spec (frontmatter → title/assignee/priority), plus
+  `.pm/tasks/` specs, derives one **feature** per request folder and links that folder's items to
+  it, validates API input, and owns the status rules (a manual status wins over both the sync and
+  the linked task; see "The backlog" below)
+- `lib/features.ts` (+ `lib/features.test.ts`) — The feature entity (`features`): branch naming
+  (an allowlist, because the result is a git ref), idempotent derivation from a `.pm/tasks/`
+  folder, the caps, the validators, and `parseFeatureRef` — the one place a client-supplied
+  `featureId` is checked against the project it claims to belong to. See "Features" above
+- `lib/pm-spec.ts` — Reading a pm task spec (frontmatter → title/assignee/priority) and naming a
+  request folder (`requestTitle`, which is what a derived feature is called), plus
   `specSourcePath()`, which maps a spec's on-screen path to the `sourcePath` key the backlog
   scan would have stored — root-only and matched exactly, since the modal's path may name a
   workspace member's spec that has no row. Shared by

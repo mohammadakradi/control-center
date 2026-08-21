@@ -109,6 +109,24 @@ planning decision. Keep entries short and accurate.
   (git-through-agents is the design stance; `/swe:ship` is the PR flow), full SPA rewrite
   (incremental perceived-speed work instead), kanban backlog.
 
+- 2026-08-21 — planned feature grouping + feature branches + parallel-from-backlog
+  (`.pm/tasks/20260821-135656-feature-grouping-branches-parallel/`, 4 tasks). Verdict BUILD on
+  all three parts: no feature/group concept exists (the pm request folder is implicit in
+  `backlog_items.sourcePath`, never parsed out; every list groups by project at most); no merge
+  machinery exists anywhere (worktree `task/<id>` branches off current HEAD, `finalize()` only
+  cleans up); the backlog run route reads no body so `DispatchInput.parallel` never reaches it.
+  Approved design decisions: new `features` table + nullable `featureId` on tasks/backlog items,
+  features auto-derived one-per-`.pm/tasks/<request>/`-folder by the sync AND manually creatable;
+  deterministic runner-side merge of task branches into `feature/<slug>` in a TEMP worktree
+  (never the user's checkout, hardened `lib/git.ts` path) — conflicts surface as per-task
+  unmerged state, never auto-resolved; feature-linked parallel runs ALWAYS isolate (today
+  `launchMode` isolates only when busy, so the first of N siblings would land in the shared
+  checkout); checkout runs get an instruction-level preamble naming the feature branch (honest,
+  weaker). NOTE: this knowingly reverses part of the 2026-08-14 decision that merging stays in
+  the PR/ship flow — the real need ("all tasks done ⇒ one branch holds all work") requires it.
+  Rejected: agent-performed merges (non-deterministic, siblings race on one target) and
+  auto-resolution (`-X theirs` = silently wrong code).
+
 ## Constraints & conventions
 <!-- stacks present, who owns what, non-obvious rules to respect when planning -->
 - Single stack: full-stack Next.js 16 App Router (App Router pages/API in `app/`) + a

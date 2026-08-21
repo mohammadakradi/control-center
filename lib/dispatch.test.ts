@@ -312,3 +312,92 @@ test("the parallel flag is stored on a git project's task; the default stays fal
     assert.equal(row.parallel, false, "queueing stays the default");
   }
 });
+
+// ------------------------------------------------------------------ features
+
+test("a task's feature is stored on the row the runner reads", async () => {
+  const feature = db
+    .insert(schema.features)
+    .values({ id: "f_disp", projectId: "p1", name: "Dispatchable", branch: "feature/disp" })
+    .returning()
+    .get();
+
+  const outcome = await dispatch.createAndStartTask({
+    projectId: "p1",
+    agentId: "swe@swe-agent-local",
+    command: "task",
+    userId: "user_local",
+    featureId: feature.id,
+  });
+  assert.equal(outcome.ok, false, "the runner is unreachable, but the row is written first");
+  if (!outcome.ok) {
+    const row = db
+      .select()
+      .from(schema.tasks)
+      .where(eq(schema.tasks.id, outcome.taskId!))
+      .get()!;
+    assert.equal(row.featureId, "f_disp");
+  }
+});
+
+test("no feature is the default, not an error", async () => {
+  const outcome = await dispatch.createAndStartTask({
+    projectId: "p1",
+    agentId: "swe@swe-agent-local",
+    command: "task",
+    userId: "user_local",
+  });
+  assert.equal(outcome.ok, false);
+  if (!outcome.ok) {
+    const row = db
+      .select()
+      .from(schema.tasks)
+      .where(eq(schema.tasks.id, outcome.taskId!))
+      .get()!;
+    assert.equal(row.featureId, null);
+  }
+});
+
+test("a feature from another project is refused before any task row exists", async () => {
+  // The forgery that matters: a *real* feature id, belonging to a project the caller isn't
+  // dispatching into. Silently dropping the link would hide the run from every grouped view;
+  // storing it would put this project's work on another repo's feature branch once the runner
+  // starts merging. So it is refused, like the `parallel` flag on a non-git project.
+  db.insert(schema.projects).values({ id: "p_other", name: "Other", path: join(root, "o") }).run();
+  db.insert(schema.features)
+    .values({
+      id: "f_elsewhere",
+      projectId: "p_other",
+      name: "Someone else's",
+      branch: "feature/elsewhere",
+    })
+    .run();
+
+  const before = db.select().from(schema.tasks).all().length;
+  const outcome = await dispatch.createAndStartTask({
+    projectId: "p1",
+    agentId: "swe@swe-agent-local",
+    command: "task",
+    userId: "user_local",
+    featureId: "f_elsewhere",
+  });
+  assert.equal(outcome.ok, false);
+  if (!outcome.ok) {
+    assert.equal(outcome.status, 400);
+    assert.match(outcome.error, /feature of this project/);
+    assert.equal(outcome.taskId, undefined, "refused before the row, so there is nothing to link");
+  }
+  assert.equal(db.select().from(schema.tasks).all().length, before, "no row was created");
+});
+
+test("a featureId naming nothing at all is refused the same way", async () => {
+  const outcome = await dispatch.createAndStartTask({
+    projectId: "p1",
+    agentId: "swe@swe-agent-local",
+    command: "task",
+    userId: "user_local",
+    featureId: "f_does_not_exist",
+  });
+  assert.equal(outcome.ok, false);
+  if (!outcome.ok) assert.equal(outcome.status, 400);
+});

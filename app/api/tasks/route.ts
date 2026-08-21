@@ -5,6 +5,7 @@ import { tasks, type Attachment } from "@/lib/db/schema";
 import { getCurrentUser } from "@/lib/auth";
 import { ownedBy } from "@/lib/task-access";
 import { createAndStartTask, dispatchRefusal } from "@/lib/dispatch";
+import { parseFeatureRef } from "@/lib/features";
 import { BAD_MULTIPART, readFormData, saveAttachments } from "@/lib/uploads";
 import { newId } from "@/lib/util";
 
@@ -31,6 +32,9 @@ type TaskFields = {
   model?: string;
   /** Opt in to running in an isolated worktree if the project is busy (see lib/dispatch). */
   parallel?: boolean;
+  /** Which feature the run belongs to. Refused unless it names one of `projectId`'s features —
+   *  an id from anywhere else is an error, never a silently dropped link. */
+  featureId?: string | null;
 };
 
 // POST /api/tasks — create and dispatch a task.
@@ -70,6 +74,8 @@ export async function POST(request: Request) {
       requestText: form.get("requestText")?.toString(),
       model: form.get("model")?.toString(),
       parallel: form.get("parallel")?.toString() === "1",
+      // An absent field and an empty one both mean "no feature"; a form can't send null.
+      featureId: form.get("featureId")?.toString() || null,
     };
     const files = form.getAll("files").filter((f): f is File => f instanceof File);
     attachments = await saveAttachments(id, files);
@@ -84,6 +90,12 @@ export async function POST(request: Request) {
     );
   }
 
+  // Checked here rather than coerced, because the failure is invisible: a `featureId` quietly
+  // dropped for being the wrong type would dispatch a run that never appears under its feature.
+  // `createAndStartTask` re-checks — it is the gate for callers that aren't this route.
+  const feature = parseFeatureRef(fields.projectId, fields.featureId);
+  if (!feature.ok) return NextResponse.json({ error: feature.error }, { status: 400 });
+
   const outcome = await createAndStartTask({
     taskId: id, // already used to name the upload folder
     projectId: fields.projectId,
@@ -94,6 +106,7 @@ export async function POST(request: Request) {
     model: fields.model,
     attachments,
     parallel: fields.parallel === true,
+    featureId: feature.value ?? null,
   });
 
   if (!outcome.ok) {
