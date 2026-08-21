@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { db } from "@/lib/db";
 import { agents, projects, taskEvents } from "@/lib/db/schema";
+import { parallelOffer } from "@/lib/dispatch";
 import { Avatar } from "@/components/AgentAvatar";
 import { TaskLiveView } from "@/components/TaskLiveView";
 import { TaskChanges } from "@/components/TaskChanges";
@@ -148,6 +149,11 @@ export default async function TaskPage({
         }}
         projectId={task.projectId}
         agentId={task.agentId}
+        // Whether a spec opened from this transcript can be dispatched into its own worktree
+        // rather than queueing. Same helper as the project composer and the backlog, so all
+        // three offer the choice on exactly the terms the dispatch will accept it. A project
+        // that has been deregistered can't take the flag at all.
+        parallelOffer={project ? parallelOffer(project) : false}
       />
 
       {task.error && (

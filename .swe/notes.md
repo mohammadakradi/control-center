@@ -2002,3 +2002,105 @@ items and tasks link to, plus the branch name task 02 will create for real. Noth
   two specs for one behaviour. Both were caught by re-reading the working tree rather than trusting
   the plan. **After any interruption: diff the tree, and grep for the thing you are about to add
   before adding it.**
+
+## 2026-08-21 — the parallel option reaches the backlog and pm-spec dispatch paths
+Task 03 of `.pm/tasks/20260821-135656-feature-grouping-branches-parallel/`. Pure plumbing of an
+opt-in that already existed end to end (`tasks.parallel` → `launchMode` → worktree), so the
+interesting decisions are all about *where the edges go*, not about isolation itself.
+- **The run route's body is `{ parallel }` and nothing else, and that is the security-relevant
+  part of the change.** An item's text, title, assignee and feature are read off the row the sync
+  owns — which is exactly why `POST …/[itemId]/run` had no body at all until now. So the parser
+  drops unknown keys rather than spreading them: the same stance `parseBacklogEdit` takes on
+  `sourcePath`/`source`/`linkedTaskId`, for the same reason. Verified over HTTP that a body
+  carrying `featureId`, `title`, `source` and `userId` changes nothing about the dispatch.
+- **A non-boolean `parallel` is refused, not coerced, and the reason is the failure shape.**
+  Coercion here is invisible: the run queues, which is *identical* to what happens when nobody
+  asks for isolation — so the caller cannot tell the flag was dropped. Same argument
+  `lib/search.ts` makes for refusing a bad `limit` rather than clamping it. `null` and `0` are
+  refused too; only absent means absent.
+- **`await req.json().catch(() => null)`, because this route's back-compat *is* the empty body.**
+  Both existing callers (`BacklogItemRow`'s Run, `FileModal`'s Create task) sent none, and an
+  unhandled throw in a route handler renders HTML, which the composer can't read an error out of
+  — the lesson already paid for in `readFormData`. Checked the four shapes that matter (no body,
+  garbage, `text/plain`, `multipart/form-data` with no boundary): all 412 (i.e. straight through
+  to the token gate), none 500.
+- **`parallelOffer` went into `lib/dispatch.ts` specifically to sit next to the refusal it
+  mirrors.** The condition was inlined in the project page, and three pages now need it; had it
+  been copied, the copies would answer differently from `createAndStartTask` the first time
+  either moved. The spec that matters is *"the offer and the dispatch's refusal cannot drift
+  apart"*: it makes three projects busy (git / non-git / workspace), asks the offer, then
+  actually dispatches with `parallel: true` and asserts the two agree — distinguishing "refused
+  the flag" (400) from "accepted it and then failed on the unreachable runner" (502). It restates
+  neither one's logic, so it stays true if either changes shape.
+- **Every new spec was checked against its own clause by reverting it**, the habit this journal
+  keeps insisting on: dropping `project.isWorkspace` from `parallelOffer` turns 2 red, dropping
+  `isNull(tasks.workdir)` from `checkoutBusy` turns 1 red. Neither passes for free.
+- **Rendering was verified for real, not reasoned about**, since `pnpm test` can't reach
+  `components/`. A `running` task row was inserted straight into the dev DB (through the app's own
+  better-sqlite3 inside the container, never host `sqlite3` — see the corruption gotcha) to make
+  a checkout busy, then the backlog page's HTML was checked: 34 open items → 34 checkboxes, and a
+  scratch project proved a `done` row and an already-running row render none. **A trap worth
+  recording:** the scratch project's `path` was `/app`, so `loadProjectBacklog` promptly synced
+  *this repo's* 34 `.pm/tasks/` specs into it — a probe project pointed at a real repo is not
+  inert. It all cascaded away with the project row, and the real project's item count was
+  re-checked afterwards (34, unchanged).
+- **The clients gate on `parallel && parallelOffer`.** Not a boundary (the server refuses
+  regardless) — it is the difference between a stale checkbox producing a normal queued run and
+  producing a 400 the user can do nothing about.
+- **Known limitation, documented rather than fixed:** the offer is a page-load snapshot, so the
+  first dispatch against a free checkout never sees it and a batch needs one reload. That is
+  `NewTaskForm`'s existing behaviour, and task 02's feature-linked runs (which isolate regardless
+  of busyness) are the real answer for fan-out. Making it live would mean polling or an SSE
+  channel for "is the checkout busy" in the process that already serves the task streams.
+- **Not verified with a live agent** — the standing 412 on this install. What a token would add
+  is only steps 7+ of `.swe/test-scenarios/parallel-backlog-spec-dispatch.md` (that an isolated
+  run really lands in `data/worktrees/` while a plain one queues), which is the part
+  `runner/worktree.test.ts` already pins from task 02's side.
+- **Both review lenses came back PASS with no blocking findings** — the first time in this
+  journal's recent history, which is worth being suspicious of rather than pleased about, so
+  what they did find is recorded here in full:
+  - *(reviewer)* the drift spec inferred "the flag was refused" from **status 400 alone**. True
+    for today's code, but a 400 added ahead of the parallel check would let it keep passing while
+    testing nothing — the exact failure mode this journal keeps recording ("a green test is not
+    evidence until it can fail"). It now matches `/Parallel runs/` on the message *and* asserts
+    the accepted case reaches 502, so the coupling is explicit rather than incidental. Re-verified
+    it still goes red when the workspace clause is removed.
+  - *(reviewer)* `parallel && parallelOffer` is **not** pure belt-and-braces, and the reasoning is
+    worth keeping: `createAndStartTask` validates `isGit`/`isWorkspace` but **never busyness**, so
+    for a plain git repo the flag is harmless whether or not the checkout is busy. That means the
+    only thing the client gate really suppresses is the busy→free transition, where sending it
+    would have been *fine* — so a ticked box can be silently downgraded to a queued run. Kept
+    anyway, with the trade written into the comment: it fails safe, the box disappears in the same
+    repaint, and it is byte-for-byte the gate `NewTaskForm` has always used. Sending it regardless
+    would trade a silently-normal run for a hard 400 on the one shape that truly can't isolate.
+  - *(reviewer)* `FileModal`'s `parallel` isn't reset when `path` changes. Unreachable by
+    construction — `TaskLiveView` renders the modal behind `{scenarioPath && …}`, so closing it
+    unmounts and closing is the only way to reach another file — so it was left as-is rather than
+    given a reset nobody can trigger.
+  - *(security)* PASS, and it independently reproduced the four things I'd claimed: no mass
+    assignment (a body carrying `featureId`/`title`/`userId`/`requestText`/`linkedTaskId` has zero
+    observable effect), no existence oracle from the parse ordering, no amplification beyond the
+    already-reachable `POST /api/tasks` (`MAX_WORKTREES` is on the shared create path, so a second
+    door doesn't raise the ceiling), and boolean-only disclosure at all three call sites. Its one
+    note — `req.json()` has no size or depth cap — is the **pre-existing** pattern on
+    `POST /api/tasks` too (measured: 40 MB in 0.63 s, 100 k-deep nesting, both fine, server
+    healthy after). Filed for both routes together rather than patched on one.
+  - Semgrep's only hit in these files (`FileModal.tsx` `console.error` format string) is
+    pre-existing and outside the diff's hunks.
+- **Test count drifted 580 → 582 mid-task and it was not mine.** `runner/worktree.test.ts` gained
+  two specs at 19:35, after my own edits at 19:25–19:27 — task 02's uncommitted work being
+  touched in the same tree. Worth checking rather than assuming, since an unexplained count is
+  indistinguishable from a spec of your own quietly disappearing.
+- **The reviewer saw the drift spec fail once and couldn't reproduce it; chasing it found a real
+  coupling in this test file.** `dispatchRefusal` runs *before* the parallel check, so a missing
+  `ALLOW_SHARED_TOKEN_FALLBACK` makes every dispatch answer 412 — and a spec that infers
+  "accepted the flag" from "not a 400" then reads *accepted* for all three project shapes, i.e. a
+  silent false pass on the two that must be refused. Another test in the same file deletes that
+  variable and restores it in a `finally`, so it is process-global state these specs share.
+  Simulated by removing that restore: the **pre-existing** parallel specs (`the parallel flag is
+  refused where no worktree can exist`, `…is stored on a git project's task`) go red, while mine
+  survives because it now sets the variable itself and asserts a 412 is a *named test-setup
+  failure* rather than a drift. node:test is sequential within a file, so the real suite is fine
+  today and the pre-existing specs were left alone — but a spec that depends on a neighbour being
+  outside its own `try/finally` is one `--test-concurrency` away from lying, and this file has two
+  of those left.

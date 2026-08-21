@@ -6,6 +6,7 @@ import { projects, tasks } from "@/lib/db/schema";
 import { getCurrentUser } from "@/lib/auth";
 import { ownedBy } from "@/lib/task-access";
 import { loadProjectBacklog, openBacklogCounts } from "@/lib/backlog";
+import { parallelOffer } from "@/lib/dispatch";
 import { isOpenBacklogStatus } from "@/lib/ui";
 import { AddBacklogItem } from "@/components/AddBacklogItem";
 import { BacklogItemRow, type BacklogRowItem } from "@/components/BacklogItemRow";
@@ -125,6 +126,17 @@ export default async function BacklogPage({
       : [],
   );
 
+  // Whether a row offers "Parallel" beside its Run button — a busy checkout, a plain git repo,
+  // not a workspace. Same helper as the project page's composer, so the two can't offer the
+  // choice on different terms, and same snapshot caveat: it is read at render, so a checkout
+  // that becomes busy after this page painted isn't offered until the next load.
+  //
+  // `isGit`/`isWorkspace` come from the row here, not from a disk re-derive: this page never
+  // calls `refreshProject` (the project page does), so a repo that stopped being one since it
+  // was registered can still be offered the choice. The dispatch refuses it in that case, which
+  // is the honest answer — the alternative is a `git` stat on every backlog load.
+  const offerParallel = parallelOffer(project);
+
   const description =
     items.length === 0
       ? `Nothing planned in ${project.name} yet.`
@@ -174,6 +186,7 @@ export default async function BacklogPage({
             projectId={project.id}
             ownLinkedTasks={ownLinkedTasks}
             showAll={showAll}
+            parallelOffer={offerParallel}
             emptyMessage="Nothing open — every item here is done or cancelled."
           />
           {closed.length > 0 && (
@@ -183,6 +196,7 @@ export default async function BacklogPage({
               projectId={project.id}
               ownLinkedTasks={ownLinkedTasks}
               showAll={showAll}
+              parallelOffer={offerParallel}
             />
           )}
           <p className="text-xs text-fg-faint">
@@ -201,6 +215,7 @@ function Section({
   projectId,
   ownLinkedTasks,
   showAll,
+  parallelOffer,
   emptyMessage,
 }: {
   title: string;
@@ -208,6 +223,8 @@ function Section({
   projectId: string;
   ownLinkedTasks: Set<string>;
   showAll: boolean;
+  /** Whether each row offers to isolate its run instead of queueing (see the page above). */
+  parallelOffer: boolean;
   emptyMessage?: string;
 }) {
   const shown = showAll ? items : items.slice(0, SECTION_LIMIT);
@@ -230,6 +247,7 @@ function Section({
               canOpenLinkedTask={
                 item.linkedTask !== null && ownLinkedTasks.has(item.linkedTask.id)
               }
+              parallelOffer={parallelOffer}
             />
           ))}
         </ul>

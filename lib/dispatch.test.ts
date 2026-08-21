@@ -313,6 +313,146 @@ test("the parallel flag is stored on a git project's task; the default stays fal
   }
 });
 
+// -------------------------------------------------- offering the parallel choice
+
+/** A live run in a project's own checkout — what makes the checkout busy. */
+function liveTask(id: string, projectId: string, workdir: string | null = null) {
+  db.insert(schema.tasks)
+    .values({
+      id,
+      projectId,
+      agentId: "fe@bundled",
+      userId: "user_local",
+      command: "task",
+      status: "running",
+      workdir,
+    })
+    .run();
+  return () => db.delete(schema.tasks).where(eq(schema.tasks.id, id)).run();
+}
+
+test("a busy checkout is what turns the offer on, and only a checkout run counts", () => {
+  db.insert(schema.projects)
+    .values({ id: "p_busy", name: "Busy", path: join(root, "busy"), isGit: true })
+    .run();
+  const project = { id: "p_busy", isGit: true, isWorkspace: false };
+
+  assert.equal(dispatch.checkoutBusy("p_busy"), false, "nothing running yet");
+  assert.equal(dispatch.parallelOffer(project), false, "nothing to run in parallel *with*");
+
+  // A worktree-isolated run doesn't hold the checkout — the same distinction `projectBusy`
+  // makes in the runner, which is why `promoteNext` keeps filling the checkout past one.
+  const dropIsolated = liveTask("task_isolated", "p_busy", join(root, "worktrees", "t1"));
+  assert.equal(dispatch.checkoutBusy("p_busy"), false, "an isolated run frees the checkout");
+  assert.equal(dispatch.parallelOffer(project), false);
+
+  const dropCheckout = liveTask("task_in_checkout", "p_busy");
+  assert.equal(dispatch.checkoutBusy("p_busy"), true);
+  assert.equal(dispatch.parallelOffer(project), true, "queueing behind it is now the default");
+
+  // Another project's run says nothing about this one.
+  assert.equal(dispatch.checkoutBusy("p1"), false);
+
+  // A finished run releases it, whichever way it ended.
+  for (const status of schema.TERMINAL_TASK_STATUSES) {
+    db.update(schema.tasks)
+      .set({ status })
+      .where(eq(schema.tasks.id, "task_in_checkout"))
+      .run();
+    assert.equal(dispatch.checkoutBusy("p_busy"), false, `${status} is not busy`);
+  }
+
+  dropIsolated();
+  dropCheckout();
+});
+
+test("the offer and the dispatch's refusal cannot drift apart", async () => {
+  // The whole reason `parallelOffer` lives beside `createAndStartTask`: offering the flag where
+  // the dispatch answers 400 turns a click into an error the user can do nothing about, and
+  // withholding it where the dispatch would take it queues a task for no reason. So assert the
+  // two agree on the same rows rather than restating either one's logic.
+  //
+  // The token gate is asserted rather than assumed. `dispatchRefusal` runs *before* the parallel
+  // check, so a missing `ALLOW_SHARED_TOKEN_FALLBACK` turns every case below into a 412 and this
+  // spec would read "the flag was accepted" for all three — a silent false pass for the two that
+  // must be refused. Another test in this file deletes that variable and restores it in a
+  // `finally`, so the value is process-global state this spec shares; review caught it failing
+  // once, non-reproducibly, which is exactly what that coupling looks like. Set it here so this
+  // spec doesn't depend on execution order, and check it below so a 412 is a loud, named failure
+  // rather than a mystery.
+  process.env.ALLOW_SHARED_TOKEN_FALLBACK = "1";
+  db.insert(schema.projects)
+    .values([
+      { id: "p_off_git", name: "Git", path: join(root, "off-git"), isGit: true },
+      { id: "p_off_plain", name: "Plain", path: join(root, "off-plain"), isGit: false },
+      {
+        id: "p_off_ws",
+        name: "WS",
+        path: join(root, "off-ws"),
+        isGit: true,
+        isWorkspace: true,
+      },
+    ])
+    .run();
+
+  for (const id of ["p_off_git", "p_off_plain", "p_off_ws"]) {
+    // Make every one of them busy, so the only thing left deciding the offer is the project.
+    const drop = liveTask(`task_busy_${id}`, id);
+    const project = db
+      .select()
+      .from(schema.projects)
+      .where(eq(schema.projects.id, id))
+      .get()!;
+    const offered = dispatch.parallelOffer(project);
+
+    const outcome = await dispatch.createAndStartTask({
+      projectId: id,
+      agentId: "fe@bundled",
+      command: "task",
+      userId: "user_local",
+      parallel: true,
+    });
+    // The runner is unreachable, so an *accepted* flag fails at 502 with a row behind it —
+    // that is what distinguishes it from the 400 the flag itself is refused with. Matched on
+    // the message, not on 400 alone: another 400 added ahead of the parallel check would
+    // otherwise let this spec keep passing while no longer testing what it says (raised by
+    // review — the coupling should be explicit, not incidental).
+    assert.equal(outcome.ok, false, `${id}: the runner is unreachable, nothing can succeed`);
+    if (outcome.ok) return;
+    assert.notEqual(
+      outcome.status,
+      412,
+      `${id}: the token gate closed under this spec (ALLOW_SHARED_TOKEN_FALLBACK), so it never reached the parallel check — this is a test-setup failure, not a drift`,
+    );
+    const refusedTheFlag = outcome.status === 400 && /Parallel runs/.test(outcome.error);
+    assert.equal(
+      offered,
+      !refusedTheFlag,
+      `${id}: offered=${offered} but the dispatch answered ${outcome.status} ${outcome.error}`,
+    );
+    // And the accepted case really did get past the flag rather than failing some other way.
+    if (offered) {
+      assert.equal(outcome.status, 502, `${id}: expected the unreachable runner, not a refusal`);
+    }
+    drop();
+  }
+});
+
+test("a non-git project and a workspace are never offered the choice, busy or not", () => {
+  // Cheap first: neither needs the query, and both are the dispatch's own refusals.
+  assert.equal(
+    dispatch.parallelOffer({ id: "p_off_plain", isGit: false, isWorkspace: false }),
+    false,
+  );
+  assert.equal(
+    dispatch.parallelOffer({ id: "p_off_ws", isGit: true, isWorkspace: true }),
+    false,
+  );
+  // A project row that no longer exists can't be busy either — the page it was rendered for
+  // is already stale, and the dispatch answers 404.
+  assert.equal(dispatch.checkoutBusy("p_deleted"), false);
+});
+
 // ------------------------------------------------------------------ features
 
 test("a task's feature is stored on the row the runner reads", async () => {

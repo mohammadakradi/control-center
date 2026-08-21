@@ -42,6 +42,7 @@ export function FileModal({
   member,
   path,
   taskId,
+  parallelOffer = false,
   onClose,
 }: {
   projectId: string;
@@ -50,6 +51,10 @@ export function FileModal({
   /** Read the file from this task's own working dir — a parallel run executes in an
    *  isolated git worktree, so files it wrote aren't in the project checkout. */
   taskId?: string;
+  /** Offer "Parallel" on the Create-task button: the project's checkout is busy right now AND
+   *  it's a plain git repo. Computed server-side by `parallelOffer` and passed down from the
+   *  page — the same signal, and the same refusals, as the project composer's checkbox. */
+  parallelOffer?: boolean;
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -61,6 +66,10 @@ export function FileModal({
   /** Set when dispatch was refused for a reason the user can act on, so the message can carry
    *  a link instead of being a dead end. */
   const [createErrAction, setCreateErrAction] = useState<ErrorAction | null>(null);
+  /** Isolate this run in its own worktree rather than queueing behind the checkout. Read at
+   *  dispatch and sent down whichever of the two paths below takes the spec, so the choice
+   *  doesn't depend on whether the backlog happens to hold this file. */
+  const [parallel, setParallel] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams({ path });
@@ -131,6 +140,13 @@ export function FileModal({
   async function runBacklogItem(itemId: string): Promise<string | null> {
     const res = await fetch(`/api/projects/${projectId}/backlog/${itemId}/run`, {
       method: "POST",
+      headers: { "content-type": "application/json" },
+      // Gated on the offer as well as the checkbox: the flag is refused outright for a non-git
+      // project or a workspace, so sending it where it was never offered would turn a stale
+      // click into an error instead of a run that simply queues. Same accepted trade as
+      // `BacklogItemRow` — an offer that goes false between tick and click drops the tick and
+      // queues, rather than failing the dispatch.
+      body: JSON.stringify({ parallel: parallel && parallelOffer }),
     });
     const body = await res.json().catch(() => ({}));
     if (res.ok && body.task?.id) return body.task.id as string;
@@ -161,7 +177,15 @@ export function FileModal({
     const res = await fetch("/api/tasks", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId, agentId: agent.id, command: "task", requestText }),
+      body: JSON.stringify({
+        projectId,
+        agentId: agent.id,
+        command: "task",
+        requestText,
+        // Same choice, same gate — a spec the backlog can't hold is still a spec worth
+        // isolating, and `POST /api/tasks` refuses the flag on the same terms.
+        parallel: parallel && parallelOffer,
+      }),
     });
     const body = await res.json().catch(() => ({}));
     if (res.ok && body.id) return body.id as string;
@@ -228,6 +252,22 @@ export function FileModal({
           >
             {copied ? "Copied" : "Copy"}
           </Button>
+          {/* Only beside a button that can dispatch, and only where the run can take the flag
+              (busy checkout, plain git repo — see `parallelOffer`). */}
+          {isTask && parallelOffer && (
+            <label
+              className="inline-flex items-center gap-1.5 text-xs text-fg-subtle"
+              title="Another task is using this project's checkout. Instead of queueing behind it, this run gets its own isolated git worktree and branch."
+            >
+              <input
+                type="checkbox"
+                checked={parallel}
+                onChange={(e) => setParallel(e.target.checked)}
+                aria-label="Run in parallel"
+              />
+              Parallel
+            </label>
+          )}
           {isTask && (
             <Button
               size="sm"

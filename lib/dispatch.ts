@@ -7,14 +7,16 @@
  * won't take it. Anything that dispatches must go through here, or it will drift from the
  * guarantees the API route already makes.
  */
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, notInArray } from "drizzle-orm";
 import { db } from "./db";
 import {
   agents,
   projectAgents,
   projects,
   tasks,
+  TERMINAL_TASK_STATUSES,
   type Attachment,
+  type Project,
   type Task,
 } from "./db/schema";
 import { daemonStartTask } from "./daemon-client";
@@ -68,6 +70,52 @@ export function dispatchRefusal(userId: string): DispatchRefusal | null {
       ? "Add your Anthropic token under Settings before dispatching tasks — each user runs on their own credential."
       : "The server is missing SECRETS_MASTER_KEY, so stored tokens can't be read. Ask whoever runs this instance to set it (see .env.example).",
   };
+}
+
+/**
+ * Is a run occupying this project's *main checkout* right now?
+ *
+ * Deliberately **not** scoped to an owner: the runner serializes install-wide, so someone
+ * else's task holds the checkout just as firmly as your own — and only a boolean ever crosses
+ * to the client, which says nothing about whose run it is. A worktree-isolated run (`workdir`
+ * set) doesn't hold the checkout, so it doesn't count; that is the same distinction
+ * `projectBusy` makes in the runner.
+ */
+export function checkoutBusy(projectId: string): boolean {
+  return Boolean(
+    db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.projectId, projectId),
+          notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
+          isNull(tasks.workdir),
+        ),
+      )
+      .get(),
+  );
+}
+
+/**
+ * Should a dispatch UI offer "Run in parallel" for this project?
+ *
+ * One definition, shared by every page that dispatches — the composer, the backlog and a
+ * task's file modal — and it lives beside `createAndStartTask` on purpose: **the offer and the
+ * refusal must not drift.** Offering the flag where the dispatch answers 400 turns a click into
+ * an error, and withholding it where the dispatch would accept it means a task queues behind a
+ * busy checkout for no reason. `lib/dispatch.test.ts` pins the two together.
+ *
+ * It is a snapshot taken while the page renders: if the other run finishes before the dispatch
+ * lands, the flag just runs the task normally (the runner re-decides at launch), and a checkout
+ * that becomes busy *after* the render isn't offered until the next load.
+ */
+export function parallelOffer(
+  project: Pick<Project, "id" | "isGit" | "isWorkspace">,
+): boolean {
+  // The two refusals in `createAndStartTask`, checked first because they cost no query.
+  if (!project.isGit || project.isWorkspace) return false;
+  return checkoutBusy(project.id);
 }
 
 export type DispatchInput = {

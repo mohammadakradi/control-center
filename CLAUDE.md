@@ -372,6 +372,53 @@ translate HTTP. An item can be dispatched as a real task and links back to it.
   - Still a mitigation, not a fix — a model can be argued with. The control is a person reading
     an item before pressing Run.
 
+### Running planned work in parallel
+A backlog item or a pm spec can opt into the same git-worktree isolation the composer offers, so
+a batch of planned tasks can be fanned out instead of queueing single-file behind the checkout.
+Nothing new happens at launch — this is the existing `tasks.parallel` opt-in reaching two more
+buttons.
+- **`POST …/backlog/[itemId]/run` takes an optional body, and `parallel` is the only thing in
+  it.** Everything about *what* runs is read off the item's own row — its text, its title, its
+  assignee, its feature — so the only thing a caller gets to say is *how* to launch it.
+  `parseRunOptions` (`lib/backlog.ts`, beside the other parsers because the routes are thin) is
+  what enforces that: unknown keys are dropped, so a forged `featureId`, `title` or
+  `linkedTaskId` in the body reaches nothing.
+- **No body, an empty body and an unparseable body all mean "run it normally".** The route took
+  no body at all until this, and both existing callers sent none — so the read is
+  `await req.json().catch(() => null)`. An unhandled throw here would be an HTML 500, which the
+  UI can't read an error out of (the same failure `readFormData` exists to prevent on the
+  multipart routes).
+- **A non-boolean `parallel` is a 400, not a coercion.** Coercing fails invisibly: the run just
+  queues, which is exactly what it would have done had nobody asked for isolation, so the caller
+  can't tell their flag was dropped. Parsed after the project/item 404s, so a malformed body
+  can't turn a missing id into a different status code and be used to probe for ids.
+- **`parallelOffer` (`lib/dispatch.ts`) is the one definition of when the choice is offered** —
+  busy checkout + plain git repo + not a workspace — and it lives beside `createAndStartTask`
+  because **the offer must not drift from the refusal**: offering the flag where the dispatch
+  answers 400 turns a click into a dead end, and withholding it where the dispatch would take it
+  queues a run for no reason. `lib/dispatch.test.ts` pins the two together by asserting they
+  agree row-for-row, rather than restating either one's logic. It replaced the same query
+  inlined in the project page, now shared by the project composer, the backlog and a task page's
+  file modal.
+- **`checkoutBusy` is deliberately not owner-scoped** (the runner serializes install-wide, so
+  someone else's run holds the checkout just as firmly) and a worktree-isolated run doesn't count
+  — the distinction `projectBusy` already makes in the runner. Only a boolean crosses to the
+  client, which says nothing about whose task it is.
+- **The offer is a page-load snapshot**, exactly like the composer's: the *first* dispatch against
+  a free checkout never sees it, and a checkout that becomes busy after the render doesn't grow
+  one until the next load. If the other run finishes first the flag simply runs the task normally
+  — the runner re-decides at launch. Feature-linked runs are due to sidestep this entirely: the
+  feature-branch work makes them isolate whether or not the checkout is busy.
+- **The clients gate on `parallel && parallelOffer` before sending**, so a stale checkbox can't
+  send a flag that will be refused. Not a security boundary — the server's refusal is — just the
+  difference between a run that queues and an error the user can do nothing about.
+- `FileModal` carries the choice down **both** of its paths: through the backlog item where one
+  exists (which is what keeps the item's status honest), and through `dispatchDirect` →
+  `POST /api/tasks` for a spec the backlog can't hold. A spec is worth isolating either way.
+- Per row, not per page: one item may be worth isolating while the next should wait its turn. The
+  checkbox is dropped from a row whose Run button can't dispatch anyway (`done`, or already
+  running), and its accessible name carries the item's title — a page holds dozens of them.
+
 ## A task's own changes (the task page's Changes card)
 `GET /api/tasks/[id]/changes` answers "what did *this run* change", for both a plain checkout run
 and a parallel run's isolated worktree. `lib/task-root.ts` resolves the root; `gitChanges` /
@@ -1121,8 +1168,9 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   dev container, so it was removed (2026-08-04)
 - `app/api/projects/[id]/backlog/` — Per-project backlog: `GET` (list, which also syncs
   `.pm/tasks/` specs and reflects finished runs), `POST` (add one), `PATCH …/[itemId]`,
-  `POST …/[itemId]/run` (dispatch it as a task). Logic lives in `lib/backlog.ts`; the routes
-  only translate HTTP
+  `POST …/[itemId]/run` (dispatch it as a task, optionally `{ parallel: true }` to isolate it in
+  its own worktree instead of queueing — the only field the body accepts). Logic lives in
+  `lib/backlog.ts`; the routes only translate HTTP
 - `app/api/projects/[id]/features/` — Per-project features: `GET` (list — a plain read, it never
   touches the disk; the `.pm/tasks/` walk that *derives* features belongs to the backlog load),
   `POST` (create by hand), `PATCH …/[featureId]` (close one out, or rename a hand-made one).
@@ -1167,7 +1215,9 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `lib/dispatch.ts` — Creating + starting a task: token gate, model allowlist, agent-version
   snapshot, optional pre-set `title` (which suppresses the runner's naming call), project↔agent
   link, failure bookkeeping. `POST /api/tasks` and the backlog's run action both go through it —
-  anything else that dispatches should too
+  anything else that dispatches should too. Also `parallelOffer`/`checkoutBusy`: whether a page
+  may offer "Run in parallel", kept in this file so the offer can't drift from the refusal beside
+  it (see "Running planned work in parallel")
 - `lib/uploads.ts` — Saving request/gate/follow-up attachments under
   `data/uploads/<taskId>/`, plus `readFormData` (a malformed multipart body answers 400 instead
   of throwing a 500) and `attachmentNote` (the "read these with the Read tool" note, shared by

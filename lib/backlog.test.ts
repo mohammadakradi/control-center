@@ -953,6 +953,37 @@ test("an edit distinguishes absent from cleared", () => {
   assert.deepEqual(emptyAssignee.ok && emptyAssignee.value, { assignee: null });
 });
 
+test("running an item takes no body, an empty body, or an explicit choice", () => {
+  // The route had no body at all until parallel runs reached it, and both existing callers
+  // (the Run button, the file modal) sent none — so every one of these has to mean "run it
+  // normally" rather than 400 the click.
+  for (const body of [undefined, null, {}, "", "not json", 7, []]) {
+    const parsed = backlog.parseRunOptions(body);
+    assert.equal(parsed.ok, true, `should have accepted ${JSON.stringify(body)}`);
+    assert.deepEqual(parsed.ok && parsed.value, { parallel: false });
+  }
+
+  for (const parallel of [true, false]) {
+    const parsed = backlog.parseRunOptions({ parallel });
+    assert.deepEqual(parsed.ok && parsed.value, { parallel });
+  }
+
+  // Unknown keys are ignored, like the other parsers here — and nothing else is accepted from
+  // a client: `source`, `linkedTaskId` and friends are not run options.
+  const extra = backlog.parseRunOptions({ parallel: true, source: "manual", nonsense: 1 });
+  assert.deepEqual(extra.ok && extra.value, { parallel: true });
+});
+
+test("a non-boolean parallel is refused, never coerced", () => {
+  // Coercion here fails invisibly: the run simply queues, which is exactly what it would have
+  // done if nobody had asked for isolation — so the caller cannot tell their flag was dropped.
+  for (const parallel of ["1", "true", "false", 1, 0, null, {}, []]) {
+    const parsed = backlog.parseRunOptions({ parallel });
+    assert.equal(parsed.ok, false, `should have rejected ${JSON.stringify(parallel)}`);
+    if (!parsed.ok) assert.match(parsed.error, /parallel must be a boolean/);
+  }
+});
+
 test("fileOwnedEdits names the fields a spec file owns", () => {
   assert.deepEqual(backlog.fileOwnedEdits({ status: "done" }), []);
   assert.deepEqual(backlog.fileOwnedEdits({ title: "New", status: "done" }), ["title"]);

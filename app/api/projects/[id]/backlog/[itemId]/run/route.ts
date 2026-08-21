@@ -8,6 +8,7 @@ import {
   backlogRequestText,
   findBacklogItem,
   linkBacklogTask,
+  parseRunOptions,
   syncProjectBacklog,
 } from "@/lib/backlog";
 import { agentForNamespace, createAndStartTask } from "@/lib/dispatch";
@@ -24,8 +25,12 @@ type Ctx = { params: Promise<{ id: string; itemId: string }> };
  * whoever pressed the button, executes on their Anthropic token, and only they see the
  * transcript. Goes through `createAndStartTask`, so it inherits the same token gate, model
  * handling and failure bookkeeping as `POST /api/tasks`.
+ *
+ * The body is optional — `{ parallel?: boolean }` and nothing else. Everything about *what* is
+ * dispatched comes off the item's own row (its text, its title, its assignee, its feature), so
+ * the only thing a caller gets to say is how the run should be launched.
  */
-export async function POST(_req: Request, { params }: Ctx) {
+export async function POST(req: Request, { params }: Ctx) {
   const { id, itemId } = await params;
   const user = await getCurrentUser();
 
@@ -34,6 +39,12 @@ export async function POST(_req: Request, { params }: Ctx) {
 
   let item = findBacklogItem(id, itemId);
   if (!item) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  // No body is the historical case and stays valid: this route took none at all until parallel
+  // runs reached it. `catch` covers an absent, empty or malformed body — an unhandled throw in
+  // a route handler is an HTML 500, which the UI can't read an error out of.
+  const options = parseRunOptions(await req.json().catch(() => null));
+  if (!options.ok) return NextResponse.json({ error: options.error }, { status: 400 });
 
   // Don't start a second run of work that's already running — a double click shouldn't cost
   // two sessions. A finished (or failed) task doesn't block: re-running is legitimate.
@@ -90,6 +101,10 @@ export async function POST(_req: Request, { params }: Ctx) {
     // same group. Not client-supplied: it is read off the row the sync owns, and re-read above
     // after that sync, so running a newly planned spec lands in the right feature first time.
     featureId: item.featureId,
+    // Opt in to worktree isolation rather than queueing behind a busy checkout — the same flag
+    // the composer sends, refused by `createAndStartTask` on the same terms (a non-git project
+    // or a workspace answers 400 before a row exists, never a silent downgrade to queueing).
+    parallel: options.value.parallel,
   });
 
   if (!outcome.ok) {

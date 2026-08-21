@@ -58,12 +58,18 @@ export function BacklogItemRow({
   projectId,
   item,
   canOpenLinkedTask,
+  parallelOffer = false,
 }: {
   projectId: string;
   item: BacklogRowItem;
   /** Whether the viewer owns the linked task. A shared backlog can point at someone else's
    *  run, and `/tasks/<id>` 404s for them by design — so don't offer a link that can't work. */
   canOpenLinkedTask: boolean;
+  /** Offer "Parallel": this project's checkout is busy right now AND it's a plain git repo
+   *  (worktree isolation is refused for non-git projects and workspaces). Computed server-side
+   *  at page load by `parallelOffer` — if the run holding the checkout finishes first, the flag
+   *  simply runs this item normally. */
+  parallelOffer?: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<"status" | "run" | null>(null);
@@ -71,6 +77,9 @@ export function BacklogItemRow({
   /** Set when dispatch was refused for a reason the user can act on, so the message can
    *  carry a link instead of being a dead end. */
   const [errorLink, setErrorLink] = useState<ErrorAction | null>(null);
+  /** Per-row, because the choice is per-run: one item may be worth isolating while the next
+   *  should wait its turn in the checkout. */
+  const [parallel, setParallel] = useState(false);
 
   const running = item.linkedTask !== null && ACTIVE_STATUSES.has(item.linkedTask.status);
   // Finished work doesn't offer a Run button — it says so instead. `item.status`, not the
@@ -120,6 +129,18 @@ export function BacklogItemRow({
     try {
       const res = await fetch(`/api/projects/${projectId}/backlog/${item.id}/run`, {
         method: "POST",
+        headers: { "content-type": "application/json" },
+        // `parallelOffer` is re-checked here, not just used to render the checkbox: the flag is
+        // refused outright for a non-git project or a workspace, so sending it where it was
+        // never offered would turn a stale click into an error instead of a normal run.
+        //
+        // Accepted trade, raised by review: if the offer goes *false* between the tick and the
+        // click (a `router.refresh()` after the other run finished), a ticked box is dropped and
+        // the run merely queues, with no error and no notice. It fails safe, the box visibly
+        // disappears in the same repaint, and it matches `NewTaskForm`'s existing gate — the
+        // alternative (sending it regardless) trades a silently normal run for a hard 400 on the
+        // one case that genuinely can't isolate.
+        body: JSON.stringify({ parallel: parallel && parallelOffer }),
       });
       const payload = await res.json().catch(() => ({}));
       if (res.ok && payload.task?.id) {
@@ -205,6 +226,26 @@ export function BacklogItemRow({
             ariaLabel={`Status — ${item.title}`}
             className="min-w-36 flex-1 sm:flex-none"
           />
+          {/* Only where the run can actually take it: offered for a busy checkout on a plain
+              git repo, and only next to a Run button that isn't already spent. Not disabled
+              while a dispatch is in flight — the value was read when Run was pressed, and
+              disabling a focused control drops the keyboard user out of this row. */}
+          {parallelOffer && !completed && !running && (
+            <label
+              className="inline-flex items-center gap-1.5 text-xs text-fg-subtle"
+              title="Another task is using this project's checkout. Instead of queueing behind it, this run gets its own isolated git worktree and branch."
+            >
+              <input
+                type="checkbox"
+                checked={parallel}
+                onChange={(e) => setParallel(e.target.checked)}
+                // A page holds many of these, so the accessible name has to say which item
+                // it belongs to — "Parallel" alone repeats down the whole list.
+                aria-label={`Run in parallel — ${item.title}`}
+              />
+              Parallel
+            </label>
+          )}
           {/* `md`, not `sm`: `Select`'s trigger is a `py-2 text-sm` control with no size
               prop, and a small button beside it sits visibly short of its height. */}
           <Button

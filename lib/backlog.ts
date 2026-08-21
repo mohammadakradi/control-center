@@ -817,6 +817,35 @@ export function parseNewBacklogItem(
   return { ok: true, value: { title, ...rest } };
 }
 
+/** How a run of an item was asked for, as opposed to what the item *is*. */
+export type BacklogRunOptions = {
+  /** Isolate this run in its own git worktree if the checkout is busy at launch, rather than
+   *  queueing behind it. Refused later by `createAndStartTask` for a non-git project or a
+   *  workspace, exactly as the same flag on `POST /api/tasks` is. */
+  parallel: boolean;
+};
+
+/**
+ * Validate the run action's body. Every field is optional — the route long predates having a
+ * body at all, and `BacklogItemRow`'s Run button and `FileModal`'s "Create task" both used to
+ * send none, so no body, an empty one and an unparseable one all mean "run it normally".
+ *
+ * A `parallel` that isn't a boolean is **refused rather than coerced**. Falsy-coercing `"no"`
+ * (or truthy-coercing `"false"`) would answer a different question than the caller asked, and
+ * the difference is close to invisible: the run just queues, which is what it would have done
+ * had nobody asked for isolation at all.
+ */
+export function parseRunOptions(body: unknown): ParseResult<BacklogRunOptions> {
+  const raw: Record<string, unknown> =
+    typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
+
+  if (raw.parallel !== undefined && typeof raw.parallel !== "boolean") {
+    return { ok: false, error: "parallel must be a boolean" };
+  }
+
+  return { ok: true, value: { parallel: raw.parallel === true } };
+}
+
 /**
  * Prefixed onto an item that an agent filed (`source: "agent"`, via the runner's
  * `add_backlog_item` tool) when it is dispatched.
