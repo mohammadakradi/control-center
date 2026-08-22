@@ -109,6 +109,38 @@ export function specBody(content: string): string {
   return content.replace(/^---\r?\n[\s\S]*?\r?\n---/, "").trimStart();
 }
 
+/** The first markdown heading in a document, or null. */
+function firstHeading(content: string): string | null {
+  const heading = specBody(content).match(/^#{1,6}[ \t]+(.+)$/m);
+  return heading?.[1].trim() || null;
+}
+
+/**
+ * A request folder's display name — what the *feature* derived from it is called.
+ *
+ * A `.pm/tasks/<request>/` folder is a batch of planned work, and its `index.md` carries the
+ * one-line summary a human wrote for it ("Feature grouping, feature branches, and parallel
+ * runs"), which is exactly the name a grouped list wants. `indexContent` is null when the
+ * folder has no index, or when the scan refused to read it — then the folder name is all
+ * there is, so its timestamp prefix comes off and its dashes become spaces.
+ *
+ * Deliberately not `specTitle`: that falls back to the *filename*, which here is the word
+ * "index" for every request folder in the project.
+ */
+export function requestTitle(indexContent: string | null, dir: string): string {
+  if (indexContent) {
+    const fm = parseFrontmatter(indexContent);
+    if (fm.title) return fm.title;
+    const heading = firstHeading(indexContent);
+    if (heading) return heading;
+  }
+  const base = (dir.split("/").pop() ?? dir).trim();
+  // pm names these `<yyyymmdd>-<hhmmss>-<slug>`; older batches may carry only the date.
+  const words = base.replace(/^\d{8}(?:-\d{6})?-/, "").replace(/[-_]+/g, " ").trim();
+  const [first = "", ...rest] = [...(words || base)];
+  return first.toUpperCase() + rest.join("");
+}
+
 /**
  * A spec's display title: frontmatter `title`, else its first markdown heading, else the
  * filename. Always non-empty — a backlog row with a blank title would be unreadable.
@@ -116,7 +148,5 @@ export function specBody(content: string): string {
 export function specTitle(content: string, path: string): string {
   const fm = parseFrontmatter(content);
   if (fm.title) return fm.title;
-  const heading = specBody(content).match(/^#{1,6}[ \t]+(.+)$/m);
-  const title = heading?.[1].trim();
-  return title || fileStem(path);
+  return firstHeading(content) || fileStem(path);
 }

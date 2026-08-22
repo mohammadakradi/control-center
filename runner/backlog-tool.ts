@@ -157,15 +157,20 @@ export function makeBacklogTool(ctx: BacklogToolContext) {
     async (args) => {
       try {
         // Fields are listed explicitly rather than spread: the validator also understands
-        // `status`, which is a human's call to make, not an agent's.
+        // `status`, which is a human's call to make, not an agent's, and `featureId`, which an
+        // agent has no business choosing — it groups work across a shared project.
         const scrub = ctx.redact ?? ((text: string) => text);
-        const parsed = parseNewBacklogItem({
-          title: cleanText(args.title, scrub, true),
-          description: cleanText(args.description, scrub),
-          // Not cleaned, deliberately: zod has already narrowed it to one of two literals, so
-          // there is no free text here to scrub. A future free-text field would need cleaning.
-          assignee: args.assignee,
-        });
+        const parsed = parseNewBacklogItem(
+          {
+            title: cleanText(args.title, scrub, true),
+            description: cleanText(args.description, scrub),
+            // Not cleaned, deliberately: zod has already narrowed it to one of two literals,
+            // so there is no free text here to scrub. A future free-text field would need
+            // cleaning.
+            assignee: args.assignee,
+          },
+          ctx.projectId,
+        );
         if (!parsed.ok) return textResult(refuse(ctx, parsed.error), true);
 
         if ((parsed.value.description ?? "").length > MAX_AGENT_DESCRIPTION_LENGTH) {

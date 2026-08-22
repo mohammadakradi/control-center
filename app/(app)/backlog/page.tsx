@@ -6,9 +6,12 @@ import { projects, tasks } from "@/lib/db/schema";
 import { getCurrentUser } from "@/lib/auth";
 import { ownedBy } from "@/lib/task-access";
 import { loadProjectBacklog, openBacklogCounts } from "@/lib/backlog";
-import { isOpenBacklogStatus } from "@/lib/ui";
+import { parallelOffer } from "@/lib/dispatch";
+import { listFeatures } from "@/lib/features";
+import { groupByFeature, isOpenBacklogStatus } from "@/lib/ui";
 import { AddBacklogItem } from "@/components/AddBacklogItem";
 import { BacklogItemRow, type BacklogRowItem } from "@/components/BacklogItemRow";
+import { FeatureGroup, type FeatureLite } from "@/components/FeatureGroup";
 import { ProjectFilterNav } from "@/components/ProjectFilterNav";
 import { TokenNudge } from "@/components/TokenNudge";
 import { CardSection, EmptyState, PageHeader, ViewAll } from "@/components/ui-cards";
@@ -26,6 +29,15 @@ export const dynamic = "force-dynamic";
 const SECTION_LIMIT = 50;
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/**
+ * What a section renders: the row's own props plus the feature it is grouped under.
+ *
+ * `feature` is kept out of `BacklogRowItem` on purpose — inside a feature group the heading
+ * already names it, so the row would be repeating its group's own label on every line. The
+ * grouping is the page's business; the row's is the item.
+ */
+type BacklogSectionItem = BacklogRowItem & { feature: FeatureLite | null };
 
 export default async function BacklogPage({
   searchParams,
@@ -125,6 +137,21 @@ export default async function BacklogPage({
       : [],
   );
 
+  // Whether a row offers "Parallel" beside its Run button — a busy checkout, a plain git repo,
+  // not a workspace. Same helper as the project page's composer, so the two can't offer the
+  // choice on different terms, and same snapshot caveat: it is read at render, so a checkout
+  // that becomes busy after this page painted isn't offered until the next load.
+  //
+  // `isGit`/`isWorkspace` come from the row here, not from a disk re-derive: this page never
+  // calls `refreshProject` (the project page does), so a repo that stopped being one since it
+  // was registered can still be offered the choice. The dispatch refuses it in that case, which
+  // is the honest answer — the alternative is a `git` stat on every backlog load.
+  const offerParallel = parallelOffer(project);
+
+  // For the Add-item dialog's feature picker. A plain read: the backlog load above is what
+  // *derives* features from `.pm/tasks/`, so by here they already exist.
+  const featureList = listFeatures(project.id);
+
   const description =
     items.length === 0
       ? `Nothing planned in ${project.name} yet.`
@@ -139,7 +166,11 @@ export default async function BacklogPage({
         description={description}
         actions={
           <>
-            <AddBacklogItem projectId={project.id} projectName={project.name} />
+            <AddBacklogItem
+              projectId={project.id}
+              projectName={project.name}
+              features={featureList}
+            />
             <ViewAll href={`/projects/${project.id}`}>Open project</ViewAll>
           </>
         }
@@ -174,6 +205,7 @@ export default async function BacklogPage({
             projectId={project.id}
             ownLinkedTasks={ownLinkedTasks}
             showAll={showAll}
+            parallelOffer={offerParallel}
             emptyMessage="Nothing open — every item here is done or cancelled."
           />
           {closed.length > 0 && (
@@ -183,6 +215,7 @@ export default async function BacklogPage({
               projectId={project.id}
               ownLinkedTasks={ownLinkedTasks}
               showAll={showAll}
+              parallelOffer={offerParallel}
             />
           )}
           <p className="text-xs text-fg-faint">
@@ -201,17 +234,44 @@ function Section({
   projectId,
   ownLinkedTasks,
   showAll,
+  parallelOffer,
   emptyMessage,
 }: {
   title: string;
-  items: BacklogRowItem[];
+  items: BacklogSectionItem[];
   projectId: string;
   ownLinkedTasks: Set<string>;
   showAll: boolean;
+  /** Whether each row offers to isolate its run instead of queueing (see the page above). */
+  parallelOffer: boolean;
   emptyMessage?: string;
 }) {
   const shown = showAll ? items : items.slice(0, SECTION_LIMIT);
   const hidden = items.length - shown.length;
+
+  // Grouped *after* the cap, so a group's count always describes the rows under it rather than
+  // a truncated view of them — the "N more items" disclosure below still speaks for the rest.
+  //
+  // The feature travels on the item itself (`listBacklog` joins it), so there is no lookup map
+  // here and nothing that can be missing from one — unlike the task lists, whose rows carry
+  // only a `featureId`.
+  const groups = groupByFeature(shown, (i) => i.feature);
+
+  const rows = (list: BacklogSectionItem[]) => (
+    <ul>
+      {list.map((item) => (
+        <BacklogItemRow
+          key={item.id}
+          projectId={projectId}
+          item={item}
+          canOpenLinkedTask={
+            item.linkedTask !== null && ownLinkedTasks.has(item.linkedTask.id)
+          }
+          parallelOffer={parallelOffer}
+        />
+      ))}
+    </ul>
+  );
 
   return (
     <CardSection
@@ -220,19 +280,25 @@ function Section({
     >
       {items.length === 0 ? (
         <p className="text-sm text-fg-faint">{emptyMessage ?? "Nothing here."}</p>
-      ) : (
-        <ul>
-          {shown.map((item) => (
-            <BacklogItemRow
-              key={item.id}
-              projectId={projectId}
-              item={item}
-              canOpenLinkedTask={
-                item.linkedTask !== null && ownLinkedTasks.has(item.linkedTask.id)
-              }
-            />
+      ) : groups ? (
+        <div className="space-y-4">
+          {groups.map((g) => (
+            <FeatureGroup
+              key={g.feature?.id ?? "__ungrouped"}
+              feature={g.feature}
+              count={g.rows.length}
+              unit="item"
+              // An item's merge state is its *run's*: an item never merges, the task
+              // dispatched from it does. Items never run show nothing, which is right — they
+              // have no branch yet.
+              mergeStates={g.rows.map((i) => i.linkedTask?.mergeState)}
+            >
+              {rows(g.rows)}
+            </FeatureGroup>
           ))}
-        </ul>
+        </div>
+      ) : (
+        rows(shown)
       )}
       {hidden > 0 && (
         <p className="border-t border-line pt-3 text-xs text-fg-faint">

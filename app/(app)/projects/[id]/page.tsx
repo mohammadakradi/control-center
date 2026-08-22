@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { ownedBy } from "@/lib/task-access";
-import { and, desc, eq, isNull, notInArray } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import {
   ArrowLeft,
   Boxes,
@@ -12,14 +12,17 @@ import {
   Users,
 } from "lucide-react";
 import { db } from "@/lib/db";
-import { tasks, TERMINAL_TASK_STATUSES } from "@/lib/db/schema";
+import { tasks } from "@/lib/db/schema";
 import { backlogItemCount } from "@/lib/backlog";
+import { parallelOffer } from "@/lib/dispatch";
+import { listFeatures } from "@/lib/features";
 import { syncAgents } from "@/lib/discovery/agents";
 import { isAgentOnboarded, refreshProject } from "@/lib/discovery/projects";
 import { gitBranchInfo, gitChanges } from "@/lib/git";
 import { resolveMembers } from "@/lib/workspace";
 import { AgentContributors } from "@/components/AgentContributors";
 import { AtAGlance } from "@/components/AtAGlance";
+import type { FeatureLite } from "@/components/FeatureGroup";
 import { SourceControl } from "@/components/SourceControl";
 import { TaskHistory } from "@/components/TaskHistory";
 import { NewTaskForm } from "@/components/NewTaskForm";
@@ -98,24 +101,19 @@ export default async function ProjectDetail({
   // backlog page itself, so opening a project never pays for one.
   const backlogOpen = backlogItemCount(project.id);
 
-  // Is any run — any owner's, since the runner serializes install-wide — occupying this
-  // project's main checkout right now? Deliberately NOT scoped to `history`'s owner, and
-  // deliberately only a boolean: it decides whether the composer offers "Run in parallel",
-  // and reveals nothing about whose task is running. Worktree-isolated runs (workdir set)
-  // don't hold the checkout, so they don't count.
-  const checkoutBusy = Boolean(
-    db
-      .select({ id: tasks.id })
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.projectId, id),
-          notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
-          isNull(tasks.workdir),
-        ),
-      )
-      .get(),
-  );
+  // Whether the composer offers "Run in parallel": a busy checkout, a plain git repo, not a
+  // workspace. One definition in `lib/dispatch`, shared with the backlog and a task's file
+  // modal and pinned against the dispatch's own refusals — the offer must not drift from what
+  // `createAndStartTask` will accept. Only a boolean crosses to the client, so it reveals
+  // nothing about whose task is holding the checkout.
+  const offerParallel = parallelOffer(project);
+
+  // The project's features, for grouping the history below and for the composer's picker. A
+  // plain read — deriving features from `.pm/tasks/` is the backlog load's job, so this page
+  // sees whatever the last backlog load derived and never does that filesystem walk itself.
+  const featureList = listFeatures(project.id);
+  const featureById: Record<string, FeatureLite> = {};
+  for (const f of featureList) featureById[f.id] = f;
 
   const aheadBehind = branchInfo
     ? branchInfo.ahead || branchInfo.behind
@@ -205,7 +203,8 @@ export default async function ProjectDetail({
             projectId={project.id}
             agents={agents}
             onboardedByAgent={onboardedByAgent}
-            parallelOffer={checkoutBusy && project.isGit && !isWs}
+            parallelOffer={offerParallel}
+            features={featureList}
           />
         </CardSection>
 
@@ -231,6 +230,7 @@ export default async function ProjectDetail({
         <TaskHistory
           history={history}
           namespaceById={namespaceById}
+          featureById={featureById}
           className="lg:col-span-2"
         />
       </div>

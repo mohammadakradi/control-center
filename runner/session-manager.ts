@@ -4,10 +4,12 @@ import { and, asc, eq } from "drizzle-orm";
 import { db } from "../lib/db";
 import {
   agents,
+  features,
   projects,
   taskEvents,
   tasks,
   type Attachment,
+  type Feature,
   type TaskStatus,
 } from "../lib/db/schema";
 import { attachmentNote } from "../lib/uploads";
@@ -21,8 +23,10 @@ import {
 import { generateTitle, resolveModel, type ModelChoice } from "./model-router";
 import { buildTaskEnv, sensitiveEnvValues, type TaskEnv } from "./user-env";
 import {
+  ensureFeatureBranch,
   ensureTaskWorktree,
   launchMode,
+  mergeFeatureTask,
   removeWorktreeIfClean,
   worktreeBranch,
 } from "./worktree";
@@ -62,7 +66,37 @@ type SessionHandle = {
    *  resume of a run that was isolated). An isolated session doesn't occupy the project's
    *  main checkout, so `projectBusy` ignores it; `finalize` cleans the tree up on done. */
   worktree?: { projectPath: string; dir: string };
+  /** The feature this task belongs to (tasks.featureId), captured once at dispatch. Drives
+   *  the isolate-vs-run decision, the dispatched preamble for a non-isolated run, and the
+   *  merge-on-done step in `finalize` — all read this rather than the row, which nothing
+   *  here ever re-fetches mid-run. */
+  featureId: string | null;
 };
+
+/** A feature row by id, or null if it's gone (deleted mid-run — its FK is `set null`, so a
+ *  stale `featureId` on the task can outlive the row briefly). Every feature-aware step below
+ *  treats a missing row as "nothing to do" rather than an error: the run itself still owes a
+ *  result either way. */
+function getFeature(featureId: string): Feature | null {
+  return db.select().from(features).where(eq(features.id, featureId)).get() ?? null;
+}
+
+/** Told to a non-isolated (checkout) run linked to a feature, on every launch — the platform
+ *  cannot merge this run's work for it (see `launchMode`'s `feature` docstring), so the
+ *  guarantee that its work ends up on the feature branch is instruction-level only. Returns
+ *  "" when the feature row is gone, so the preamble degrades to silence rather than naming a
+ *  branch that no longer means anything. */
+export function featureBranchPreamble(featureId: string): string {
+  const feature = getFeature(featureId);
+  if (!feature) return "";
+  return (
+    `\n\n⚠️ This task belongs to feature "${feature.name}" — do your work on git branch ` +
+    `\`${feature.branch}\` (create it off the project's default branch if it doesn't exist ` +
+    "yet, or switch to it if it does, and commit there). This run is not isolated, so the " +
+    "platform will not merge your work into the feature branch automatically — leaving it " +
+    "there is on you."
+  );
+}
 
 const sessions = new Map<string, SessionHandle>();
 
@@ -253,10 +287,17 @@ function finalize(handle: SessionHandle, status: TaskStatus, rawError?: string):
   if (handle.worktree && status === "done") {
     try {
       // The agent may have switched branches mid-run; record where the commits actually
-      // are before the tree goes away — the file view's `git show` fallback reads this.
+      // are before the tree goes away — the file view's `git show` fallback reads this, and
+      // it's the branch a feature merge below targets.
       const branch = worktreeBranch(handle.worktree.dir);
       if (branch) {
         db.update(tasks).set({ branch }).where(eq(tasks.id, handle.taskId)).run();
+      }
+      // A feature-linked isolated run gets merged back before its worktree goes away. The
+      // task branch survives either outcome — a clean tree with nothing uncommitted has
+      // nothing left to lose by being cleaned up next, win or lose the merge.
+      if (handle.featureId && branch) {
+        mergeIntoFeature(handle, handle.worktree.projectPath, handle.featureId, branch);
       }
       const removed = removeWorktreeIfClean(handle.worktree.projectPath, handle.worktree.dir);
       record(handle, "log", {
@@ -272,6 +313,42 @@ function finalize(handle: SessionHandle, status: TaskStatus, rawError?: string):
   handle.closeInput();
   // This project just freed up — start the next job waiting on it (if any).
   promoteNext(handle.projectId);
+}
+
+/**
+ * Merge a finished isolated task's branch into its feature branch, recording the outcome on
+ * the task row so it survives past this run (task 04's chips read `mergeState`). Never
+ * throws — a merge failure is a fact about the work, not a reason to fail bookkeeping that
+ * has already happened (the task is `done`; the row update above already landed).
+ */
+function mergeIntoFeature(
+  handle: SessionHandle,
+  projectPath: string,
+  featureId: string,
+  taskBranchName: string,
+): void {
+  const feature = getFeature(featureId);
+  if (!feature) return; // the feature was deleted mid-run; nothing left to merge into
+  try {
+    const result = mergeFeatureTask(projectPath, feature.branch, taskBranchName);
+    db.update(tasks)
+      .set({ mergeState: result.ok ? "merged" : "conflict" })
+      .where(eq(tasks.id, handle.taskId))
+      .run();
+    record(handle, "log", {
+      message: result.ok
+        ? `🔀 Merged ${taskBranchName} into ${feature.branch}.`
+        : `⚠️ Couldn't merge ${taskBranchName} into ${feature.branch} — left for manual ` +
+          `resolution:\n${result.output}`,
+    });
+  } catch (err) {
+    db.update(tasks).set({ mergeState: "conflict" }).where(eq(tasks.id, handle.taskId)).run();
+    record(handle, "log", {
+      message:
+        `⚠️ Couldn't merge ${taskBranchName} into ${feature.branch}: ` +
+        `${(err as Error).message}`,
+    });
+  }
 }
 
 function continuePrompt(namespace: string): string {
@@ -397,6 +474,7 @@ function runTask(
     started: false,
     done: false,
     secrets: sensitiveEnvValues(taskEnv),
+    featureId: task.featureId,
   };
   sessions.set(taskId, handle);
 
@@ -464,12 +542,22 @@ function runTask(
     : extraAttachments.length
       ? `The user added file(s) to this task and wants you to continue. Read the attached file(s) below, then continue the SAME task — update your earlier work as needed, don't restart.`
       : continuePrompt(agent.namespace);
+  // A non-isolated feature run is agent-owned git — the platform never merges it (see
+  // `launchMode`'s `feature` docstring) — so the guarantee that its work lands on the
+  // feature branch is this preamble, resent on every launch (fresh dispatch, continue, and
+  // resume alike) since a new subprocess remembers nothing of an earlier one's instructions.
+  // `handle.worktree` is authoritative here: it's set (or not) by the isolate/queue/run
+  // branch below before `launch` ever runs, including the deferred "queue" case.
+  const featurePreamble =
+    !handle.worktree && task.featureId ? featureBranchPreamble(task.featureId) : "";
   const prompt =
     (resume
       ? resumePrompt
       : task.requestText
         ? `/${agent.namespace}:${task.command} ${task.requestText}`
-        : `/${agent.namespace}:${task.command}`) + attachNote;
+        : `/${agent.namespace}:${task.command}`) +
+    attachNote +
+    featurePreamble;
 
   if (resume) {
     db.update(tasks)
@@ -718,6 +806,7 @@ function runTask(
     workdir: task.workdir,
     isGit: project.isGit,
     isWorkspace: project.isWorkspace,
+    feature: Boolean(task.featureId),
   });
 
   if (mode === "queue") {
@@ -731,9 +820,26 @@ function runTask(
 
   if (mode === "isolate") {
     try {
+      // A feature-linked run's task branch is based on the feature branch, not on whatever
+      // the checkout's HEAD happens to be — that's what gives every task of the feature (and
+      // the later merge back into it) a common ancestor. First creates the feature branch
+      // itself if this is the first feature-linked task to run (idempotent: a no-op once any
+      // task of this feature has run before).
+      let baseRef: string | undefined;
+      if (task.featureId) {
+        const feature = getFeature(task.featureId);
+        if (feature) {
+          ensureFeatureBranch(project.path, feature.branch, project.defaultBranch);
+          baseRef = feature.branch;
+        }
+      }
       // Pass the branch stored on the row: after a cleanup, reattaching must go to the
-      // branch the run actually ended on, not the derived task/<id> birth name.
-      const wtree = ensureTaskWorktree(project.path, taskId, { branch: task.branch });
+      // branch the run actually ended on, not the derived task/<id> birth name. `baseRef`
+      // only matters the very first time (reattaching an existing branch ignores it).
+      const wtree = ensureTaskWorktree(project.path, taskId, {
+        branch: task.branch,
+        baseRef,
+      });
       handle.worktree = { projectPath: project.path, dir: wtree.dir };
       // Persist where the run actually executes: the file/diff views resolve against
       // `workdir`, and `branch` is what survives cleanup (and names the chip on the page).

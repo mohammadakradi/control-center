@@ -59,6 +59,8 @@ const task = (over: Partial<Task> = {}): Task => ({
   projectId: "p1",
   userId: "user_local",
   agentId: "a1",
+  featureId: null,
+  mergeState: null,
   command: "task",
   agentVersion: null,
   requestText: "do the thing",

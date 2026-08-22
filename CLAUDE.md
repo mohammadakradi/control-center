@@ -61,7 +61,7 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
   wrapped — run those with `docker exec platform …`. Caveat: arguments pass through untouched,
   so a path argument must exist inside the container too (the repo and `~/Dev` are mounted).
 - Lint: `pnpm lint`  (baseline: ✅ — no warnings)
-- Test: `pnpm test`  (baseline: ✅ 186 tests — Node's built-in runner via `tsx`, no extra
+- Test: `pnpm test`  (baseline: ✅ 562 tests — Node's built-in runner via `tsx`, no extra
   deps; specs live next to the code as `runner/*.test.ts`, `lib/*.test.ts`,
   `lib/discovery/*.test.ts` and `infra/release/*.test.ts`, fixtures in
   `runner/__fixtures__/`. Those globs are listed
@@ -74,7 +74,11 @@ shades like `neutral-800` or `sky-400`, and never `dark:` variants.**
 - Typecheck: `npx tsc --noEmit`
 - **Schema changes: `pnpm db:generate` then `pnpm db:migrate`.** `db:generate` writes a
   versioned SQL file into `drizzle/` (review it — that file is what runs on every user's
-  machine); `db:migrate` applies what's pending, snapshotting first. Commit the migration with
+  machine, and it is **not** always a faithful rendering of the schema: drizzle-kit drops the
+  `ON DELETE` clause from an `ALTER TABLE ADD COLUMN`, which SQLite does accept, so a new
+  nullable FK column silently ships as `no action`. `drizzle/0004` was hand-completed for exactly
+  that. Editing the SQL doesn't disturb `db:generate`'s idempotency — CI compares the snapshot);
+  `db:migrate` applies what's pending, snapshotting first. Commit the migration with
   the schema change: the release workflow refuses to publish when they disagree.
 - `pnpm db:push` is **dev-only** and no longer the migration path — it diffs the schema against
   a live database and has rebuilt the `tasks` table (`__new_tasks` + copy + drop) rather than
@@ -156,6 +160,177 @@ match). Creating an account starts a private workspace instead of unlocking the 
 - **This is app-level separation, not OS-level.** Anyone with filesystem access can read
   `~/.control-center/.env` and the vault. Separate macOS accounts get separate installs and are
   genuinely isolated; two people sharing one login are not.
+
+## Features (how work is grouped)
+A `feature` is the unit work is actually organised around — several tasks and several backlog
+items, one branch. `lib/features.ts` owns every rule; the routes under
+`app/api/projects/[id]/features/` translate HTTP, the same split `lib/backlog.ts` uses.
+- **For pm-planned work a feature costs nobody anything, because the grouping already existed
+  on disk.** It was the `.pm/tasks/<request>/` folder, buried inside
+  `backlog_items.source_path` and never read out. The backlog sync now derives one feature per
+  request folder that holds at least one spec (`ensureRequestFeature`, keyed on
+  `(projectId, sourceDir)` by a unique index, so it is a no-op on every load after the first)
+  and links that folder's items to it. An empty request folder is a folder, not a feature.
+- **The name comes from the request's `index.md`** — its frontmatter `title`, else its first
+  heading — falling back to the folder name with the timestamp prefix stripped. Deliberately not
+  `specTitle`, whose last resort is the *filename*, which is the word "index" for every request
+  folder in the project. That read goes through `readSpecFile` like a spec's (O_NOFOLLOW,
+  `nlink === 1`, regular files only, size-capped) and is charged to the same scan byte budget: a
+  symlinked `index.md` must no more be able to name a feature after `~/.ssh/id_rsa` than a
+  symlinked spec can put it in a row.
+- **`features.branch` is a reserved name, and it is immutable.** `feature/<slug>`, minted from
+  the name by `featureSlug` — an **allowlist** (`[a-z0-9-]`, cut at a word boundary, no leading,
+  trailing or doubled dash), because this string becomes a **git ref** that task 02 hands to
+  `git` in the runner process. The allowlist is what makes a leading `-` (which git reads as an
+  option), `..`, `~^:?*[\`, whitespace and a trailing `.`/`.lock` unrepresentable rather than
+  filtered. `lib/features.test.ts` runs the minted names through `git check-ref-format` — the
+  regex is an argument, git is the authority. Renaming a feature (or editing its `index.md`)
+  changes the name and never the branch: the ref may already exist, and moving it would orphan
+  the work on it.
+- **One branch per project** (`features_branch_unq`), since two features on one ref would merge
+  each other's work. Colliding names get `-2`, `-3`… then the feature's own id; a lost race on
+  the unique index is retried once with the id-suffixed form.
+- **A synced item's feature is file-owned, so `featureId` is in `FILE_OWNED_FIELDS`** and a
+  `PATCH` of it answers 409 naming the file. There is deliberately no `statusOverride`-style
+  precedence flag for it: status is the one thing *no file knows*, whereas the request folder
+  genuinely does know the grouping, so giving it two owners would be inventing a conflict.
+  Someone who wants a spec grouped elsewhere moves the file — or groups its **task**, which is
+  freely assignable, because nothing on disk re-derives a task's feature.
+- **The sync writes the derived feature as a plain assignment, not `featureId ?? row.featureId`.**
+  What keeps a grouped item grouped is that `ensureRequestFeature` resolves an already-derived
+  folder *before* it consults `MAX_FEATURES_PER_PROJECT` — so reaching the cap strands only
+  *new* folders' items and can't unglue the rest of the project. The fallback was tried first and
+  removed: no test could be made to fail with it in place, and in the one state that *is*
+  constructible (a feature row deleted with FK enforcement off) it preserved a dangling id.
+  `lib/backlog.test.ts` pins the ordering by failing if the cap check moves up.
+- **A cross-project `featureId` is refused on every path that accepts one** — dispatch, the task
+  PATCH, and both backlog writers — via `parseFeatureRef`/`findFeature`, the stance
+  `sourcePath`/`linkedTaskId` already get. Refused rather than dropped: silently unlinking would
+  hide the run from every grouped view, and storing it would put this project's work on another
+  repo's feature branch once task 02 merges. Addressing a feature through the wrong project
+  answers 404, not 403, so ids can't be probed across projects.
+- **`PATCH /api/tasks/[id]` is the only owner-scoped one** (`findOwnedTask`, so "not yours" ≡
+  "doesn't exist", checked before the body is read). It takes `featureId` and nothing else — a
+  task's status belongs to its run, its request text is what the agent was handed. The
+  project-scoped feature routes have no auth, like every other project-scoped route here.
+- **`MAX_FEATURES_PER_PROJECT` (500) counts every row**, not just open ones as the backlog's cap
+  does: nothing closes a feature automatically, and the sync can create one per request folder on
+  an unauthenticated GET, so this is what bounds a repo full of `.pm/tasks/` folders.
+- `features` is in `EXPORTED_TABLES` **before** `tasks` and `backlog_items` (both carry a
+  `feature_id`), so a grouping survives export/import. Both FKs are `set null` — closing out a
+  feature must never delete the history of the work done under it. Note drizzle-kit **omits
+  `ON DELETE` from an `ALTER TABLE ADD COLUMN`**, so `drizzle/0004_pretty_vapor.sql` was
+  hand-completed after generation; a spec asserts the committed SQL, not the ORM's intent.
+- The grouped UI is below ("Following one feature in the UI"). Nothing in `lib/features.ts` runs
+  `git` — the branch it names is only created, based-on and merged-into by the runner (below).
+
+### The feature branch: lifecycle and merge-back (runner)
+Each feature has one real `feature/<slug>` git ref, and a feature-linked task's finished work
+ends up merged into it — deterministically, never auto-resolved, never silent on conflict.
+`runner/worktree.ts` owns the git mechanics; `runner/session-manager.ts` wires them into
+dispatch and `finalize()`; `lib/git.ts` gets the one new hardened primitive.
+- **A feature-linked parallel run always isolates, busy checkout or not.** `launchMode` gained
+  a `feature` input: `canIsolate && (workdir || (parallel && (busy || feature)))`. Before this,
+  isolation only kicked in when the checkout was already busy — so the *first* of N parallel
+  siblings dispatched against a free checkout would land directly in it, un-isolated, with no
+  branch to base on and nothing for the merge step to find. A non-parallel feature run is
+  unaffected: it stays a plain checkout run, on purpose (next bullet).
+- **On that first isolated run, `ensureFeatureBranch` creates `feature/<slug>` off the
+  project's `defaultBranch`** (a plain `git branch <name> [<base>]` — never a checkout, so it
+  never touches the working tree and is safe to run even while another session is live in that
+  same checkout). Idempotent, and hardened against the one real race: two feature-linked tasks
+  dispatched at once both find the ref missing and both attempt the create; `git branch` is
+  atomic, so exactly one succeeds, and the loser's failure is swallowed once `branchExists`
+  confirms the winner's ref is already there. Anything else (an unusable `base`) still throws.
+  `ensureTaskWorktree` then takes an optional `baseRef`: the task's own `task/<id>` branch is
+  created **at the feature branch**, not at the checkout's current HEAD — that's what gives
+  every task of a feature (and the merge below) a common ancestor. `baseRef` only matters on
+  first creation; reattaching an existing branch (continue, or a recreate after cleanup)
+  ignores it, same as it already ignored HEAD.
+- **On `done`, `finalize()` merges the task's branch into the feature branch before the
+  worktree is cleaned up** — in a **throwaway worktree of the feature branch**, never the
+  project's own checkout and never the task's own worktree (which is still needed a moment
+  longer to read the branch off). `mergeFeatureTask` (`runner/worktree.ts`) creates that temp
+  worktree under the **OS tmpdir, not `WORKTREES_DIR`** — it must never count against
+  `MAX_WORKTREES` — and force-removes it (plus a defensive `rmSync`) before returning either
+  way, win or lose the merge.
+- **The actual merge (`gitMerge`, `lib/git.ts`) is `git merge --no-ff --no-edit <branch>`,
+  aborting on any failure.** `--no-ff` always leaves a merge commit — without it, the first
+  task merged into a fresh feature branch would fast-forward with no merge commit while every
+  later one (having diverged) couldn't, an inconsistency with nothing to do with the content.
+  On failure — a real content conflict, or anything else git refuses — `merge --abort` runs
+  immediately, so the temp worktree is never left mid-merge (which would make its own
+  `worktree remove` refuse it as unclean) and the task's branch is never touched either way: a
+  failed merge can always be retried later or resolved by hand, because nothing about it is
+  destructive.
+- **The outcome is recorded on the task row as `mergeState`** (`lib/db/schema.ts`; migration
+  `drizzle/0005`) — `"pending" | "merged" | "conflict"`, the exact three names task 04's chips
+  read. Set to `"pending"` at **dispatch** (`lib/dispatch.ts`) the moment a `featureId` is
+  attached, before the runner has even decided how the task will run, so a queued or
+  checkout-bound feature task shows a state rather than reading identically to one with no
+  feature. An isolated run updates it to `"merged"` or `"conflict"` on `done`; a **non-isolated
+  run leaves it `"pending"` forever** — the platform never system-merges one, so `"pending"`
+  there is the honest answer, not a stuck one. `mergeState` is independent of the task's own
+  `status`: a task can be `done` with `mergeState: "conflict"` at once — the agent's work
+  finished; the system's merge of it didn't.
+- **A non-isolated (checkout) feature run gets an instruction-level guarantee only, and says so
+  to the agent.** The platform can't system-merge a run sharing the user's own checkout, so
+  `featureBranchPreamble` (`runner/session-manager.ts`, exported for its own spec) appends a
+  line naming the feature and its branch to the dispatched prompt — resent on **every** launch
+  (fresh dispatch, continue, and resume alike), since a fresh subprocess remembers nothing of
+  an earlier one's instructions. Decided from `handle.worktree` (set, or not, by the
+  isolate/queue/run branch before `launch()` ever runs — including the deferred "queue" case),
+  not from `mode`, which would read "queue" forever even after a queued task is promoted and
+  actually runs un-isolated. Degrades to an empty string if the feature was deleted mid-run
+  (`featureId`'s FK is `set null`, so the task can briefly outlive the row) — naming a branch
+  that no longer means anything would be worse than saying nothing.
+- **No new hook or config exposure.** `gitMerge` goes through `runGit` (the existing
+  `repoOpts`/`gitEnv`/`NO_HOOKS`/timeout wrapper); the temp-worktree creation/removal in
+  `runner/worktree.ts` goes through that file's own long-hardened `git()`. Verified directly,
+  not just inferred from sharing the wrapper: `post-merge` was already in `lib/git.test.ts`'s
+  planted-hook set but only ever exercised via `gitPull`'s fast-forward; a real `gitMerge` call
+  (prepared before the plant, like every other fixture command in that test) is now in it too.
+- **Every new ref reaching git gets the same leading-dash guard the rest of the file already
+  uses**, even where the value is provably safe today: `mergeFeatureTask`'s `featureBranch`
+  always comes from `features.branch` (an allowlisted slug that can never start with `-`), but
+  the function takes a bare string, so it's guarded anyway — defense in depth, not paranoia
+  about a path that's actually reachable right now.
+
+### Following one feature in the UI
+Three surfaces group work by feature — `/backlog`, project detail's Task history and `/tasks`
+(project → feature) — so one feature's development can be read on its own. `components/
+FeatureGroup.tsx` is the single heading; the grouping and merge-state rules are pure functions in
+`lib/ui.ts` with specs, because `pnpm test` cannot reach `components/`.
+- **`groupByFeature` returns `null` when no row has a feature, and that null is the contract.**
+  Every caller then renders the flat list it always rendered, so an install that has never used a
+  feature is byte-identical to before — grouping everything under one "No feature" heading would
+  add a level of hierarchy that conveys nothing. The ungrouped bucket sorts **last** and exists
+  only when something is in it. A row whose `featureId` doesn't resolve lands there rather than
+  vanishing: `feature_id` is `set null`, so a row can briefly outlive its feature and work must
+  never disappear from a list because its grouping did.
+- **`featureMergeSummary` deliberately never counts `pending`.** A checkout-bound feature run
+  stays `pending` forever by design (above), so aggregating it would put a permanent "N pending"
+  on the heading of every feature whose work ran in the checkout — a queue that never drains. The
+  per-row chip still says "Not merged", so only the misleading *aggregate* is dropped. A spec
+  pins it.
+- **A merge conflict is toned `warn`, not `danger`**, and `MERGE_STATE_LABEL`/`mergeStateTone`
+  are the one vocabulary for the three states: the merge failing is not the *run* failing (a task
+  can be `done` with `mergeState: "conflict"`), and reserving `danger` for a failed run keeps the
+  two tellable apart in a list holding both.
+- **The `feature/<slug>` branch chip wraps and is never truncated.** It is the string a user has
+  to type into `git checkout`, so a truncated prefix is useless and a `title` tooltip is
+  unreachable by keyboard. It is `min-w-0` + `break-all`, **not** `shrink-0` — at `featureSlug`'s
+  60-character cap a rigid mono chip forced 95px of horizontal page overflow at 390px (measured;
+  164px at 320px).
+- **The feature pickers take the project's features as a prop, not a fetch.** Both hosts
+  (`NewTaskForm` on project detail, `AddBacklogItem` on the backlog) render inside server
+  components that already hold the rows, so `GET …/features` would buy a loading state for data
+  already on screen. The route stays for other consumers. Closed features are offered by neither
+  picker — new work must not land on a branch shown everywhere as finished — while still
+  appearing as groups in every list.
+- `listBacklog`'s `linkedTask` projection grew `mergeState` alongside `id` and `status`. That a
+  run happened and how it ended is not the private part; the transcript is. A spec `deepEqual`s
+  the whole object, so a fourth column can't reach a shared list unnoticed.
 
 ## The backlog (per-project planned work)
 Each project has a durable queue of planned work in `backlog_items`, fed from two directions:
@@ -304,6 +479,53 @@ translate HTTP. An item can be dispatched as a real task and links back to it.
     the equally unauthenticated `POST /api/tasks`.
   - Still a mitigation, not a fix — a model can be argued with. The control is a person reading
     an item before pressing Run.
+
+### Running planned work in parallel
+A backlog item or a pm spec can opt into the same git-worktree isolation the composer offers, so
+a batch of planned tasks can be fanned out instead of queueing single-file behind the checkout.
+Nothing new happens at launch — this is the existing `tasks.parallel` opt-in reaching two more
+buttons.
+- **`POST …/backlog/[itemId]/run` takes an optional body, and `parallel` is the only thing in
+  it.** Everything about *what* runs is read off the item's own row — its text, its title, its
+  assignee, its feature — so the only thing a caller gets to say is *how* to launch it.
+  `parseRunOptions` (`lib/backlog.ts`, beside the other parsers because the routes are thin) is
+  what enforces that: unknown keys are dropped, so a forged `featureId`, `title` or
+  `linkedTaskId` in the body reaches nothing.
+- **No body, an empty body and an unparseable body all mean "run it normally".** The route took
+  no body at all until this, and both existing callers sent none — so the read is
+  `await req.json().catch(() => null)`. An unhandled throw here would be an HTML 500, which the
+  UI can't read an error out of (the same failure `readFormData` exists to prevent on the
+  multipart routes).
+- **A non-boolean `parallel` is a 400, not a coercion.** Coercing fails invisibly: the run just
+  queues, which is exactly what it would have done had nobody asked for isolation, so the caller
+  can't tell their flag was dropped. Parsed after the project/item 404s, so a malformed body
+  can't turn a missing id into a different status code and be used to probe for ids.
+- **`parallelOffer` (`lib/dispatch.ts`) is the one definition of when the choice is offered** —
+  busy checkout + plain git repo + not a workspace — and it lives beside `createAndStartTask`
+  because **the offer must not drift from the refusal**: offering the flag where the dispatch
+  answers 400 turns a click into a dead end, and withholding it where the dispatch would take it
+  queues a run for no reason. `lib/dispatch.test.ts` pins the two together by asserting they
+  agree row-for-row, rather than restating either one's logic. It replaced the same query
+  inlined in the project page, now shared by the project composer, the backlog and a task page's
+  file modal.
+- **`checkoutBusy` is deliberately not owner-scoped** (the runner serializes install-wide, so
+  someone else's run holds the checkout just as firmly) and a worktree-isolated run doesn't count
+  — the distinction `projectBusy` already makes in the runner. Only a boolean crosses to the
+  client, which says nothing about whose task it is.
+- **The offer is a page-load snapshot**, exactly like the composer's: the *first* dispatch against
+  a free checkout never sees it, and a checkout that becomes busy after the render doesn't grow
+  one until the next load. If the other run finishes first the flag simply runs the task normally
+  — the runner re-decides at launch. Feature-linked runs are due to sidestep this entirely: the
+  feature-branch work makes them isolate whether or not the checkout is busy.
+- **The clients gate on `parallel && parallelOffer` before sending**, so a stale checkbox can't
+  send a flag that will be refused. Not a security boundary — the server's refusal is — just the
+  difference between a run that queues and an error the user can do nothing about.
+- `FileModal` carries the choice down **both** of its paths: through the backlog item where one
+  exists (which is what keeps the item's status honest), and through `dispatchDirect` →
+  `POST /api/tasks` for a spec the backlog can't hold. A spec is worth isolating either way.
+- Per row, not per page: one item may be worth isolating while the next should wait its turn. The
+  checkbox is dropped from a row whose Run button can't dispatch anyway (`done`, or already
+  running), and its accessible name carries the item's title — a page holds dozens of them.
 
 ## A task's own changes (the task page's Changes card)
 `GET /api/tasks/[id]/changes` answers "what did *this run* change", for both a plain checkout run
@@ -1054,8 +1276,15 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   dev container, so it was removed (2026-08-04)
 - `app/api/projects/[id]/backlog/` — Per-project backlog: `GET` (list, which also syncs
   `.pm/tasks/` specs and reflects finished runs), `POST` (add one), `PATCH …/[itemId]`,
-  `POST …/[itemId]/run` (dispatch it as a task). Logic lives in `lib/backlog.ts`; the routes
-  only translate HTTP
+  `POST …/[itemId]/run` (dispatch it as a task, optionally `{ parallel: true }` to isolate it in
+  its own worktree instead of queueing — the only field the body accepts). Logic lives in
+  `lib/backlog.ts`; the routes only translate HTTP
+- `app/api/projects/[id]/features/` — Per-project features: `GET` (list — a plain read, it never
+  touches the disk; the `.pm/tasks/` walk that *derives* features belongs to the backlog load),
+  `POST` (create by hand), `PATCH …/[featureId]` (close one out, or rename a hand-made one).
+  Logic and every bound are in `lib/features.ts`. See "Features" above
+- `app/api/tasks/[id]/` — `GET` task detail + event log, and `PATCH` to move the task into a
+  feature or out of one (`{ featureId }` only). The one owner-scoped feature route
 - `app/api/tasks/[id]/changes/` — This task's own uncommitted-changes summary, resolved to the
   root the run actually used. Takes no path or directory parameter; logic is in
   `lib/task-root.ts` and `gitChanges` is consumed unchanged
@@ -1065,6 +1294,10 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `components/` — All reusable UI components (bespoke)
 - `components/ui-cards.tsx` — Core primitives: `card`, `CardSection`, `PageHeader`,
   `EmptyState`, `Chip`, `Tile`, `Fact`
+- `components/FeatureGroup.tsx` — `FeatureGroup` (the one feature heading: name + branch chip +
+  merge summary + count, `<h3>` so it nests under every host's `CardSection`) and
+  `MergeStateChip` (one row's merge state). Shared by the backlog, project detail and `/tasks`;
+  see "Following one feature in the UI"
 - `components/ui/` — Base primitives: `button.tsx`, `modal.tsx`, `select.tsx`
 - `components/Sidebar.tsx` — Desktop primary nav (collapsible rail, `md+`)
 - `components/MobileNav.tsx` — Mobile top bar + bottom tab bar (`< md`)
@@ -1075,9 +1308,15 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `lib/secrets.ts` — Encrypted per-user Anthropic token vault (`data/secrets/`, master
   key from `SECRETS_MASTER_KEY`; write-only API, tokens never leave the server)
 - `lib/backlog.ts` — The per-project backlog (`backlog_items`): scans/syncs the pm agent's
-  `.pm/tasks/` specs, validates API input, and owns the status rules (a manual status wins
-  over both the sync and the linked task; see "The backlog" below)
-- `lib/pm-spec.ts` — Reading a pm task spec (frontmatter → title/assignee/priority), plus
+  `.pm/tasks/` specs, derives one **feature** per request folder and links that folder's items to
+  it, validates API input, and owns the status rules (a manual status wins over both the sync and
+  the linked task; see "The backlog" below)
+- `lib/features.ts` (+ `lib/features.test.ts`) — The feature entity (`features`): branch naming
+  (an allowlist, because the result is a git ref), idempotent derivation from a `.pm/tasks/`
+  folder, the caps, the validators, and `parseFeatureRef` — the one place a client-supplied
+  `featureId` is checked against the project it claims to belong to. See "Features" above
+- `lib/pm-spec.ts` — Reading a pm task spec (frontmatter → title/assignee/priority) and naming a
+  request folder (`requestTitle`, which is what a derived feature is called), plus
   `specSourcePath()`, which maps a spec's on-screen path to the `sourcePath` key the backlog
   scan would have stored — root-only and matched exactly, since the modal's path may name a
   workspace member's spec that has no row. Shared by
@@ -1088,7 +1327,9 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `lib/dispatch.ts` — Creating + starting a task: token gate, model allowlist, agent-version
   snapshot, optional pre-set `title` (which suppresses the runner's naming call), project↔agent
   link, failure bookkeeping. `POST /api/tasks` and the backlog's run action both go through it —
-  anything else that dispatches should too
+  anything else that dispatches should too. Also `parallelOffer`/`checkoutBusy`: whether a page
+  may offer "Run in parallel", kept in this file so the offer can't drift from the refusal beside
+  it (see "Running planned work in parallel")
 - `lib/uploads.ts` — Saving request/gate/follow-up attachments under
   `data/uploads/<taskId>/`, plus `readFormData` (a malformed multipart body answers 400 instead
   of throwing a 500) and `attachmentNote` (the "read these with the Read tool" note, shared by

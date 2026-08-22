@@ -261,6 +261,7 @@ export function TaskLiveView({
   request,
   projectId,
   agentId,
+  parallelOffer = false,
 }: {
   taskId: string;
   initialStatus: string;
@@ -270,6 +271,10 @@ export function TaskLiveView({
   request?: { text: string; attachments: Attachment[] };
   projectId: string;
   agentId: string;
+  /** Whether a spec opened from this transcript may be dispatched into its own worktree
+   *  instead of queueing — this project's checkout is busy and it's a plain git repo. Only
+   *  used by the file modal below; computed server-side by `parallelOffer`. */
+  parallelOffer?: boolean;
 }) {
   const router = useRouter();
   // Seed from server-rendered persisted events (computed once on mount).
@@ -704,6 +709,10 @@ export function TaskLiveView({
           // The task's own working dir may be an isolated worktree — the linked file
           // (e.g. a test scenario) exists there, not in the project checkout.
           taskId={taskId}
+          // A pm run's transcript is where its planned specs are opened from, and this run is
+          // itself holding the checkout — so dispatching one of them is the case parallel
+          // isolation exists for.
+          parallelOffer={parallelOffer}
           onClose={() => setScenarioPath(null)}
         />
       )}

@@ -266,6 +266,78 @@ agent-filed item, a done item linked to the viewer's task, and one linked to ano
 the last renders its badge with no link, which is the ownership rule holding. The 50-row section
 cap and its `?all=1` disclosure were checked with 60 seeded items.
 
+## Grouping work by feature — three surfaces, one heading (2026-08-22)
+`/backlog`, project detail's task history and `/tasks` all group by feature now. The components
+are in `.fe/design-system.md`; what belongs here is the measured behaviour and the two
+verification traps, neither of which is guessable from the code.
+
+- **The grouping decision is `groupByFeature` in `lib/ui.ts`, and its `null` return is the whole
+  contract.** No row has a feature → answer null → the caller renders the list it always
+  rendered. Without that, every task list and backlog section in the app would grow a single
+  "No feature" heading: a level of hierarchy conveying nothing, on every install that hasn't used
+  features. Verified both ways on a seeded DB — a project whose tasks all have `feature_id` NULL
+  renders **zero `<h3>`s and zero merge chips**, and the dashboard's "Recent activity" (plain
+  `TaskList`) is untouched. The ungrouped bucket sorts **last** and only exists when something
+  is in it; a row whose `featureId` doesn't resolve lands there rather than disappearing, since
+  `tasks.feature_id` is `ON DELETE SET NULL` and a row can briefly outlive its feature.
+- **`featureMergeSummary` never counts `pending`, and that is a product decision, not an
+  omission.** A non-isolated (checkout) feature run stays `pending` **forever** by design — the
+  platform only system-merges isolated runs — so aggregating it would put a permanent
+  "N pending" on the heading of every feature whose work ran in the checkout, reading as a queue
+  that will never drain. The per-row chip still says "Not merged", so nothing is hidden; what's
+  dropped is only the aggregate, which is where the false impression came from. A spec pins it.
+- **A long branch name was a real horizontal-overflow bug, found by measuring rather than
+  looking.** The branch chip started as `shrink-0` around a mono string, which is rigid — and a
+  branch is `feature/` plus up to `MAX_SLUG_LENGTH` (60) characters. On a real project's derived
+  features that forced **95px of page overflow at 390px and 164px at 320px**: a horizontal
+  scrollbar on the whole page. Now `min-w-0` + `break-all`, so it **wraps and stays complete**.
+  Not `truncate` + `title`: this is the string you came to copy, and a tooltip is unreachable by
+  keyboard. Worth noting the near-miss — `/tasks` looked fine the whole time, because the
+  branches *I* seeded were short while the ones the backlog derived from the repo's real
+  `.pm/tasks/` folders sat near the slug cap. **Seed the worst case, not a plausible one.**
+- **The per-row merge chip is `sr-only sm:not-sr-only`, and it was measured, not assumed.**
+  `position: absolute`, 1×1px at 390px — so it takes no flex space and a mobile row is
+  byte-identical to before the chip existed, while "Merge conflict" stays in the row's
+  accessible name at every width (`MobileTabBar`'s trick). The tight title truncation visible on
+  a row with a wide status badge at 390px is pre-existing `TaskList` behaviour, not this.
+
+### `chrome --headless --window-size=W,H --screenshot` does not lay the page out at W
+This cost a full round of wrong conclusions, so it is the load-bearing note here. That flag sets
+the *window*, then Chrome renders at some wider viewport and **crops to W** — so a "390px"
+screenshot shows desktop-width line breaks with the right-hand side cut off, which looks exactly
+like a responsive regression you just introduced. I "found" clipping on the grouped pages this
+way and then reproduced the identical clipping on the **dashboard**, which this task never
+touched — that control is what exposed the tool, and it is the check to run first next time.
+
+The only truthful way is real device emulation over CDP: launch with
+`--remote-debugging-port=9222`, `PUT /json/new`, then `Emulation.setDeviceMetricsOverride`
+(`width`, `height`, `deviceScaleFactor: 2`, `mobile: width < 768`) before `Page.navigate`. Node
+22+ has a global `WebSocket`, so the whole driver is ~40 lines with no dependencies. Two things
+worth building into it:
+- **Measure, don't eyeball**: `documentElement.scrollWidth - clientWidth`, and when that's
+  positive, walk `body *` for elements whose `getBoundingClientRect().right` exceeds
+  `clientWidth`. That names the offending element and its classes, which is what turned "the
+  page looks cut off" into "the branch chip is `shrink-0`" — and, on project detail, into proof
+  that the offenders were `ProjectActions`' buttons in files this task never opened (filed as a
+  backlog item rather than fixed here).
+- **`captureBeyondViewport: false`** unless you want it. These pages run to ~26 000px tall; a
+  full-page capture scaled to fit is unreadable.
+
+Pin the theme with a script that runs **last** (`document.documentElement.className = "dark"`),
+not by editing the `<html>` tag: the app's own blocking init script sets that class from
+`localStorage`/`matchMedia` and will overwrite markup. Assets: mirror the SSR'd HTML plus the one
+`/_next/static/chunks/*.css` file, drop `<script src>` tags but **keep the inline ones** — Next
+streams the shell first and its inline scripts are what swap the real content over the loading
+skeleton. Strip those and you screenshot the skeleton and think the page is broken.
+
+### Killing the throwaway `next start` will kill your dev server if you match loosely
+The existing note says match `*next-server*`; the trap is that the container's **dev** server is
+also `next-server (v16.2.9)`, so any `| tail -N` over that match is a coin flip. I killed the dev
+server twice this way. Kill by **explicit PID**, read off `/proc/*/cmdline` for the wrapper chain
+that still carries the port (`sh -c … -p 3099`, `npm exec …`), and if you do lose it,
+`docker restart platform` re-runs the entrypoint and brings web + runner back cleanly — note
+`concurrently` survives with a dead child, so the port stays down until the container restarts.
+
 ## Verifying a page: `next start` on a throwaway DB, not a second `next dev`
 The documented recipe (`PLATFORM_DB=/tmp/x.db npx next dev --port 3099`) **dies when the dev
 container is already running** — two `next dev` processes fight over `.next/`, and the second

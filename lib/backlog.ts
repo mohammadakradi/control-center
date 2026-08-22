@@ -19,23 +19,29 @@ import {
   openSync,
   readSync,
   readdirSync,
+  type Dirent,
 } from "node:fs";
 import { resolve } from "node:path";
 import { and, asc, count, desc, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import { db } from "./db";
 import {
   backlogItems,
+  features,
   tasks,
   type BacklogItem,
   type BacklogSource,
   type BacklogStatus,
+  type Feature,
   TERMINAL_TASK_STATUSES,
   type Project,
+  type TaskMergeState,
   type TaskStatus,
 } from "./db/schema";
+import { ensureRequestFeature, listFeatures, parseFeatureRef } from "./features";
 import {
   isBacklogAssignee,
   parseFrontmatter,
+  requestTitle,
   specTitle,
   targetNamespace,
   type BacklogAssignee,
@@ -87,11 +93,28 @@ export function isBacklogStatus(v: unknown): v is BacklogStatus {
 export type ScannedSpec = {
   /** Project-relative, always `/`-separated: `.pm/tasks/<request>/<task>.md`. */
   sourcePath: string;
+  /** The request folder holding it: `.pm/tasks/<request>`. Already implied by `sourcePath`,
+   *  carried explicitly because it is the key the spec's *feature* is derived from. */
+  requestDir: string;
   title: string;
   /** The file, verbatim — it's what gets handed to the agent on a run. */
   description: string;
   assignee: SpecAssignee;
   priority: string | null;
+};
+
+/**
+ * A `.pm/tasks/<request>/` folder that contributed at least one spec — i.e. a feature.
+ *
+ * The folder has always been the grouping for pm-planned work; it was just buried inside each
+ * item's `sourcePath` and never read out. A folder with no specs in it isn't listed: an empty
+ * request folder is not a feature, it's a folder.
+ */
+export type ScannedRequest = {
+  /** Project-relative `.pm/tasks/<request>` — the sync key for the folder's feature. */
+  sourceDir: string;
+  /** Its `index.md` summary, else the folder name made readable (see `requestTitle`). */
+  title: string;
 };
 
 const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
@@ -150,6 +173,8 @@ export function readSpecFile(abs: string): string | null {
 
 export type PmScan = {
   specs: ScannedSpec[];
+  /** One per request folder that yielded a spec, newest first — the features to derive. */
+  requests: ScannedRequest[];
   /** Entries the scan refused or couldn't read (symlinks, hard links, oversized, special
    *  files, unreadable folders). Reported so "nothing imported" is never silent. */
   skipped: number;
@@ -168,22 +193,32 @@ export type PmScan = {
  */
 export function scanPmSpecs(projectPath: string): PmScan {
   const root = resolve(projectPath, PM_TASKS_DIR);
-  let requestDirs;
+  let requestDirs: Dirent[];
   try {
     requestDirs = readdirSync(root, { withFileTypes: true });
   } catch {
-    return { specs: [], skipped: 0, truncated: false }; // no `.pm/tasks` — the common case
+    // no `.pm/tasks` — the common case
+    return { specs: [], requests: [], skipped: 0, truncated: false };
   }
+  return scanRequestDirs(root, requestDirs);
+}
 
+function scanRequestDirs(root: string, requestDirs: Dirent[]): PmScan {
   const specs: ScannedSpec[] = [];
+  const requests: ScannedRequest[] = [];
   let skipped = 0;
   let truncated = false;
   let scannedBytes = 0;
+  /** A cap ended the walk. Breaks out of both loops rather than returning, so the folder that
+   *  was in progress still gets its request recorded — otherwise the specs already collected
+   *  from it would be imported with no feature to belong to. */
+  let capped = false;
 
   const dirs = requestDirs.sort(byName).reverse(); // newest request folder first
   if (dirs.length > MAX_REQUEST_DIRS) truncated = true;
 
   for (const dir of dirs.slice(0, MAX_REQUEST_DIRS)) {
+    if (capped) break;
     if (!dir.isDirectory() || dir.name.startsWith(".")) continue;
     if (hasControlChars(dir.name)) {
       skipped += 1;
@@ -199,7 +234,11 @@ export function scanPmSpecs(projectPath: string): PmScan {
     }
     if (files.length > MAX_DIR_ENTRIES) truncated = true;
 
-    for (const file of files.sort(byName).slice(0, MAX_DIR_ENTRIES)) {
+    const entries = files.sort(byName).slice(0, MAX_DIR_ENTRIES);
+    const requestDir = `${PM_TASKS_DIR}/${dir.name}`;
+    const specsBefore = specs.length;
+
+    for (const file of entries) {
       if (!isMarkdown(file.name) || isIndex(file.name)) continue;
       if (!file.isFile() || hasControlChars(file.name)) {
         skipped += 1;
@@ -207,10 +246,12 @@ export function scanPmSpecs(projectPath: string): PmScan {
       }
 
       if (specs.length >= MAX_SPECS || scannedBytes >= MAX_SCAN_BYTES) {
-        return { specs, skipped, truncated: true };
+        capped = true;
+        truncated = true;
+        break;
       }
 
-      const sourcePath = `${PM_TASKS_DIR}/${dir.name}/${file.name}`;
+      const sourcePath = `${requestDir}/${file.name}`;
       const content = readSpecFile(resolve(root, dir.name, file.name));
       if (content === null) {
         skipped += 1;
@@ -221,14 +262,32 @@ export function scanPmSpecs(projectPath: string): PmScan {
       const fm = parseFrontmatter(content);
       specs.push({
         sourcePath,
+        requestDir,
         title: specTitle(content, sourcePath),
         description: content,
         assignee: targetNamespace(fm),
         priority: fm.priority || null,
       });
     }
+
+    // Only a folder that actually holds work is a feature. Its name comes from `index.md`,
+    // read through the same hardened path as a spec (`readSpecFile`: O_NOFOLLOW, one link,
+    // regular files only) and charged to the same byte budget — a symlinked `index.md` must
+    // no more be able to name a feature after a file outside the project than a symlinked
+    // spec can put one in a row.
+    if (specs.length > specsBefore) {
+      const index = entries.find(
+        (f) => isIndex(f.name) && f.isFile() && !hasControlChars(f.name),
+      );
+      const content =
+        index && scannedBytes < MAX_SCAN_BYTES
+          ? readSpecFile(resolve(root, dir.name, index.name))
+          : null;
+      if (content) scannedBytes += content.length;
+      requests.push({ sourceDir: requestDir, title: requestTitle(content, dir.name) });
+    }
   }
-  return { specs, skipped, truncated };
+  return { specs, requests, skipped, truncated };
 }
 
 export type BacklogSyncReport = {
@@ -246,6 +305,10 @@ export type BacklogSyncReport = {
  * Content is refreshed from the file (an edited spec should dispatch its current text), status
  * never is. A spec that disappears from disk leaves its item behind: the row carries status and
  * a link to the task that ran it, none of which is recoverable from a deleted file.
+ *
+ * Each request folder also becomes a **feature**, and its items are linked to it. That
+ * grouping has always existed on disk — it was the folder — so deriving it here rather than
+ * asking anyone to re-state it is what makes features free for pm-planned work.
  */
 export function syncProjectBacklog(
   project: Pick<Project, "id" | "path">,
@@ -260,6 +323,15 @@ export function syncProjectBacklog(
   };
   if (specs.length === 0) return report;
 
+  // One feature per request folder, keyed on the folder so this is a no-op after the first
+  // load. A folder that can't get one (the project is at its feature cap) is simply absent
+  // from the map, and its items stay ungrouped rather than failing the load.
+  const featureFor = new Map<string, string>();
+  for (const request of scan.requests) {
+    const feature = ensureRequestFeature(project.id, request.sourceDir, request.title);
+    if (feature) featureFor.set(request.sourceDir, feature.id);
+  }
+
   const existing = new Map(
     db
       .select()
@@ -272,6 +344,10 @@ export function syncProjectBacklog(
 
   for (const spec of specs) {
     const row = existing.get(spec.sourcePath);
+    // Null only when this folder has no feature at all (the project is at its cap and the
+    // folder is new). An already-derived folder resolves even at the cap, so an item that is
+    // grouped today stays grouped — see `ensureRequestFeature`.
+    const featureId = featureFor.get(spec.requestDir) ?? null;
     if (!row) {
       const inserted = db
         .insert(backlogItems)
@@ -283,6 +359,7 @@ export function syncProjectBacklog(
           assignee: spec.assignee,
           priority: spec.priority,
           sourcePath: spec.sourcePath,
+          featureId,
           source: "pm-sync",
           status: "todo",
         })
@@ -294,11 +371,13 @@ export function syncProjectBacklog(
       continue;
     }
 
+    // Never *clear* a grouping we merely failed to derive this time round: at the feature cap
     const changed =
       row.title !== spec.title ||
       row.description !== spec.description ||
       row.assignee !== spec.assignee ||
-      row.priority !== spec.priority;
+      row.priority !== spec.priority ||
+      row.featureId !== featureId;
     if (!changed) continue;
 
     db.update(backlogItems)
@@ -307,6 +386,12 @@ export function syncProjectBacklog(
         description: spec.description,
         assignee: spec.assignee,
         priority: spec.priority,
+        // The folder is authoritative, so this is a plain assignment and not a "keep whatever
+        // was there if we couldn't derive one". Where an item keeps its grouping under the
+        // feature cap is `ensureRequestFeature`, which resolves an *already derived* folder
+        // before it consults the cap — so `featureId` is only null here for a folder that has
+        // no feature at all, and writing null is then the honest answer.
+        featureId,
         updatedAt: new Date(),
       })
       .where(eq(backlogItems.id, row.id))
@@ -346,8 +431,13 @@ export function reflectLinkedTasks(projectId: string): number {
 
 /** An item plus the state of the task it was dispatched as, if any. */
 export type BacklogItemView = BacklogItem & {
-  /** Deliberately just id + status: the transcript stays private to whoever ran it. */
-  linkedTask: { id: string; status: TaskStatus } | null;
+  /** Deliberately just id + status + merge state: the transcript stays private to whoever ran
+   *  it. `mergeState` is exposed for the same reason `status` is — that a run happened, and how
+   *  it ended, is not the private part; what the agent wrote is. */
+  linkedTask: { id: string; status: TaskStatus; mergeState: TaskMergeState | null } | null;
+  /** The feature this item belongs to, joined in so a grouped list costs one query. Features
+   *  are project-scoped and shared, like the item itself, so this is fully populated. */
+  feature: Pick<Feature, "id" | "name" | "branch" | "status"> | null;
 };
 
 /**
@@ -364,9 +454,15 @@ export function listBacklog(projectId: string): BacklogItemView[] {
       item: backlogItems,
       taskId: tasks.id,
       taskStatus: tasks.status,
+      taskMergeState: tasks.mergeState,
+      featureId: features.id,
+      featureName: features.name,
+      featureBranch: features.branch,
+      featureStatus: features.status,
     })
     .from(backlogItems)
     .leftJoin(tasks, eq(backlogItems.linkedTaskId, tasks.id))
+    .leftJoin(features, eq(backlogItems.featureId, features.id))
     .where(eq(backlogItems.projectId, projectId))
     .orderBy(
       desc(backlogItems.createdAt),
@@ -374,9 +470,23 @@ export function listBacklog(projectId: string): BacklogItemView[] {
       asc(backlogItems.id),
     )
     .all()
-    .map(({ item, taskId, taskStatus }) => ({
-      ...item,
-      linkedTask: taskId ? { id: taskId, status: taskStatus as TaskStatus } : null,
+    .map((row) => ({
+      ...row.item,
+      linkedTask: row.taskId
+        ? {
+            id: row.taskId,
+            status: row.taskStatus as TaskStatus,
+            mergeState: row.taskMergeState ?? null,
+          }
+        : null,
+      feature: row.featureId
+        ? {
+            id: row.featureId,
+            name: row.featureName as string,
+            branch: row.featureBranch as string,
+            status: row.featureStatus as Feature["status"],
+          }
+        : null,
     }));
 }
 
@@ -397,6 +507,8 @@ export type NewBacklogItem = {
   assignee?: BacklogAssignee | null;
   priority?: string | null;
   status?: BacklogStatus;
+  /** Already validated to belong to this project — see `parseFeatureRef`. */
+  featureId?: string | null;
   source: Extract<BacklogSource, "manual" | "agent">;
 };
 
@@ -422,6 +534,7 @@ export function createBacklogItem(
       status: input.status ?? "todo",
       // An explicit starting status is a human decision, so it holds against reflection.
       statusOverride: input.status !== undefined && input.status !== "todo",
+      featureId: input.featureId ?? null,
       source: input.source,
     })
     .run();
@@ -474,6 +587,10 @@ export function openBacklogCounts(): Record<string, number> {
 
 export type BacklogLoad = {
   items: BacklogItemView[];
+  /** The project's features, so a grouped list can render a heading for one that currently
+   *  holds no items — and so a load that just derived a feature returns it in the same
+   *  response, rather than needing a second round trip to find out its own grouping. */
+  features: Feature[];
   synced: BacklogSyncReport | null;
   /** Human-readable notes about what the scan couldn't do. Absent when there are none. */
   warnings?: string[];
@@ -512,6 +629,7 @@ export function loadProjectBacklog(project: Pick<Project, "id" | "path">): Backl
 
   return {
     items: listBacklog(project.id),
+    features: listFeatures(project.id),
     synced,
     warnings: warnings.length > 0 ? warnings : undefined,
   };
@@ -524,6 +642,9 @@ export type BacklogEdit = {
   assignee?: BacklogAssignee | null;
   priority?: string | null;
   status?: BacklogStatus;
+  /** Which feature the item belongs to. Validated against the project by `parseFeatureRef`,
+   *  and refused outright on a synced item — its `.pm/tasks/<request>/` folder owns it. */
+  featureId?: string | null;
 };
 
 /**
@@ -536,6 +657,7 @@ export function updateBacklogItem(itemId: string, edit: BacklogEdit): BacklogIte
   if (edit.description !== undefined) patch.description = edit.description;
   if (edit.assignee !== undefined) patch.assignee = edit.assignee;
   if (edit.priority !== undefined) patch.priority = edit.priority;
+  if (edit.featureId !== undefined) patch.featureId = edit.featureId;
   if (edit.status !== undefined) {
     patch.status = edit.status;
     patch.statusOverride = true;
@@ -584,8 +706,21 @@ export function activeLinkedTask(
 /**
  * Fields a synced spec file owns. Accepting an edit to one would be a lie: the next backlog
  * load re-reads the file and puts it back, so the API refuses instead and points at the file.
+ *
+ * `featureId` is on this list for exactly that reason and not by analogy — a synced item's
+ * feature is derived from the `.pm/tasks/<request>/` folder it lives in, and the sync
+ * re-derives it on every load. There is deliberately no precedence flag for it, the way
+ * `statusOverride` exists for status: status is the one thing no file knows, while the folder
+ * genuinely does know the grouping. Someone who wants a spec grouped elsewhere moves the file,
+ * or groups its *task*, whose feature is freely assignable.
  */
-const FILE_OWNED_FIELDS = ["title", "description", "assignee", "priority"] as const;
+const FILE_OWNED_FIELDS = [
+  "title",
+  "description",
+  "assignee",
+  "priority",
+  "featureId",
+] as const;
 
 /** Which of an edit's fields the file owns — empty for an item that isn't file-backed. */
 export function fileOwnedEdits(edit: BacklogEdit): string[] {
@@ -604,8 +739,15 @@ const MAX_PRIORITY_LENGTH = 20;
  * `source` and `linkedTaskId` are deliberately not accepted from a client: a caller that
  * could set `sourcePath` would park a row on a path the sync then treats as imported, and one
  * that could set `linkedTaskId` could point an item at someone else's task.
+ *
+ * `projectId` is required because `featureId` can only be checked against it — a feature id
+ * from another project must be refused rather than stored, or a caller could link this
+ * project's work into someone else's grouping.
  */
-export function parseBacklogEdit(body: unknown): ParseResult<BacklogEdit> {
+export function parseBacklogEdit(
+  body: unknown,
+  projectId: string,
+): ParseResult<BacklogEdit> {
   const raw: Record<string, unknown> =
     typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
   const edit: BacklogEdit = {};
@@ -662,18 +804,54 @@ export function parseBacklogEdit(body: unknown): ParseResult<BacklogEdit> {
     edit.status = raw.status;
   }
 
+  if (raw.featureId !== undefined) {
+    const feature = parseFeatureRef(projectId, raw.featureId);
+    if (!feature.ok) return feature;
+    edit.featureId = feature.value ?? null;
+  }
+
   return { ok: true, value: edit };
 }
 
 /** Same validation, but a title is mandatory — an untitled item is unreadable in a list. */
 export function parseNewBacklogItem(
   body: unknown,
+  projectId: string,
 ): ParseResult<Omit<NewBacklogItem, "source">> {
-  const parsed = parseBacklogEdit(body);
+  const parsed = parseBacklogEdit(body, projectId);
   if (!parsed.ok) return parsed;
   const { title, ...rest } = parsed.value;
   if (title === undefined) return { ok: false, error: "title is required" };
   return { ok: true, value: { title, ...rest } };
+}
+
+/** How a run of an item was asked for, as opposed to what the item *is*. */
+export type BacklogRunOptions = {
+  /** Isolate this run in its own git worktree if the checkout is busy at launch, rather than
+   *  queueing behind it. Refused later by `createAndStartTask` for a non-git project or a
+   *  workspace, exactly as the same flag on `POST /api/tasks` is. */
+  parallel: boolean;
+};
+
+/**
+ * Validate the run action's body. Every field is optional — the route long predates having a
+ * body at all, and `BacklogItemRow`'s Run button and `FileModal`'s "Create task" both used to
+ * send none, so no body, an empty one and an unparseable one all mean "run it normally".
+ *
+ * A `parallel` that isn't a boolean is **refused rather than coerced**. Falsy-coercing `"no"`
+ * (or truthy-coercing `"false"`) would answer a different question than the caller asked, and
+ * the difference is close to invisible: the run just queues, which is what it would have done
+ * had nobody asked for isolation at all.
+ */
+export function parseRunOptions(body: unknown): ParseResult<BacklogRunOptions> {
+  const raw: Record<string, unknown> =
+    typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
+
+  if (raw.parallel !== undefined && typeof raw.parallel !== "boolean") {
+    return { ok: false, error: "parallel must be a boolean" };
+  }
+
+  return { ok: true, value: { parallel: raw.parallel === true } };
 }
 
 /**

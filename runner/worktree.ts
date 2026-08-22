@@ -28,10 +28,18 @@
  *   change than this one.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { DATA_DIR } from "../lib/config";
-import { NO_HOOKS, gitEnv } from "../lib/git";
+import { gitMerge, gitEnv, repoOpts, type GitResult } from "../lib/git";
 
 export const WORKTREES_DIR = resolve(DATA_DIR, "worktrees");
 
@@ -61,9 +69,19 @@ export function launchMode(opts: {
   workdir: string | null;
   isGit: boolean;
   isWorkspace: boolean;
+  /** The task belongs to a feature (tasks.featureId). A feature-linked parallel run always
+   *  isolates, busy or not: the runner bases its worktree on the feature branch and merges
+   *  back into it on done, and the first of N siblings landing in the shared checkout would
+   *  neither of those things. Meaningless without `parallel` — a non-parallel feature run
+   *  stays a plain checkout run, one the platform can't system-merge (the agent owns git
+   *  there; see the dispatch preamble in session-manager). */
+  feature: boolean;
 }): LaunchMode {
   const canIsolate = opts.isGit && !opts.isWorkspace;
-  if (canIsolate && (Boolean(opts.workdir) || (opts.busy && opts.parallel)))
+  if (
+    canIsolate &&
+    (Boolean(opts.workdir) || (opts.parallel && (opts.busy || opts.feature)))
+  )
     return "isolate";
   return opts.busy ? "queue" : "run";
 }
@@ -78,16 +96,19 @@ export function launchMode(opts: {
  * *project's* shared `.git` — so without this a single planted hook re-executes in the runner
  * process for as long as tasks keep being dispatched.
  *
- * `NO_HOOKS`/`gitEnv` are **imported from lib/git.ts rather than repeated here** — an earlier
- * version inlined the same two lines and a reviewer rightly called it a second place to keep in
- * sync by hand. Sharing them also means the env half is covered by lib/git.ts's specs, which is
- * where the subtle parts live (why `/dev/null` and not an empty string or a temp directory, and
- * why `process.env` is spread at call time rather than snapshotted). Read that comment before
+ * `repoOpts`/`gitEnv` are **imported from lib/git.ts rather than repeated here** — an earlier
+ * version inlined just `NO_HOOKS`+`gitEnv`, and a security audit of the feature-branch
+ * merge-back work found the gap that leaves: `-c core.fsmonitor=` was missing, and `git
+ * worktree add` (unlike `branch` or `worktree prune`) *does* invoke a planted `core.fsmonitor`
+ * — verified live, and the exploit path is unattended (a feature-linked task reaching `done`
+ * runs `worktree add` against the project's shared checkout with no further action). Using the
+ * *same* `repoOpts(cwd)` this file's mutating calls now share with lib/git.ts's is what makes
+ * this a single pin list to keep in sync rather than two — read that function's comment before
  * changing either.
  */
 function git(cwd: string, args: string[]): string {
   try {
-    return execFileSync("git", [...NO_HOOKS, ...args], {
+    return execFileSync("git", [...repoOpts(cwd), ...args], {
       cwd,
       encoding: "utf8",
       env: gitEnv(),
@@ -149,14 +170,16 @@ function isLiveWorktree(dir: string): boolean {
  *   wins over the derived `task/<id>` birth name: the agent's workflow switches branches,
  *   and reattaching to the birth name would resume without the actual work (found by
  *   review, with a repro);
- * - first run → create the `task/<id>` branch at the project's current HEAD.
+ * - first run → create the `task/<id>` branch at the project's current HEAD, or at
+ *   `opts.baseRef` when the task is feature-linked — the feature branch, so the task's work
+ *   and the feature's other tasks' work share a common ancestor a later merge can reconcile.
  * Throws with git's own stderr when the repo refuses (e.g. the branch is checked out in the
  * main tree) — the caller fails the task with that message rather than guessing.
  */
 export function ensureTaskWorktree(
   projectPath: string,
   taskId: string,
-  opts: { branch?: string | null; maxWorktrees?: number } = {},
+  opts: { branch?: string | null; maxWorktrees?: number; baseRef?: string | null } = {},
 ): Worktree {
   const dir = taskWorktreeDir(taskId);
   const birthBranch = taskBranch(taskId);
@@ -198,8 +221,83 @@ export function ensureTaskWorktree(
     git(projectPath, ["worktree", "add", dir, reattach]);
     return { dir, branch: reattach };
   }
-  git(projectPath, ["worktree", "add", "-b", birthBranch, dir]);
+  // Only a brand-new branch takes a base — an existing one (the reattach cases above) already
+  // has whatever history it started with. A leading dash is refused as a ref, same rule as
+  // `opts.branch` above and `gitShowFile`.
+  const base = opts.baseRef && !opts.baseRef.startsWith("-") ? [opts.baseRef] : [];
+  git(projectPath, ["worktree", "add", "-b", birthBranch, dir, ...base]);
   return { dir, branch: birthBranch };
+}
+
+/**
+ * Make sure a feature's branch ref exists, creating it off `base` (normally the project's
+ * default branch) the first time any of its tasks runs isolated. This only ever creates a
+ * ref — it never checks anything out or touches the working tree — so it's safe to call
+ * against the project's own checkout even while another session is live there, exactly like
+ * `git status` already is safe to run concurrently. Idempotent: a branch created by an
+ * earlier task of the same feature (or by hand) is left exactly where it is, since renaming
+ * or rebasing it out from under work already merged into it would be actively wrong.
+ *
+ * Always attempts the create rather than checking first, and treats "already exists" as
+ * success once `branchExists` confirms it — which is what makes this safe against two
+ * feature-linked tasks dispatched at once: `git branch` is atomic, so at most one side's
+ * create actually happens, and the loser lands here and finds the winner's ref already in
+ * place. Any other failure (an unusable `base`) still throws.
+ */
+export function ensureFeatureBranch(
+  projectPath: string,
+  branch: string,
+  base: string | null,
+): void {
+  if (branch.startsWith("-")) {
+    throw new Error(`refusing to create an unsafe feature branch ref: ${branch}`);
+  }
+  try {
+    git(projectPath, ["branch", branch, ...(base && !base.startsWith("-") ? [base] : [])]);
+  } catch (err) {
+    if (!branchExists(projectPath, branch)) throw err;
+  }
+}
+
+/**
+ * Merge `taskBranch` into `featureBranch`, entirely inside a throwaway worktree of the
+ * feature branch — never the project's own checkout, and never the task's own worktree
+ * (which the caller still needs intact to read the branch off before its own cleanup).
+ *
+ * The temp worktree lives under the OS tmpdir, not `WORKTREES_DIR`: it must never count
+ * against `MAX_WORKTREES`, and it is gone — via `worktree remove --force`, plus a defensive
+ * `rmSync` — before this function returns either way, so a listing of `WORKTREES_DIR` can
+ * never catch it mid-flight. On conflict (or any other merge failure) `gitMerge` has already
+ * run `merge --abort`, restoring the temp tree to a clean checkout of the feature branch's
+ * previous tip, so the force-remove has nothing real to override; the task branch itself is
+ * never written to, so a failed merge can always be retried later or resolved by hand.
+ */
+export function mergeFeatureTask(
+  projectPath: string,
+  featureBranch: string,
+  taskBranch: string,
+): GitResult {
+  // `featureBranch` always comes from `features.branch` today (an allowlisted slug that can
+  // never start with a dash), but this function takes a bare string — the same
+  // defense-in-depth every other ref in this file gets before reaching git's argv.
+  if (!featureBranch || featureBranch.startsWith("-")) {
+    return { ok: false, output: `refusing to merge into an unsafe ref: ${featureBranch}` };
+  }
+  // Stale bookkeeping from a crashed earlier attempt would make `worktree add` refuse the
+  // path below — the same reason `ensureTaskWorktree` prunes before creating.
+  git(projectPath, ["worktree", "prune"]);
+  const dir = mkdtempSync(join(tmpdir(), "platform-merge-"));
+  try {
+    git(projectPath, ["worktree", "add", dir, featureBranch]);
+    return gitMerge(dir, taskBranch);
+  } finally {
+    try {
+      git(projectPath, ["worktree", "remove", "--force", dir]);
+    } catch {
+      /* best-effort — the directory is removed directly below regardless */
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** The branch currently checked out in a worktree, or null if it can't be read — including

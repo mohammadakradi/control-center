@@ -42,7 +42,8 @@ export async function POST(req: Request, { params }: Ctx) {
   const project = db.select().from(projects).where(eq(projects.id, id)).get();
   if (!project) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  const parsed = parseNewBacklogItem(await req.json().catch(() => null));
+  // `id` is passed so a `featureId` in the body is checked against *this* project's features.
+  const parsed = parseNewBacklogItem(await req.json().catch(() => null), id);
   if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
 
   // A backlog is a human artifact; past this it's a way to fill the disk (and every item's body

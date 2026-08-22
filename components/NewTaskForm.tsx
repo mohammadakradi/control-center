@@ -20,7 +20,12 @@ import { Button } from "@/components/ui/button";
 import { ErrorAlert, type ErrorAction } from "@/components/ui/error-alert";
 import { Select } from "@/components/ui/select";
 import { materializeFiles } from "@/lib/attachments";
-import { dispatchErrorAction, orderSkills } from "@/lib/ui";
+import {
+  dispatchErrorAction,
+  featureOptions,
+  orderSkills,
+  type FeatureChoice,
+} from "@/lib/ui";
 
 type Cmd = {
   name: string;
@@ -79,11 +84,21 @@ export function NewTaskForm({
   agents,
   onboardedByAgent = {},
   parallelOffer = false,
+  features = [],
 }: {
   projectId: string;
   agents: AgentLite[];
   /** Per-agent onboarding state for this project, keyed by agent id. */
   onboardedByAgent?: Record<string, boolean>;
+  /**
+   * The project's features, for grouping this run with related work. Empty (the default) hides
+   * the control entirely — a select with only "No feature" in it is a question with one answer.
+   *
+   * Handed down from the page rather than fetched here: the project page is a server component
+   * that can read them in the same pass as everything else, so a client fetch would buy a
+   * loading state and a second round trip for data already on screen.
+   */
+  features?: FeatureChoice[];
   /** Offer "Run in parallel": the project's checkout is busy right now AND it's a plain git
    *  repo (worktree isolation is refused for non-git projects and workspaces). Computed
    *  server-side at page load — if the other run finishes before dispatch, the flag simply
@@ -115,6 +130,11 @@ export function NewTaskForm({
   const [errorAction, setErrorAction] = useState<ErrorAction | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [parallel, setParallel] = useState(false);
+  const [featureId, setFeatureId] = useState("");
+  const featureChoices = useMemo(() => featureOptions(features), [features]);
+  // One real choice plus "No feature" is not a choice — and a project with only closed features
+  // has nothing assignable, so this counts the options rather than the rows.
+  const offerFeatures = featureChoices.length > 1;
 
   const cmd = commands.find((c) => c.name === command);
   const hasOnboard = (agent?.commands ?? []).some((c) => c.name === "onboard");
@@ -168,6 +188,10 @@ export function NewTaskForm({
       fd.set("requestText", requestText);
       fd.set("model", model);
       if (parallel && parallelOffer) fd.set("parallel", "1");
+      // Gated on the control actually being offered, like `parallel` above: a stale id from a
+      // feature closed since this page rendered would be refused with a 400 the user can do
+      // nothing about, and an empty value means "no feature" to the route anyway.
+      if (featureId && offerFeatures) fd.set("featureId", featureId);
       for (const f of await materializeFiles(files)) fd.append("files", f);
       res = await fetch("/api/tasks", { method: "POST", body: fd });
     } catch {
@@ -343,6 +367,29 @@ export function NewTaskForm({
       </FileDropZone>
       {model === "auto" && (
         <p className="mt-2 text-xs text-fg-faint">{autoHint(agent?.namespace)}</p>
+      )}
+
+      {/* Optional grouping. Its own row rather than a third control in the footer beside
+          Model: a feature name runs to 200 characters, and that row already wraps awkwardly
+          at 390px with two items in it. */}
+      {offerFeatures && (
+        <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1">
+          {/* `Select` renders a button, so it can't be the target of a `<label>` — its
+              accessible name is `ariaLabel`, matching this visible text (the pattern
+              `AddBacklogItem` established). */}
+          <span className="text-xs text-fg-faint">Feature</span>
+          <Select
+            value={featureId}
+            onChange={setFeatureId}
+            options={featureChoices}
+            ariaLabel="Feature"
+            placement="up"
+            className="min-w-56"
+          />
+          <span className="text-xs text-fg-faint">
+            groups this run with related work on one branch
+          </span>
+        </div>
       )}
 
       {/* Offered only while another run occupies this project's checkout (and only for a

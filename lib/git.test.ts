@@ -27,6 +27,7 @@ import {
   gitCheckout,
   gitCreateBranch,
   gitFileDiff,
+  gitMerge,
   gitPull,
   gitPush,
   gitShowFile,
@@ -919,6 +920,84 @@ test("checkout, branch create and pull work from a repo root", () => {
   assert.match(bad.output, /no\/such\/branch/);
 });
 
+test("gitMerge merges cleanly with --no-ff, and aborts cleanly on conflict", () => {
+  const base = join(tBase, "merge-base");
+  mkdirSync(base);
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: base, encoding: "utf8" });
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "test@test"]);
+  g(["config", "user.name", "test"]);
+  writeFileSync(join(base, "shared.md"), "base\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "init"]);
+  // Both conflict branches fork from this same commit, before either merge below — so their
+  // histories genuinely diverge rather than one trivially containing the other.
+  g(["branch", "task/clean"]);
+  g(["branch", "task/conflict-a"]);
+  g(["branch", "task/conflict-b"]);
+
+  // Clean case: a branch that only adds a new file merges with no conflict.
+  g(["checkout", "-q", "task/clean"]);
+  writeFileSync(join(base, "new.md"), "added by task\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "clean addition"]);
+  g(["checkout", "-q", "main"]);
+  const clean = gitMerge(base, "task/clean");
+  assert.equal(clean.ok, true, clean.output);
+  assert.equal(readFileSync(join(base, "new.md"), "utf8"), "added by task\n");
+  // --no-ff always leaves a merge commit, even though this merge could have fast-forwarded —
+  // so the feature branch's history shows one boundary per merged task branch consistently.
+  assert.match(
+    execFileSync("git", ["log", "-1", "--pretty=%s"], { cwd: base, encoding: "utf8" }),
+    /^Merge branch 'task\/clean'/,
+  );
+
+  // Conflict case: two branches editing the same line of the same file from the same base.
+  g(["checkout", "-q", "task/conflict-a"]);
+  writeFileSync(join(base, "shared.md"), "task A's version\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "conflict a"]);
+  g(["checkout", "-q", "task/conflict-b"]);
+  writeFileSync(join(base, "shared.md"), "task B's version\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "conflict b"]);
+  g(["checkout", "-q", "main"]);
+
+  assert.equal(gitMerge(base, "task/conflict-a").ok, true);
+  assert.equal(readFileSync(join(base, "shared.md"), "utf8"), "task A's version\n");
+  const beforeConflict = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: base,
+    encoding: "utf8",
+  }).trim();
+
+  const conflict = gitMerge(base, "task/conflict-b");
+  assert.equal(conflict.ok, false);
+  assert.match(conflict.output, /conflict/i);
+  // Aborted, not left half-done: HEAD never moved, the file still holds task A's committed
+  // content (not conflict markers), and the working tree is clean — so a caller can remove
+  // this worktree afterward without `--force` fighting a real mess.
+  assert.equal(
+    execFileSync("git", ["rev-parse", "HEAD"], { cwd: base, encoding: "utf8" }).trim(),
+    beforeConflict,
+  );
+  assert.equal(readFileSync(join(base, "shared.md"), "utf8"), "task A's version\n");
+  assert.equal(
+    execFileSync("git", ["status", "--porcelain"], { cwd: base, encoding: "utf8" }).trim(),
+    "",
+    "working tree is clean after the abort",
+  );
+});
+
+test("gitMerge refuses a ref that could read as a git option", () => {
+  const dir = join(tBase, "merge-unsafe");
+  mkdirSync(dir);
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+  const result = gitMerge(dir, "--help");
+  assert.equal(result.ok, false);
+  assert.match(result.output, /unsafe/);
+});
+
 /**
  * Hooks are the widest form of "a repository decides what git does", and the one that survives
  * worktree isolation: `.git/hooks/` is shared by the main checkout and every linked worktree, so
@@ -972,6 +1051,14 @@ test("a repo's hooks never run on a platform-issued git command", () => {
   g(["commit", "-qm", "init"]);
   g(["push", "-q", "-u", "origin", "main"]);
 
+  // A branch with real work to merge, prepared *before* the plant (like everything else in
+  // this setup) — only `gitMerge` itself, called below, should run with hooks live.
+  g(["checkout", "-q", "-b", "feature/merge-hook-check"]);
+  writeFileSync(join(work, "c.md"), "merge me\n");
+  g(["add", "-A"]);
+  g(["commit", "-qm", "mergeable work"]);
+  g(["checkout", "-q", "main"]);
+
   // The plant goes in *after* the setup above, so the fixture's own commands can't trip it.
   plantHooks(work, markers, HOOKS);
   // Belt and braces: a repo-level `core.hooksPath` pointing back at the planted directory. `-c`
@@ -1010,6 +1097,13 @@ test("a repo's hooks never run on a platform-issued git command", () => {
       "from upstream\n",
       "the pull did not actually fast-forward, so post-merge was never in play",
     );
+
+    // `gitMerge` is new: the same claim needs the same proof here, not an inference from
+    // sharing `runGit` with `gitPull` above. The branch it merges was prepared before the
+    // plant; only this call itself runs with hooks live.
+    const merged = gitMerge(work, "feature/merge-hook-check");
+    assert.equal(merged.ok, true, `merge failed: ${merged.output}`);
+    assert.equal(readFileSync(join(work, "c.md"), "utf8"), "merge me\n");
 
     // The read paths share `git()`, so they are covered by the same pin.
     writeFileSync(join(work, "a.md"), "one\ntwo\n");
