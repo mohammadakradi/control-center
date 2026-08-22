@@ -151,6 +151,17 @@ export const features = sqliteTable(
   ],
 );
 
+/**
+ * Where a feature-linked task's branch stands relative to its feature branch. Null means
+ * "no feature" — there is nothing to merge. Set to "pending" at dispatch whenever `featureId`
+ * is set, before the runner has decided how the task will even run; an isolated run that
+ * reaches `done` updates it to "merged" (its branch merged cleanly into the feature branch)
+ * or "conflict" (the merge was aborted — the task branch is left intact for manual
+ * resolution). A non-isolated (checkout) feature run stays "pending" forever: the platform
+ * never system-merges it, so "pending" there is the honest answer, not a stuck state.
+ */
+export type TaskMergeState = "pending" | "merged" | "conflict";
+
 export type TaskStatus =
   | "queued"
   | "running"
@@ -187,6 +198,9 @@ export const tasks = sqliteTable("tasks", {
   // passed in for a manual run) and freely reassignable afterwards — unlike a synced backlog
   // item's grouping, nothing on disk re-derives a task's.
   featureId: text("feature_id").references(() => features.id, { onDelete: "set null" }),
+  // See `TaskMergeState`. Independent of `status`: a task can be `done` and `mergeState`
+  // `conflict` at once — the agent's work finished, the system merge of it didn't.
+  mergeState: text("merge_state").$type<TaskMergeState>(),
   command: text("command").notNull(), // onboard | task | fix | review | ship | workspace
   // The agent's plugin version at the time this task ran (snapshot — the agent may be
   // upgraded later, so history records which version actually did the work). Null for

@@ -477,6 +477,29 @@ test("a task's feature is stored on the row the runner reads", async () => {
       .where(eq(schema.tasks.id, outcome.taskId!))
       .get()!;
     assert.equal(row.featureId, "f_disp");
+    // "pending" from the moment a feature is linked, before the runner has even decided how
+    // the task will run — so a queued or checkout-bound feature task reads as something,
+    // not identically to a task with no feature at all.
+    assert.equal(row.mergeState, "pending");
+  }
+});
+
+test("mergeState stays null with no feature — there is nothing to merge", async () => {
+  const outcome = await dispatch.createAndStartTask({
+    projectId: "p1",
+    agentId: "swe@swe-agent-local",
+    command: "task",
+    userId: "user_local",
+  });
+  assert.equal(outcome.ok, false);
+  if (!outcome.ok) {
+    const row = db
+      .select()
+      .from(schema.tasks)
+      .where(eq(schema.tasks.id, outcome.taskId!))
+      .get()!;
+    assert.equal(row.featureId, null);
+    assert.equal(row.mergeState, null);
   }
 });
 

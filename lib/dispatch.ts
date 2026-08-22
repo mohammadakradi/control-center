@@ -240,6 +240,10 @@ export async function createAndStartTask(input: DispatchInput): Promise<Dispatch
       attachments: input.attachments ?? [],
       parallel: input.parallel ?? false,
       featureId: input.featureId ?? null,
+      // "pending" the moment a feature is linked — before the runner has even decided how
+      // this task will run — so a queued or checkout-bound feature task shows a state rather
+      // than reading identically to one with no feature at all.
+      mergeState: input.featureId ? "pending" : null,
     })
     .run();
 

@@ -224,6 +224,78 @@ items, one branch. `lib/features.ts` owns every rule; the routes under
 - Task 02 owns the real git branch (creating it, basing worktrees on it, merging into it) and
   task 04 the grouped UI. Nothing in this layer runs `git`.
 
+### The feature branch: lifecycle and merge-back (runner)
+Each feature has one real `feature/<slug>` git ref, and a feature-linked task's finished work
+ends up merged into it — deterministically, never auto-resolved, never silent on conflict.
+`runner/worktree.ts` owns the git mechanics; `runner/session-manager.ts` wires them into
+dispatch and `finalize()`; `lib/git.ts` gets the one new hardened primitive.
+- **A feature-linked parallel run always isolates, busy checkout or not.** `launchMode` gained
+  a `feature` input: `canIsolate && (workdir || (parallel && (busy || feature)))`. Before this,
+  isolation only kicked in when the checkout was already busy — so the *first* of N parallel
+  siblings dispatched against a free checkout would land directly in it, un-isolated, with no
+  branch to base on and nothing for the merge step to find. A non-parallel feature run is
+  unaffected: it stays a plain checkout run, on purpose (next bullet).
+- **On that first isolated run, `ensureFeatureBranch` creates `feature/<slug>` off the
+  project's `defaultBranch`** (a plain `git branch <name> [<base>]` — never a checkout, so it
+  never touches the working tree and is safe to run even while another session is live in that
+  same checkout). Idempotent, and hardened against the one real race: two feature-linked tasks
+  dispatched at once both find the ref missing and both attempt the create; `git branch` is
+  atomic, so exactly one succeeds, and the loser's failure is swallowed once `branchExists`
+  confirms the winner's ref is already there. Anything else (an unusable `base`) still throws.
+  `ensureTaskWorktree` then takes an optional `baseRef`: the task's own `task/<id>` branch is
+  created **at the feature branch**, not at the checkout's current HEAD — that's what gives
+  every task of a feature (and the merge below) a common ancestor. `baseRef` only matters on
+  first creation; reattaching an existing branch (continue, or a recreate after cleanup)
+  ignores it, same as it already ignored HEAD.
+- **On `done`, `finalize()` merges the task's branch into the feature branch before the
+  worktree is cleaned up** — in a **throwaway worktree of the feature branch**, never the
+  project's own checkout and never the task's own worktree (which is still needed a moment
+  longer to read the branch off). `mergeFeatureTask` (`runner/worktree.ts`) creates that temp
+  worktree under the **OS tmpdir, not `WORKTREES_DIR`** — it must never count against
+  `MAX_WORKTREES` — and force-removes it (plus a defensive `rmSync`) before returning either
+  way, win or lose the merge.
+- **The actual merge (`gitMerge`, `lib/git.ts`) is `git merge --no-ff --no-edit <branch>`,
+  aborting on any failure.** `--no-ff` always leaves a merge commit — without it, the first
+  task merged into a fresh feature branch would fast-forward with no merge commit while every
+  later one (having diverged) couldn't, an inconsistency with nothing to do with the content.
+  On failure — a real content conflict, or anything else git refuses — `merge --abort` runs
+  immediately, so the temp worktree is never left mid-merge (which would make its own
+  `worktree remove` refuse it as unclean) and the task's branch is never touched either way: a
+  failed merge can always be retried later or resolved by hand, because nothing about it is
+  destructive.
+- **The outcome is recorded on the task row as `mergeState`** (`lib/db/schema.ts`; migration
+  `drizzle/0005`) — `"pending" | "merged" | "conflict"`, the exact three names task 04's chips
+  read. Set to `"pending"` at **dispatch** (`lib/dispatch.ts`) the moment a `featureId` is
+  attached, before the runner has even decided how the task will run, so a queued or
+  checkout-bound feature task shows a state rather than reading identically to one with no
+  feature. An isolated run updates it to `"merged"` or `"conflict"` on `done`; a **non-isolated
+  run leaves it `"pending"` forever** — the platform never system-merges one, so `"pending"`
+  there is the honest answer, not a stuck one. `mergeState` is independent of the task's own
+  `status`: a task can be `done` with `mergeState: "conflict"` at once — the agent's work
+  finished; the system's merge of it didn't.
+- **A non-isolated (checkout) feature run gets an instruction-level guarantee only, and says so
+  to the agent.** The platform can't system-merge a run sharing the user's own checkout, so
+  `featureBranchPreamble` (`runner/session-manager.ts`, exported for its own spec) appends a
+  line naming the feature and its branch to the dispatched prompt — resent on **every** launch
+  (fresh dispatch, continue, and resume alike), since a fresh subprocess remembers nothing of
+  an earlier one's instructions. Decided from `handle.worktree` (set, or not, by the
+  isolate/queue/run branch before `launch()` ever runs — including the deferred "queue" case),
+  not from `mode`, which would read "queue" forever even after a queued task is promoted and
+  actually runs un-isolated. Degrades to an empty string if the feature was deleted mid-run
+  (`featureId`'s FK is `set null`, so the task can briefly outlive the row) — naming a branch
+  that no longer means anything would be worse than saying nothing.
+- **No new hook or config exposure.** `gitMerge` goes through `runGit` (the existing
+  `repoOpts`/`gitEnv`/`NO_HOOKS`/timeout wrapper); the temp-worktree creation/removal in
+  `runner/worktree.ts` goes through that file's own long-hardened `git()`. Verified directly,
+  not just inferred from sharing the wrapper: `post-merge` was already in `lib/git.test.ts`'s
+  planted-hook set but only ever exercised via `gitPull`'s fast-forward; a real `gitMerge` call
+  (prepared before the plant, like every other fixture command in that test) is now in it too.
+- **Every new ref reaching git gets the same leading-dash guard the rest of the file already
+  uses**, even where the value is provably safe today: `mergeFeatureTask`'s `featureBranch`
+  always comes from `features.branch` (an allowlisted slug that can never start with `-`), but
+  the function takes a bare string, so it's guarded anyway — defense in depth, not paranoia
+  about a path that's actually reachable right now.
+
 ## The backlog (per-project planned work)
 Each project has a durable queue of planned work in `backlog_items`, fed from two directions:
 the pm agent's `.pm/tasks/<request>/<task>.md` specs, and items added by hand (or by an agent).

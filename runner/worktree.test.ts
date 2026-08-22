@@ -7,7 +7,14 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -102,7 +109,14 @@ test("dirty remove is refused and the tree is preserved", () => {
 });
 
 test("launchMode: queueing is the default; isolation needs the opt-in AND a busy checkout", () => {
-  const base = { busy: false, parallel: false, workdir: null, isGit: true, isWorkspace: false };
+  const base = {
+    busy: false,
+    parallel: false,
+    workdir: null,
+    isGit: true,
+    isWorkspace: false,
+    feature: false,
+  };
   // The plain cases: free checkout runs, busy checkout queues.
   assert.equal(wt.launchMode(base), "run");
   assert.equal(wt.launchMode({ ...base, busy: true }), "queue");
@@ -121,6 +135,39 @@ test("launchMode: queueing is the default; isolation needs the opt-in AND a busy
     assert.equal(wt.launchMode(noGit), "queue");
   }
   assert.equal(wt.launchMode({ ...base, parallel: true, isGit: false }), "run");
+});
+
+test("launchMode: a feature-linked parallel run always isolates, busy or not", () => {
+  const base = {
+    busy: false,
+    parallel: false,
+    workdir: null,
+    isGit: true,
+    isWorkspace: false,
+    feature: false,
+  };
+  // `feature` alone changes nothing — it only matters together with the opt-in.
+  assert.equal(wt.launchMode({ ...base, feature: true }), "run");
+  assert.equal(wt.launchMode({ ...base, feature: true, busy: true }), "queue");
+  // Parallel AND feature-linked isolates even though the checkout is free — the first of N
+  // siblings must not land in the shared checkout.
+  assert.equal(wt.launchMode({ ...base, parallel: true, feature: true }), "isolate");
+  assert.equal(
+    wt.launchMode({ ...base, parallel: true, feature: true, busy: true }),
+    "isolate",
+  );
+  // A non-parallel feature run is a plain checkout run regardless — the platform never
+  // system-merges one, so it must not silently isolate either.
+  assert.equal(wt.launchMode({ ...base, feature: true, parallel: false }), "run");
+  // Still gated on there being a worktree to make at all.
+  assert.equal(
+    wt.launchMode({ ...base, parallel: true, feature: true, isGit: false }),
+    "run",
+  );
+  assert.equal(
+    wt.launchMode({ ...base, parallel: true, feature: true, isWorkspace: true }),
+    "run",
+  );
 });
 
 test("recreate after cleanup follows the STORED branch, not the birth name", () => {
@@ -248,6 +295,51 @@ test("a hook planted in the shared .git never fires on worktree lifecycle comman
   }
 });
 
+test("a repo cannot make worktree/branch/merge operations run its own program via core.fsmonitor", () => {
+  // Found by the security audit of the feature-branch merge-back work: `core.fsmonitor` names
+  // a program git executes, and unlike `core.hooksPath`-gated hooks, `git worktree add` (among
+  // others) invokes it regardless. This file's `git()` used to carry only `NO_HOOKS`/`gitEnv`
+  // — a second, narrower pin list kept in sync by hand with lib/git.ts's `repoOpts` — and that
+  // gap is exactly what let a planted `core.fsmonitor` fire on `worktree add`. Now `git()` uses
+  // `repoOpts(cwd)` itself, so this covers `ensureTaskWorktree`, `ensureFeatureBranch` and
+  // `mergeFeatureTask` in one plant.
+  const marker = join(root, "FSMONITOR_RAN");
+  const hook = join(repo, "fsmonitor-hook.sh");
+  writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 1\n`, { mode: 0o755 });
+  git(repo, ["config", "core.fsmonitor", hook]);
+
+  try {
+    const branchRan = () => {
+      const ran = existsSync(marker);
+      rmSync(marker, { force: true });
+      return ran;
+    };
+
+    wt.ensureFeatureBranch(repo, "feature/fsmonitor-check", "main");
+    assert.equal(branchRan(), false, "core.fsmonitor executed on ensureFeatureBranch");
+
+    const t1 = wt.ensureTaskWorktree(repo, "task_fsm1", { baseRef: "feature/fsmonitor-check" });
+    assert.equal(branchRan(), false, "core.fsmonitor executed on ensureTaskWorktree");
+    writeFileSync(join(t1.dir, "fsm.txt"), "work\n");
+    // These two use the *test's own* unhardened `git()` (test setup, not the app's wrapper) —
+    // `add`/`commit` are expected to run fsmonitor themselves, so the marker is discarded here
+    // rather than asserted on, to isolate what happens next.
+    git(t1.dir, ["add", "-A"]);
+    git(t1.dir, ["commit", "-m", "fsm work"]);
+    branchRan();
+
+    const result = wt.mergeFeatureTask(repo, "feature/fsmonitor-check", t1.branch);
+    assert.equal(branchRan(), false, "core.fsmonitor executed on mergeFeatureTask");
+    assert.equal(result.ok, true, result.output);
+
+    assert.equal(wt.removeWorktreeIfClean(repo, t1.dir), true);
+    assert.equal(branchRan(), false, "core.fsmonitor executed on removeWorktreeIfClean");
+  } finally {
+    git(repo, ["config", "--unset", "core.fsmonitor"]);
+    rmSync(marker, { force: true });
+  }
+});
+
 test("removeOrphanWorktreeDir on a symlink removes the link, not the target", () => {
   const target = join(root, "precious");
   mkdirSync(target, { recursive: true });
@@ -257,4 +349,166 @@ test("removeOrphanWorktreeDir on a symlink removes the link, not the target", ()
   wt.removeOrphanWorktreeDir("task_link");
   assert.ok(!existsSync(link));
   assert.ok(existsSync(join(target, "keep.txt")), "target untouched");
+});
+
+test("ensureFeatureBranch creates the ref off the given base, and is idempotent", () => {
+  assert.throws(() => git(repo, ["rev-parse", "--verify", "refs/heads/feature/alpha"]));
+  wt.ensureFeatureBranch(repo, "feature/alpha", "main");
+  assert.equal(git(repo, ["rev-parse", "feature/alpha"]), git(repo, ["rev-parse", "main"]));
+  // The main checkout itself is never touched — still on main, nothing checked out.
+  assert.equal(git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+
+  // Advance main, then call again: an already-existing branch is left exactly where it is —
+  // renaming or rebasing it out from under work already merged into it would be wrong.
+  writeFileSync(join(repo, "advance.txt"), "later\n");
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-m", "advance main"]);
+  const before = git(repo, ["rev-parse", "feature/alpha"]);
+  wt.ensureFeatureBranch(repo, "feature/alpha", "main");
+  assert.equal(git(repo, ["rev-parse", "feature/alpha"]), before, "existing branch untouched");
+  assert.notEqual(before, git(repo, ["rev-parse", "main"]), "main moved on without it");
+});
+
+test("ensureFeatureBranch falls back to HEAD when no base is given, and refuses an unsafe ref", () => {
+  wt.ensureFeatureBranch(repo, "feature/no-base", null);
+  assert.equal(git(repo, ["rev-parse", "feature/no-base"]), git(repo, ["rev-parse", "HEAD"]));
+  assert.throws(() => wt.ensureFeatureBranch(repo, "--help", "main"), /unsafe/);
+});
+
+test("ensureFeatureBranch rethrows a real create failure — 'already exists' isn't the only one", () => {
+  // An unusable base is a genuine failure, not a benign race: the branch still doesn't exist
+  // afterward, so the catch's `branchExists` recheck must not swallow this one.
+  assert.throws(() =>
+    wt.ensureFeatureBranch(repo, "feature/bad-base", "refs/heads/does-not-exist-at-all"),
+  );
+  assert.throws(() => git(repo, ["rev-parse", "--verify", "refs/heads/feature/bad-base"]));
+});
+
+test("mergeFeatureTask refuses an unsafe feature-branch ref without touching git", () => {
+  const result = wt.mergeFeatureTask(repo, "--upload-pack=evil", "task/whatever");
+  assert.equal(result.ok, false);
+  assert.match(result.output, /unsafe/);
+});
+
+test("ensureTaskWorktree bases a fresh branch on baseRef, not the checkout's current HEAD", () => {
+  git(repo, ["branch", "diverged-base"]);
+  execFileSync("git", ["checkout", "diverged-base"], { cwd: repo });
+  writeFileSync(join(repo, "diverged.txt"), "only on the diverged base\n");
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-m", "diverged"]);
+  execFileSync("git", ["checkout", "main"], { cwd: repo });
+  assert.notEqual(git(repo, ["rev-parse", "main"]), git(repo, ["rev-parse", "diverged-base"]));
+
+  const { dir } = wt.ensureTaskWorktree(repo, "task_based", { baseRef: "diverged-base" });
+  assert.equal(
+    git(dir, ["rev-parse", "HEAD"]),
+    git(repo, ["rev-parse", "diverged-base"]),
+    "the new branch starts at baseRef, not at whatever HEAD the checkout happened to be on",
+  );
+  assert.ok(existsSync(join(dir, "diverged.txt")), "the worktree has the base branch's files");
+  assert.equal(wt.removeWorktreeIfClean(repo, dir), true);
+});
+
+test("mergeFeatureTask merges cleanly, leaves no worktree behind, and doesn't touch WORKTREES_DIR", () => {
+  wt.ensureFeatureBranch(repo, "feature/merge-happy", "main");
+  const t1 = wt.ensureTaskWorktree(repo, "task_mh1", { baseRef: "feature/merge-happy" });
+  writeFileSync(join(t1.dir, "from-task-1.txt"), "task 1\n");
+  git(t1.dir, ["add", "-A"]);
+  git(t1.dir, ["commit", "-m", "task 1 work"]);
+
+  const before = readdirSync(wt.WORKTREES_DIR).length;
+  const result = wt.mergeFeatureTask(repo, "feature/merge-happy", t1.branch);
+  assert.equal(result.ok, true, result.output);
+  assert.equal(readdirSync(wt.WORKTREES_DIR).length, before, "no temp dir left in WORKTREES_DIR");
+  assert.ok(
+    !git(repo, ["worktree", "list", "--porcelain"]).includes("platform-merge-"),
+    "no lingering merge worktree registered",
+  );
+
+  // The feature branch now has task 1's file — read via a throwaway checkout so this spec
+  // doesn't depend on any git-show quoting subtleties.
+  const verify = mkdtempSync(join(root, "verify-"));
+  git(repo, ["worktree", "add", verify, "feature/merge-happy"]);
+  assert.ok(existsSync(join(verify, "from-task-1.txt")));
+  git(repo, ["worktree", "remove", "--force", verify]);
+
+  // The task's own worktree is untouched — merging never writes to it.
+  assert.ok(existsSync(join(t1.dir, "from-task-1.txt")));
+  assert.equal(wt.removeWorktreeIfClean(repo, t1.dir), true);
+
+  // A second, non-conflicting task branch merges too — the feature branch ends up with both.
+  const t2 = wt.ensureTaskWorktree(repo, "task_mh2", { baseRef: "feature/merge-happy" });
+  writeFileSync(join(t2.dir, "from-task-2.txt"), "task 2\n");
+  git(t2.dir, ["add", "-A"]);
+  git(t2.dir, ["commit", "-m", "task 2 work"]);
+  assert.equal(wt.mergeFeatureTask(repo, "feature/merge-happy", t2.branch).ok, true);
+  const verify2 = mkdtempSync(join(root, "verify2-"));
+  git(repo, ["worktree", "add", verify2, "feature/merge-happy"]);
+  assert.ok(existsSync(join(verify2, "from-task-1.txt")), "task 1's work is still there");
+  assert.ok(existsSync(join(verify2, "from-task-2.txt")), "task 2's work merged in too");
+  git(repo, ["worktree", "remove", "--force", verify2]);
+  assert.equal(wt.removeWorktreeIfClean(repo, t2.dir), true);
+});
+
+test("mergeFeatureTask aborts on conflict, leaving the feature and task branches untouched", () => {
+  wt.ensureFeatureBranch(repo, "feature/merge-conflict", "main");
+  const featureTip = git(repo, ["rev-parse", "feature/merge-conflict"]);
+  const t1 = wt.ensureTaskWorktree(repo, "task_mc1", { baseRef: "feature/merge-conflict" });
+  const t2 = wt.ensureTaskWorktree(repo, "task_mc2", { baseRef: "feature/merge-conflict" });
+  writeFileSync(join(t1.dir, "shared.txt"), "task 1's version\n");
+  git(t1.dir, ["add", "-A"]);
+  git(t1.dir, ["commit", "-m", "task 1"]);
+  writeFileSync(join(t2.dir, "shared.txt"), "task 2's conflicting version\n");
+  git(t2.dir, ["add", "-A"]);
+  git(t2.dir, ["commit", "-m", "task 2"]);
+  const t2Tip = git(t2.dir, ["rev-parse", "HEAD"]);
+
+  assert.equal(wt.mergeFeatureTask(repo, "feature/merge-conflict", t1.branch).ok, true);
+  const before = readdirSync(wt.WORKTREES_DIR).length;
+  const result = wt.mergeFeatureTask(repo, "feature/merge-conflict", t2.branch);
+  assert.equal(result.ok, false, "the two tasks touched the same line — this must conflict");
+  assert.match(result.output, /conflict/i);
+
+  // The feature branch sits wherever task 1's merge left it — advanced from its pre-merge
+  // tip, but never moved further by the aborted second merge.
+  assert.notEqual(git(repo, ["rev-parse", "feature/merge-conflict"]), featureTip, "task 1 did merge in");
+  assert.equal(git(t2.dir, ["rev-parse", "HEAD"]), t2Tip, "task 2's branch is untouched by the aborted merge");
+  assert.equal(readdirSync(wt.WORKTREES_DIR).length, before, "no leaked temp merge dir");
+
+  // The aborted merge leaves nothing dangling — no leftover worktree registration.
+  const list = git(repo, ["worktree", "list", "--porcelain"]);
+  assert.ok(!list.includes("platform-merge-"), "no lingering merge worktree");
+
+  assert.equal(wt.removeWorktreeIfClean(repo, t1.dir), true);
+  assert.equal(wt.removeWorktreeIfClean(repo, t2.dir), true);
+});
+
+test("mergeFeatureTask throws cleanly when the feature branch is already checked out elsewhere", () => {
+  // A non-isolated (checkout) feature run can switch to the feature branch itself — the
+  // preamble tells it to — and a live isolated sibling's merge landing at the same moment
+  // would find that branch already checked out. `git worktree add` refuses that outright;
+  // this pins that the refusal surfaces as a clean throw with no leftover state, not a hang
+  // or a corrupted worktree registration.
+  wt.ensureFeatureBranch(repo, "feature/busy-elsewhere", "main");
+  const elsewhere = join(root, "checked-out-elsewhere");
+  git(repo, ["worktree", "add", elsewhere, "feature/busy-elsewhere"]);
+  const t1 = wt.ensureTaskWorktree(repo, "task_busy1", { baseRef: "feature/busy-elsewhere" });
+  writeFileSync(join(t1.dir, "work.txt"), "task work\n");
+  git(t1.dir, ["add", "-A"]);
+  git(t1.dir, ["commit", "-m", "task work"]);
+
+  const before = readdirSync(wt.WORKTREES_DIR).length;
+  assert.throws(() => wt.mergeFeatureTask(repo, "feature/busy-elsewhere", t1.branch));
+  assert.equal(readdirSync(wt.WORKTREES_DIR).length, before, "no leaked temp merge dir");
+  assert.ok(
+    !git(repo, ["worktree", "list", "--porcelain"]).includes("platform-merge-"),
+    "the failed attempt's temp worktree isn't left registered",
+  );
+
+  // Nothing about the failure is destructive: the other worktree and the task branch are
+  // both exactly as they were, and a retry once the branch frees up can still succeed.
+  assert.ok(existsSync(join(elsewhere, "a.txt")));
+  git(repo, ["worktree", "remove", "--force", elsewhere]);
+  assert.equal(wt.mergeFeatureTask(repo, "feature/busy-elsewhere", t1.branch).ok, true);
+  assert.equal(wt.removeWorktreeIfClean(repo, t1.dir), true);
 });

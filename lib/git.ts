@@ -219,7 +219,17 @@ export function gitEnv(): NodeJS.ProcessEnv {
 // miss it rather than in one route. When it doesn't hold, git resolves the worktree itself exactly
 // as it did before this change — so a `core.worktree` plant is unmitigated in that one case, which
 // is the honest trade: a plant is a hypothetical, silently corrupting someone's checkout is not.
-function repoOpts(cwd: string): string[] {
+//
+// **Exported and reused by `runner/worktree.ts`'s own hardened `git()`, and that reuse is not
+// optional.** That file used to carry only `NO_HOOKS`/`gitEnv()` — a second, hand-kept-in-sync
+// copy of part of this pin set — and the security audit of the feature-branch merge-back work
+// (2026-08-21) found the gap that leaves open: `-c core.fsmonitor=` was missing, and `git
+// worktree add` (unlike `branch`, `worktree prune`, or `worktree remove`) *does* invoke a
+// planted `core.fsmonitor`, verified live. `ensureFeatureBranch`/`mergeFeatureTask`'s `worktree
+// add` calls run against the project's shared checkout automatically on every feature-linked
+// task reaching `done` — an unattended trigger, not one that needs a fresh dispatch — which is
+// what made this the wrong place to keep a second, narrower pin list.
+export function repoOpts(cwd: string): string[] {
   const pins = [
     ...NO_HOOKS,
     "-c",
@@ -879,3 +889,26 @@ export const gitPull = (cwd: string): GitResult =>
 /** Push the current branch, setting upstream on first push. */
 export const gitPush = (cwd: string): GitResult =>
   runGit(cwd, ["push", "-u", "origin", "HEAD"]);
+
+/**
+ * Merge `branch` into whatever is checked out at `cwd`, aborting on any failure — a real
+ * content conflict, unrelated histories, anything — so a failed attempt never leaves the
+ * tree mid-merge (which would make a later `git worktree remove` refuse it as unclean).
+ * Used only by the runner's feature-branch merge-back, always against a worktree it owns and
+ * discards immediately after; an agent's own git never goes through this.
+ *
+ * `--no-ff` always leaves a merge commit, so the feature branch's history shows one boundary
+ * per merged task branch — without it, the *first* task merged into a fresh feature branch
+ * would fast-forward with no merge commit while every later one wouldn't, an inconsistency
+ * with nothing to do with the content. `--no-edit` is what keeps this non-interactive (no
+ * `$EDITOR` spawned for the merge commit message).
+ */
+export function gitMerge(cwd: string, branch: string): GitResult {
+  if (!branch || branch.startsWith("-")) {
+    return { ok: false, output: `refusing to merge an unsafe ref: ${branch}` };
+  }
+  const result = runGit(cwd, ["merge", "--no-ff", "--no-edit", branch]);
+  if (result.ok) return result;
+  runGit(cwd, ["merge", "--abort"]);
+  return result;
+}

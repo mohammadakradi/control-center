@@ -2003,6 +2003,137 @@ items and tasks link to, plus the branch name task 02 will create for real. Noth
   the plan. **After any interruption: diff the tree, and grep for the thing you are about to add
   before adding it.**
 
+## 2026-08-21 — feature branch lifecycle and merge-back in the runner
+pm task `02-services-feature-branch-merge-runner` from
+`.pm/tasks/20260821-135656-feature-grouping-branches-parallel/`, depends on task 01 (the
+`features` table + `features.branch` slug, done and committed separately as
+`feat/feature-entity-backend` before this task started). Full design is now in CLAUDE.md
+("The feature branch: lifecycle and merge-back"); this is the *why*, and where the two reviews
+landed.
+- **Verified the merge mechanics against real git before writing any code**, not from memory:
+  a hand-built race (two branches diverging from the same base, one merged first) confirmed
+  `git merge --no-ff --no-edit` succeeds cleanly for a non-conflicting second branch and fails
+  with real conflict markers for a colliding one, and that `git merge --abort` afterward
+  restores a byte-clean tree removable *without* `--force`. That measurement is what fixed the
+  design on `--no-ff` (a plain `merge` would fast-forward the *first* task merged into a fresh
+  feature branch but not any later, diverged one — an inconsistency with nothing to do with
+  content) rather than assuming it.
+- **`launchMode`'s new `feature` input only matters together with `parallel`, by design.** A
+  feature-linked task that *isn't* parallel stays a plain checkout run on purpose — the whole
+  point of the preamble/instruction-level fallback is that a checkout run is agent-owned git,
+  and silently isolating it would contradict `mergeState` staying `"pending"` for exactly that
+  case.
+- **The temp merge worktree deliberately lives under the OS tmpdir, not `WORKTREES_DIR`.** The
+  spec called this out explicitly (`MAX_WORKTREES` must not see it), and it was the one part of
+  the design that couldn't share `ensureTaskWorktree`'s machinery at all — that function's cap
+  check, birth-branch naming and reattach logic all assume a *task's* worktree, and shoehorning
+  the merge scratch space through it would have made the cap arithmetic lie.
+- **`ensureFeatureBranch` was written twice.** The first cut checked `branchExists` before
+  attempting the create — cheap, but it meant the "branch already exists" recovery path
+  (needed for the real race: two feature-linked tasks dispatched at once both finding the ref
+  missing) could only be exercised by genuine concurrency, which a single-threaded test can't
+  construct. Removed the pre-check; the function now always attempts the create and only
+  consults `branchExists` from inside the `catch`. The ordinary "second task of this feature"
+  case now runs through that exact recovery branch, which is what makes it a real regression
+  test rather than an assertion that never falsifies — the existing idempotency spec's second
+  call **is** the race's aftermath, just without needing two processes to produce it.
+- **`finalize()`'s merge step is fully synchronous, and that's what makes it race-free without
+  a lock.** Two tasks of the same feature finishing "at the same time" are still two separate
+  JS callbacks in one event loop; since neither `finalize()` nor anything it calls contains an
+  `await`, one call runs to completion before the other's callback is even scheduled. Worth
+  stating plainly because it's easy to *look* concurrent (two independent async task sessions)
+  while not being concurrent at the one point that matters.
+- **The non-isolated preamble is decided from `handle.worktree`, not from `mode`.** `mode` is
+  fixed the moment `launchMode` runs and never recomputed, so a task that sat `"queue"` and was
+  later promoted would read as `"queue"` forever even though it's now running un-isolated in
+  the checkout exactly like a `"run"`-mode task — checking the handle instead is what stays
+  correct across the deferred-then-promoted path, which the queue tests don't otherwise touch.
+- **Every new ref that reaches git got the same leading-dash guard as everything already in
+  these files, even the one (`mergeFeatureTask`'s `featureBranch`) that's provably unreachable
+  today.** `features.branch` is minted by task 01's allowlist and can never start with `-`, but
+  the function takes a bare string parameter, and this codebase's own history (`gitShowFile`,
+  `ensureTaskWorktree`'s `stored`/`birthBranch`) is a record of exactly this class of value
+  becoming reachable later than expected. Guarding it here cost one `if` and a test.
+- **Security self-check, done before requesting review:** the feature-name/branch preamble
+  interpolates `feature.name` and `feature.branch` into agent-facing text with no fencing —
+  deliberately, and not a new gap. `cleanFeatureName` (task 01) already reduces a name to one
+  line with no control characters, the same treatment a backlog item's *title* gets (not its
+  body) — titles are documented as unfenced by design, since a plain single-line string in a
+  sentence is a much weaker injection surface than a whole untrusted body, and fencing every
+  title/name would degrade legitimate ones for a threat this shape doesn't really carry. Nothing
+  new here inherits the agent-item body-fencing requirement.
+- **Not verified end-to-end with a live agent** — same standing limitation as every runner task
+  in this journal (`user_local` has no Anthropic token on this install, so a real dispatch
+  answers 412). Isolation/merge semantics are pinned by real-git specs in
+  `runner/worktree.test.ts` (23 specs, git repos in temp dirs) and `lib/git.test.ts` (extended:
+  `gitMerge` clean/conflict/unsafe-ref, plus added to the existing hook-neutralization spec);
+  `featureBranchPreamble` gets its own `runner/session-manager.test.ts` (new file — nothing in
+  that module had a dedicated spec file before, since `redactString`/`redactPayload`/
+  `defaultTitle` are exported but untested; this doesn't retroactively cover those, only the new
+  function). Manual steps needing a token are in
+  `.swe/test-scenarios/feature-branch-merge-runner.md`.
+- **Migration `drizzle/0005_sweet_magma.sql`**: `ALTER TABLE tasks ADD merge_state text` — no FK,
+  so none of task 01's `ON DELETE` hand-completion gotcha applies here; `db:generate` produced
+  the whole file correctly on the first try.
+
+### Two independent reviews: one blocking security finding, fixed; the rest accepted or filed
+- **BLOCKING, fixed: `runner/worktree.ts`'s local `git()` was missing `-c core.fsmonitor=`,
+  and `git worktree add` — unlike `branch` or `worktree prune` — does invoke a planted one.**
+  The security auditor reproduced it live before I touched anything: a `core.fsmonitor` script
+  pointed at `.git/config` fired on `worktree add` under `NO_HOOKS` alone, in the runner
+  process, with no attacker action beyond a feature-linked task reaching `done` — an
+  *unattended* trigger, since `mergeFeatureTask` calls `worktree add` automatically from
+  `finalize()`. I reproduced both the exploit and the fix myself before writing any code (a
+  throwaway repo, a marker-touching script as the fsmonitor, `-c core.fsmonitor=` present vs
+  absent) rather than trusting the report. Root cause was exactly the thing this file's own
+  comment already warned about for `NO_HOOKS`/`gitEnv` ("an earlier version inlined the same
+  two lines and a reviewer rightly called it a second place to keep in sync by hand") — this
+  file had drifted from `lib/git.ts`'s fuller `repoOpts()` (which also carries
+  `core.fsmonitor=`, `diff.renames`, `status.renames`, and the conditional `--work-tree`) by
+  keeping only the narrower `NO_HOOKS` pair. Fixed by **exporting `repoOpts` from `lib/git.ts`
+  and having `runner/worktree.ts`'s `git()` use it directly** — one pin list, not two — which
+  closes the gap for every call site including the pre-existing `ensureTaskWorktree`, not just
+  the new `ensureFeatureBranch`/`mergeFeatureTask`. Verified `--work-tree=<cwd>` doesn't change
+  the behavior of `worktree add`/`branch`/`worktree remove`/`worktree prune` before relying on
+  it (a bad interaction there would corrupt a repo, per this file's own documented `--work-tree`
+  subdirectory gotcha) — all four are unaffected when `cwd` is a genuine repo/worktree root,
+  which every call site here always passes.
+  - **Added a regression test that plants `core.fsmonitor` across `ensureFeatureBranch`,
+    `ensureTaskWorktree`, `mergeFeatureTask` and `removeWorktreeIfClean` in one spec, and
+    verified it the honest way: reverted the fix (`sed` back to `NO_HOOKS`), watched the new
+    test fail with the exact planted-marker assertion, then restored it.** The first version of
+    the test itself had a bug worth remembering: it asserted no-firing immediately after
+    committing test-fixture work *inside* the task worktree with the test file's own
+    unhardened `git()` helper (used only for fixture setup) — `git add`/`git commit` do run
+    fsmonitor themselves, so that assertion was checking the wrong thing and failed for a
+    reason unrelated to `mergeFeatureTask`. Fixed by discarding the marker right after the
+    fixture commit and re-checking only around the actual `mergeFeatureTask` call.
+- **Non-blocking, accepted as-is (both reviewers independently flagged the same thing, and I
+  agree it's polish, not a defect):** `mergeIntoFeature`'s catch-all sets `mergeState:
+  "conflict"` for *any* thrown error from `mergeFeatureTask`, not only a real content conflict
+  — e.g. the feature branch already checked out elsewhere (reproduced live by the security
+  auditor: fails clean, no corruption, recoverable by retry once the branch frees up; now has
+  its own regression test — "mergeFeatureTask throws cleanly when the feature branch is
+  already checked out elsewhere"). `"conflict"` specifically implies "needs manual git
+  resolution," which overstates an infra hiccup. Left alone: the log line carries the real
+  error text either way, and task 04 (not yet built) is where a more granular state would
+  actually get read.
+- **Non-blocking, accepted:** `mergeIntoFeature`/the `!handle.worktree && task.featureId`
+  preamble gate have no automated test reaching `finalize()`/`runTask()` themselves — nothing
+  in this codebase does, `startTask`/`continueTask`/`finalize` have zero pre-existing coverage
+  either, and the SDK's `query()` has no mocking harness anywhere in this repo. Both reviewers
+  called this out and both accepted it for the same reason: it needs a live Anthropic token,
+  same standing limitation as every runner task in this journal.
+- **Filed to the backlog rather than fixed here (the `add_backlog_item` MCP tool errored
+  "Stream closed" on every attempt when I tried to file it properly — noting it here instead
+  so it isn't lost):** `setTaskFeature` (`lib/features.ts`, task 01, already committed) sets
+  `tasks.featureId` on `PATCH /api/tasks/[id]` but never touches `mergeState`. Task 02's
+  invariant ("`mergeState: null` ⇔ no feature") only holds for a task whose feature was set at
+  *dispatch* (`lib/dispatch.ts`), so a task feature-assigned by hand afterward stays
+  `mergeState: null` forever — indistinguishable from having no feature at all. Out of scope
+  here (touches a task-01 file this diff never opens), but worth fixing before task 04 ships a
+  merge-state chip, or that chip will silently omit itself for every hand-grouped task.
+
 ## 2026-08-21 — the parallel option reaches the backlog and pm-spec dispatch paths
 Task 03 of `.pm/tasks/20260821-135656-feature-grouping-branches-parallel/`. Pure plumbing of an
 opt-in that already existed end to end (`tasks.parallel` → `launchMode` → worktree), so the
