@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Bot, Check, FileText, Play } from "lucide-react";
 import { ExpandableRequest } from "@/components/ExpandableRequest";
+import { MergeStateChip } from "@/components/FeatureGroup";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert, type ErrorAction } from "@/components/ui/error-alert";
@@ -17,7 +18,7 @@ import {
   backlogStatusDot,
   dispatchErrorAction,
 } from "@/lib/ui";
-import type { BacklogItem, TaskStatus } from "@/lib/db/schema";
+import type { BacklogItem, TaskMergeState, TaskStatus } from "@/lib/db/schema";
 
 /** What a row needs. Narrower than the database row on purpose — a client component should
  *  not be handed columns it doesn't render. */
@@ -32,9 +33,13 @@ export type BacklogRowItem = Pick<
   | "sourcePath"
   | "source"
 > & {
-  /** Id + status of the task this item was dispatched as, if any. Never the transcript:
-   *  the backlog is shared, and a run belongs to whoever pressed it. */
-  linkedTask: { id: string; status: TaskStatus } | null;
+  /** Id + status + merge state of the task this item was dispatched as, if any. Never the
+   *  transcript: the backlog is shared, and a run belongs to whoever pressed it. */
+  linkedTask: {
+    id: string;
+    status: TaskStatus;
+    mergeState: TaskMergeState | null;
+  } | null;
 };
 
 /** Insertion order of the label map — todo, in_progress, done, cancelled — which is the
@@ -192,9 +197,15 @@ export function BacklogItemRow({
                 </span>
               )}
               {item.linkedTask && (
-                <span className="inline-flex items-center gap-1.5">
+                <span className="inline-flex flex-wrap items-center gap-1.5">
                   <span className="text-fg-faint">Last run</span>
                   <StatusBadge status={item.linkedTask.status} />
+                  {/* Where that run's branch stands. Beside the run's own status rather than
+                      replacing it, because the two are independent: a task can be `done` with
+                      `mergeState: "conflict"` — the agent finished, the merge didn't. */}
+                  {item.linkedTask.mergeState && (
+                    <MergeStateChip state={item.linkedTask.mergeState} />
+                  )}
                   {canOpenLinkedTask && (
                     <Link
                       href={`/tasks/${item.linkedTask.id}`}

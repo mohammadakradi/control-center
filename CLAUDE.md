@@ -221,8 +221,8 @@ items, one branch. `lib/features.ts` owns every rule; the routes under
   feature must never delete the history of the work done under it. Note drizzle-kit **omits
   `ON DELETE` from an `ALTER TABLE ADD COLUMN`**, so `drizzle/0004_pretty_vapor.sql` was
   hand-completed after generation; a spec asserts the committed SQL, not the ORM's intent.
-- Task 02 owns the real git branch (creating it, basing worktrees on it, merging into it) and
-  task 04 the grouped UI. Nothing in this layer runs `git`.
+- The grouped UI is below ("Following one feature in the UI"). Nothing in `lib/features.ts` runs
+  `git` — the branch it names is only created, based-on and merged-into by the runner (below).
 
 ### The feature branch: lifecycle and merge-back (runner)
 Each feature has one real `feature/<slug>` git ref, and a feature-linked task's finished work
@@ -295,6 +295,42 @@ dispatch and `finalize()`; `lib/git.ts` gets the one new hardened primitive.
   always comes from `features.branch` (an allowlisted slug that can never start with `-`), but
   the function takes a bare string, so it's guarded anyway — defense in depth, not paranoia
   about a path that's actually reachable right now.
+
+### Following one feature in the UI
+Three surfaces group work by feature — `/backlog`, project detail's Task history and `/tasks`
+(project → feature) — so one feature's development can be read on its own. `components/
+FeatureGroup.tsx` is the single heading; the grouping and merge-state rules are pure functions in
+`lib/ui.ts` with specs, because `pnpm test` cannot reach `components/`.
+- **`groupByFeature` returns `null` when no row has a feature, and that null is the contract.**
+  Every caller then renders the flat list it always rendered, so an install that has never used a
+  feature is byte-identical to before — grouping everything under one "No feature" heading would
+  add a level of hierarchy that conveys nothing. The ungrouped bucket sorts **last** and exists
+  only when something is in it. A row whose `featureId` doesn't resolve lands there rather than
+  vanishing: `feature_id` is `set null`, so a row can briefly outlive its feature and work must
+  never disappear from a list because its grouping did.
+- **`featureMergeSummary` deliberately never counts `pending`.** A checkout-bound feature run
+  stays `pending` forever by design (above), so aggregating it would put a permanent "N pending"
+  on the heading of every feature whose work ran in the checkout — a queue that never drains. The
+  per-row chip still says "Not merged", so only the misleading *aggregate* is dropped. A spec
+  pins it.
+- **A merge conflict is toned `warn`, not `danger`**, and `MERGE_STATE_LABEL`/`mergeStateTone`
+  are the one vocabulary for the three states: the merge failing is not the *run* failing (a task
+  can be `done` with `mergeState: "conflict"`), and reserving `danger` for a failed run keeps the
+  two tellable apart in a list holding both.
+- **The `feature/<slug>` branch chip wraps and is never truncated.** It is the string a user has
+  to type into `git checkout`, so a truncated prefix is useless and a `title` tooltip is
+  unreachable by keyboard. It is `min-w-0` + `break-all`, **not** `shrink-0` — at `featureSlug`'s
+  60-character cap a rigid mono chip forced 95px of horizontal page overflow at 390px (measured;
+  164px at 320px).
+- **The feature pickers take the project's features as a prop, not a fetch.** Both hosts
+  (`NewTaskForm` on project detail, `AddBacklogItem` on the backlog) render inside server
+  components that already hold the rows, so `GET …/features` would buy a loading state for data
+  already on screen. The route stays for other consumers. Closed features are offered by neither
+  picker — new work must not land on a branch shown everywhere as finished — while still
+  appearing as groups in every list.
+- `listBacklog`'s `linkedTask` projection grew `mergeState` alongside `id` and `status`. That a
+  run happened and how it ended is not the private part; the transcript is. A spec `deepEqual`s
+  the whole object, so a fourth column can't reach a shared list unnoticed.
 
 ## The backlog (per-project planned work)
 Each project has a durable queue of planned work in `backlog_items`, fed from two directions:
@@ -1258,6 +1294,10 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `components/` — All reusable UI components (bespoke)
 - `components/ui-cards.tsx` — Core primitives: `card`, `CardSection`, `PageHeader`,
   `EmptyState`, `Chip`, `Tile`, `Fact`
+- `components/FeatureGroup.tsx` — `FeatureGroup` (the one feature heading: name + branch chip +
+  merge summary + count, `<h3>` so it nests under every host's `CardSection`) and
+  `MergeStateChip` (one row's merge state). Shared by the backlog, project detail and `/tasks`;
+  see "Following one feature in the UI"
 - `components/ui/` — Base primitives: `button.tsx`, `modal.tsx`, `select.tsx`
 - `components/Sidebar.tsx` — Desktop primary nav (collapsible rail, `md+`)
 - `components/MobileNav.tsx` — Mobile top bar + bottom tab bar (`< md`)

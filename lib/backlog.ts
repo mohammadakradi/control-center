@@ -34,6 +34,7 @@ import {
   type Feature,
   TERMINAL_TASK_STATUSES,
   type Project,
+  type TaskMergeState,
   type TaskStatus,
 } from "./db/schema";
 import { ensureRequestFeature, listFeatures, parseFeatureRef } from "./features";
@@ -430,8 +431,10 @@ export function reflectLinkedTasks(projectId: string): number {
 
 /** An item plus the state of the task it was dispatched as, if any. */
 export type BacklogItemView = BacklogItem & {
-  /** Deliberately just id + status: the transcript stays private to whoever ran it. */
-  linkedTask: { id: string; status: TaskStatus } | null;
+  /** Deliberately just id + status + merge state: the transcript stays private to whoever ran
+   *  it. `mergeState` is exposed for the same reason `status` is — that a run happened, and how
+   *  it ended, is not the private part; what the agent wrote is. */
+  linkedTask: { id: string; status: TaskStatus; mergeState: TaskMergeState | null } | null;
   /** The feature this item belongs to, joined in so a grouped list costs one query. Features
    *  are project-scoped and shared, like the item itself, so this is fully populated. */
   feature: Pick<Feature, "id" | "name" | "branch" | "status"> | null;
@@ -451,6 +454,7 @@ export function listBacklog(projectId: string): BacklogItemView[] {
       item: backlogItems,
       taskId: tasks.id,
       taskStatus: tasks.status,
+      taskMergeState: tasks.mergeState,
       featureId: features.id,
       featureName: features.name,
       featureBranch: features.branch,
@@ -469,7 +473,11 @@ export function listBacklog(projectId: string): BacklogItemView[] {
     .map((row) => ({
       ...row.item,
       linkedTask: row.taskId
-        ? { id: row.taskId, status: row.taskStatus as TaskStatus }
+        ? {
+            id: row.taskId,
+            status: row.taskStatus as TaskStatus,
+            mergeState: row.taskMergeState ?? null,
+          }
         : null,
       feature: row.featureId
         ? {

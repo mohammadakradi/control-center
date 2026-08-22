@@ -1,4 +1,9 @@
-import type { BacklogStatus, TaskStatus } from "@/lib/db/schema";
+import type {
+  BacklogStatus,
+  FeatureStatus,
+  TaskMergeState,
+  TaskStatus,
+} from "@/lib/db/schema";
 
 export const STATUS_LABEL: Record<TaskStatus, string> = {
   queued: "Queued",
@@ -119,6 +124,169 @@ export function backlogStatusDot(status: BacklogStatus): string {
     default:
       return "bg-info";
   }
+}
+
+/**
+ * Where a feature-linked task's branch stands relative to its feature branch, in words.
+ *
+ * Sentence case like the other two label maps, so a merge chip and a `StatusBadge` sitting in
+ * one row read as the same vocabulary. The three names are exactly the ones the runner records
+ * (`TaskMergeState`) — a second spelling here would be a vocabulary that could drift from the
+ * state it describes.
+ */
+export const MERGE_STATE_LABEL: Record<TaskMergeState, string> = {
+  pending: "Not merged",
+  merged: "Merged",
+  conflict: "Merge conflict",
+};
+
+/**
+ * The tone a merge state renders in.
+ *
+ * `conflict` is **`warn`, not `danger`**, and the distinction is the point: the merge failing
+ * is not the *run* failing. A task can be `done` with `mergeState: "conflict"` — the agent's
+ * work finished and its branch is intact; what's left is a human resolving the merge. `warn` is
+ * this app's "caution, you need to do something" tone (it is what the gate statuses use), which
+ * is precisely the state. Reserving `danger` for a failed run also means the two can be told
+ * apart at a glance in a list that holds both.
+ *
+ * `pending` is `muted` rather than `info` because for a checkout run it is the *terminal*
+ * answer, not a step on the way to one (see below) — a tone implying "in flight" would be a
+ * promise nothing is going to keep.
+ */
+export function mergeStateTone(state: TaskMergeState): "ok" | "warn" | "muted" {
+  switch (state) {
+    case "merged":
+      return "ok";
+    case "conflict":
+      return "warn";
+    default:
+      return "muted";
+  }
+}
+
+/**
+ * A feature heading's merge summary: how many of the group's rows merged, and how many hit a
+ * conflict.
+ *
+ * **`pending` is deliberately not counted**, and this is the one decision in here worth not
+ * relitigating. A *non-isolated* (checkout) feature run stays `pending` forever by design — the
+ * platform never system-merges one, so `pending` there is the honest answer rather than a stuck
+ * state (see the runner notes in CLAUDE.md). Summarising it would put a "3 pending" chip on the
+ * heading of every feature whose work ran in the checkout, which reads as a queue that is never
+ * going to drain. The per-row chip still says `Not merged`, so nothing is hidden — what's
+ * dropped is only the *aggregate*, which is where the false impression came from.
+ *
+ * Returns zeroes rather than null so a caller can render both chips conditionally without a
+ * null check; `hasMergeSummary` is the "is there anything to show" test.
+ */
+export function featureMergeSummary(
+  states: readonly (TaskMergeState | null | undefined)[],
+): { merged: number; conflict: number } {
+  let merged = 0;
+  let conflict = 0;
+  for (const s of states) {
+    if (s === "merged") merged += 1;
+    else if (s === "conflict") conflict += 1;
+  }
+  return { merged, conflict };
+}
+
+export const hasMergeSummary = (s: { merged: number; conflict: number }): boolean =>
+  s.merged > 0 || s.conflict > 0;
+
+/** One feature's worth of rows. `feature` is null for the ungrouped bucket. */
+export type FeatureGroup<Row, F> = { feature: F | null; rows: Row[] };
+
+/** What a feature picker needs of a feature. Structurally satisfied by a `Feature` row, so a
+ *  page passes `listFeatures()` straight through. */
+export type FeatureChoice = {
+  id: string;
+  name: string;
+  branch: string;
+  status: FeatureStatus;
+};
+
+/**
+ * Options for a "which feature is this part of?" `Select` — "No feature" first, then the
+ * project's **active** features.
+ *
+ * Closed features are dropped because this control files *new* work: a feature someone closed
+ * out has had its branch merged or abandoned, so adding a run to it would quietly reopen
+ * something every list on the site shows as finished. They stay fully visible in the grouped
+ * lists, so no history is hidden — this bounds only where new work may be filed.
+ *
+ * The branch travels as each option's `description`, which is what makes two similarly-named
+ * features tellable apart — and it is the string the user will have to type into `git checkout`
+ * later, so seeing it at the moment of choosing is the useful place for it.
+ *
+ * Always returns at least the "No feature" entry, so a caller can decide whether the control is
+ * worth showing by asking whether there is more than one option — a project whose only features
+ * are closed has nothing to offer and gets a length of 1.
+ */
+export function featureOptions(
+  features: readonly FeatureChoice[],
+): { value: string; label: string; description: string }[] {
+  return [
+    { value: "", label: "No feature", description: "Not part of a grouped feature" },
+    ...features
+      .filter((f) => f.status === "active")
+      .map((f) => ({ value: f.id, label: f.name, description: f.branch })),
+  ];
+}
+
+/**
+ * Group rows by the feature they belong to, or answer **null** when none of them do.
+ *
+ * That null is the whole contract of this function. Grouping a list where nothing has a feature
+ * would wrap every existing list in the app in a single "No feature" heading — a heading that
+ * adds a level of hierarchy while conveying nothing, on every install that hasn't used features
+ * yet. So the callers render their plain, un-grouped list in that case and the surfaces are
+ * byte-identical to before. It is also the answer for an *empty* list, so an empty state stays
+ * an empty state rather than becoming an empty group.
+ *
+ * Order is **insertion order of the rows themselves**, which is what makes this need no sort:
+ * every caller hands us a list already ordered the way that page orders work (newest-first for
+ * tasks, the backlog's own ordering for items), so the feature whose work is most recent leads
+ * — the same rule `/tasks` already uses to order its project cards.
+ *
+ * The ungrouped bucket goes **last**, and only exists when something is actually in it: the
+ * features are what the reader came for, and ungrouped work is the remainder. A row whose
+ * `featureId` doesn't resolve (a feature deleted while the page was rendering — `featureId`'s
+ * FK is `set null`, so a row can briefly outlive it) falls into that same bucket rather than
+ * being dropped: work must never disappear from a list because its grouping did.
+ */
+export function groupByFeature<Row, F extends { id: string }>(
+  rows: readonly Row[],
+  /**
+   * The row's feature, or null/undefined for ungrouped.
+   *
+   * Resolving is the caller's job rather than this function's, because the two kinds of row
+   * hold it differently and neither should have to fake the other's shape: a backlog item
+   * carries the whole feature (`listBacklog` joins it), while a task carries only a
+   * `featureId` and its page holds the lookup map. Grouping keys off `feature.id`, so a
+   * caller that resolves nothing simply gets the ungrouped answer.
+   */
+  featureOf: (row: Row) => F | null | undefined,
+): FeatureGroup<Row, F>[] | null {
+  const grouped = new Map<string, FeatureGroup<Row, F>>();
+  const ungrouped: Row[] = [];
+
+  for (const row of rows) {
+    const feature = featureOf(row);
+    if (!feature) {
+      ungrouped.push(row);
+      continue;
+    }
+    const bucket = grouped.get(feature.id);
+    if (bucket) bucket.rows.push(row);
+    else grouped.set(feature.id, { feature, rows: [row] });
+  }
+
+  if (grouped.size === 0) return null;
+  const groups = [...grouped.values()];
+  if (ungrouped.length > 0) groups.push({ feature: null, rows: ungrouped });
+  return groups;
 }
 
 /** Stored model label → display name. "sonnet"/"opus" are legacy labels from

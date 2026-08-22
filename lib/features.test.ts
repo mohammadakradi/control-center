@@ -209,6 +209,26 @@ test("a new feature starts active with no source folder", () => {
   assert.equal(feature.sourceDir, null);
 });
 
+test("findFeaturesByIds fetches across projects, and nothing for an empty list", () => {
+  // The cross-project read `/tasks` needs: that page lists one user's tasks from every project
+  // at once, so resolving their features per project would be a query each. Unlike
+  // `findFeature` it is deliberately not project-scoped — the ids come from `tasks.feature_id`
+  // rows already scoped to the caller, never from a request.
+  const here = features.createFeature("p1", { name: "Over here" })!;
+  const there = features.createFeature("p2", { name: "Over there" })!;
+
+  const found = features.findFeaturesByIds([here.id, there.id]);
+  assert.deepEqual(
+    found.map((f) => f.id).sort(),
+    [here.id, there.id].sort(),
+  );
+
+  // An empty list must short-circuit rather than run `inArray` with no values, which is a
+  // degenerate query — and an id that names nothing is simply absent, not an error.
+  assert.deepEqual(features.findFeaturesByIds([]), []);
+  assert.deepEqual(features.findFeaturesByIds(["f_nope"]), []);
+});
+
 test("an unusable name creates nothing", () => {
   const before = features.featureCount("p1");
   assert.equal(features.createFeature("p1", { name: "   " }), null);

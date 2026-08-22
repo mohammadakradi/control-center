@@ -12,13 +12,19 @@ import {
   BACKLOG_STATUS_LABEL,
   backlogStatusDot,
   dispatchErrorAction,
+  featureMergeSummary,
+  featureOptions,
+  groupByFeature,
+  hasMergeSummary,
   isOpenBacklogStatus,
+  MERGE_STATE_LABEL,
+  mergeStateTone,
   orderSkills,
   statusColor,
   taskChangesView,
   taskDisplayTitle,
 } from "./ui";
-import type { BacklogStatus } from "./db/schema";
+import type { BacklogStatus, TaskMergeState } from "./db/schema";
 
 /** Every backlog status, kept exhaustive by the compiler: a status added to the schema
  *  without a case here fails typecheck rather than quietly going untested. */
@@ -274,4 +280,151 @@ test("taskChangesView defaults an unknown scope to the cautious one", () => {
   const v = taskChangesView({ available: true, changes: changesOf(1) });
   assert.equal(v.kind === "list" && v.scope, "checkout");
   assert.equal(v.kind === "list" && v.exclusive, false);
+});
+
+/* ── Feature grouping ─────────────────────────────────────────────────────────────────────
+ * `groupByFeature` decides whether three surfaces (the backlog, project detail, /tasks) grow a
+ * level of hierarchy at all, and `featureMergeSummary` decides what a feature heading claims
+ * about work the platform tried to merge. Both are wrong *silently* — a list still renders — so
+ * they are pinned here rather than verified by looking at a page.
+ */
+
+/** Every merge state, kept exhaustive by the compiler: a state added to the schema without a
+ *  case here fails typecheck rather than quietly going untested. */
+const ALL_MERGE_STATES: Record<TaskMergeState, true> = {
+  pending: true,
+  merged: true,
+  conflict: true,
+};
+
+type Row = { id: string; featureId: string | null; mergeState?: TaskMergeState | null };
+
+const FEATURES: Record<string, { id: string; name: string }> = {
+  f_a: { id: "f_a", name: "Feature A" },
+  f_b: { id: "f_b", name: "Feature B" },
+};
+
+const group = (rows: Row[]) =>
+  groupByFeature(rows, (r) => (r.featureId ? FEATURES[r.featureId] : null));
+
+test("every merge state has a label and a tone", () => {
+  for (const state of Object.keys(ALL_MERGE_STATES) as TaskMergeState[]) {
+    assert.equal(typeof MERGE_STATE_LABEL[state], "string");
+    assert.ok(MERGE_STATE_LABEL[state].length > 0, `${state} has no label`);
+    assert.ok(["ok", "warn", "muted"].includes(mergeStateTone(state)));
+  }
+});
+
+test("a merge conflict is warn, not danger — the run itself may have succeeded", () => {
+  // `conflict` means the *merge* failed, not the task: a task can be `done` with
+  // `mergeState: "conflict"`. Toning it like a failed run would conflate the two in a list
+  // that holds both, and `danger` is that list's word for a failed run.
+  assert.equal(mergeStateTone("conflict"), "warn");
+  assert.equal(mergeStateTone("merged"), "ok");
+  // Terminal for a checkout run, so not a tone that implies "in flight".
+  assert.equal(mergeStateTone("pending"), "muted");
+});
+
+test("groupByFeature returns null when nothing has a feature", () => {
+  // The contract the three call sites depend on: no features means no grouping, so every list
+  // in the app renders exactly as it did before this existed rather than growing one
+  // information-free "No feature" heading.
+  assert.equal(group([{ id: "t1", featureId: null }, { id: "t2", featureId: null }]), null);
+  // An empty list is the same answer — an empty state must not become an empty group.
+  assert.equal(group([]), null);
+});
+
+test("groupByFeature keeps row order and puts the ungrouped bucket last", () => {
+  const groups = group([
+    { id: "t1", featureId: "f_b" },
+    { id: "t2", featureId: null },
+    { id: "t3", featureId: "f_a" },
+    { id: "t4", featureId: "f_b" },
+  ]);
+  assert.ok(groups);
+  // Insertion order of the rows, so the caller's own ordering (newest-first) decides which
+  // feature leads — no sort in here to disagree with the page's.
+  assert.deepEqual(
+    groups.map((g) => g.feature?.id ?? null),
+    ["f_b", "f_a", null],
+  );
+  assert.deepEqual(groups[0].rows.map((r) => r.id), ["t1", "t4"]);
+  assert.deepEqual(groups[2].rows.map((r) => r.id), ["t2"]);
+});
+
+test("groupByFeature omits the ungrouped bucket when everything is grouped", () => {
+  const groups = group([
+    { id: "t1", featureId: "f_a" },
+    { id: "t2", featureId: "f_a" },
+  ]);
+  assert.equal(groups?.length, 1);
+  assert.equal(groups?.[0].feature?.id, "f_a");
+});
+
+test("groupByFeature keeps a row whose feature no longer resolves", () => {
+  // `tasks.feature_id` is ON DELETE SET NULL, so a row can briefly outlive its feature — and a
+  // page rendering mid-delete must not drop the work, only its grouping.
+  const groups = group([
+    { id: "t1", featureId: "f_a" },
+    { id: "t2", featureId: "f_gone" },
+  ]);
+  assert.ok(groups);
+  assert.deepEqual(
+    groups.map((g) => g.feature?.id ?? null),
+    ["f_a", null],
+  );
+  assert.deepEqual(groups[1].rows.map((r) => r.id), ["t2"]);
+});
+
+test("featureMergeSummary counts merged and conflict, and never pending", () => {
+  // Pending is excluded on purpose: a checkout-bound feature run stays pending forever by
+  // design, so aggregating it would put a permanent "N pending" on the heading of every
+  // feature whose work ran in the checkout. Reverting this turns the assertion below red.
+  const summary = featureMergeSummary([
+    "merged",
+    "pending",
+    "conflict",
+    "merged",
+    null,
+    undefined,
+  ]);
+  assert.deepEqual(summary, { merged: 2, conflict: 1 });
+  assert.equal(hasMergeSummary(summary), true);
+});
+
+test("featureMergeSummary has nothing to show for pending-only or feature-less rows", () => {
+  assert.equal(hasMergeSummary(featureMergeSummary(["pending", "pending"])), false);
+  assert.equal(hasMergeSummary(featureMergeSummary([null, null])), false);
+  assert.equal(hasMergeSummary(featureMergeSummary([])), false);
+});
+
+test("featureOptions offers no-feature first and hides closed features", () => {
+  // A closed feature's branch has been merged or abandoned, so filing new work under it would
+  // reopen something every list on the site shows as finished. It stays visible in the grouped
+  // lists — this bounds only where new work may be *filed*.
+  const opts = featureOptions([
+    { id: "f_a", name: "Feature A", branch: "feature/a", status: "active" },
+    { id: "f_b", name: "Feature B", branch: "feature/b", status: "done" },
+    { id: "f_c", name: "Feature C", branch: "feature/c", status: "cancelled" },
+  ]);
+  assert.deepEqual(
+    opts.map((o) => o.value),
+    ["", "f_a"],
+  );
+  assert.equal(opts[0].label, "No feature");
+  // The branch is the description because it is what tells two similarly-named features apart,
+  // and the string the user will later have to type into `git checkout`.
+  assert.equal(opts[1].description, "feature/a");
+});
+
+test("featureOptions always yields the no-feature entry, so callers can gate on length", () => {
+  // Both pickers decide whether to render at all by asking for more than one option — so a
+  // project with no features, and one whose every feature is closed, must both come back at 1.
+  assert.equal(featureOptions([]).length, 1);
+  assert.equal(
+    featureOptions([
+      { id: "f_b", name: "Feature B", branch: "feature/b", status: "done" },
+    ]).length,
+    1,
+  );
 });

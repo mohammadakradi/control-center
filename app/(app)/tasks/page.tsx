@@ -4,7 +4,9 @@ import { ListChecks } from "lucide-react";
 import { db } from "@/lib/db";
 import { projects, tasks } from "@/lib/db/schema";
 import { syncAgents } from "@/lib/discovery/agents";
-import { TaskList, type TaskRow } from "@/components/TaskList";
+import { findFeaturesByIds } from "@/lib/features";
+import { GroupedTaskList, type TaskRow } from "@/components/TaskList";
+import type { FeatureLite } from "@/components/FeatureGroup";
 import {
   CardSection,
   EmptyState,
@@ -62,6 +64,25 @@ export default async function TasksPage({
     const bucket = groups.get(t.projectId);
     if (bucket) bucket.push(t);
     else groups.set(t.projectId, [t]);
+  }
+
+  // Only the features these tasks actually reference — one bounded, deduplicated query for the
+  // whole page, rather than `listFeatures` per project (which would be a query each *and* fetch
+  // every feature those projects have, most of which nothing here is grouped under). The ids come
+  // from the caller's own `ownedBy`-scoped rows, never from the request, so there is nothing to
+  // forge.
+  //
+  // Built from **every** owned task, not just the capped slice each project group renders, and
+  // that is deliberate: `GroupedTaskList` treats a `featureId` missing from this map as
+  // *ungrouped*, so an incomplete map is a silently wrong grouping rather than a visible error.
+  // Deriving it from the whole set makes completeness independent of how the page later slices —
+  // including `?project=`, which lifts the cap. The cost of that safety is a few extra feature
+  // rows for tasks behind the "N older tasks" disclosure.
+  const featureById: Record<string, FeatureLite> = {};
+  for (const f of findFeaturesByIds([
+    ...new Set(allTasks.map((t) => t.featureId).filter((id): id is string => id !== null)),
+  ])) {
+    featureById[f.id] = f;
   }
 
   const filterOptions: ProjectFilterOption[] = [...groups].map(([id, list]) => ({
@@ -134,8 +155,16 @@ export default async function TasksPage({
                   </div>
                 }
               >
-                {/* No project cell — the card's heading already names it. */}
-                <TaskList history={shown} namespaceById={namespaceById} />
+                {/* No project cell — the card's heading already names it. Grouped by feature
+                    within the project, so this page reads project → feature → task; with no
+                    features in play `GroupedTaskList` renders the same flat list as before.
+                    Note it groups the *capped* slice, which is why the disclosure below still
+                    has to speak for the remainder. */}
+                <GroupedTaskList
+                  history={shown}
+                  namespaceById={namespaceById}
+                  featureById={featureById}
+                />
                 {hidden > 0 && (
                   <p className="border-t border-line pt-3 text-xs text-fg-faint">
                     {`${hidden} older task${hidden === 1 ? "" : "s"} in this project — `}

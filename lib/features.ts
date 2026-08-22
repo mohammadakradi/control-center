@@ -12,7 +12,7 @@
  * The split with the API routes is the one `lib/backlog.ts` established: every rule, bound and
  * validator lives here where `pnpm test` can reach it, and the routes only translate HTTP.
  */
-import { and, asc, count, eq } from "drizzle-orm";
+import { and, asc, count, eq, inArray } from "drizzle-orm";
 import { db } from "./db";
 import { features, tasks, type Feature, type FeatureStatus, type Task } from "./db/schema";
 import { newId } from "./util";
@@ -179,6 +179,33 @@ export function listFeatures(projectId: string): Feature[] {
     .where(eq(features.projectId, projectId))
     .orderBy(asc(features.createdAt), asc(features.id))
     .all();
+}
+
+/**
+ * Features by id, for a caller that already holds the ids.
+ *
+ * The cross-project read: `/tasks` lists one user's tasks across every project, so resolving
+ * their features per project would be one query per project, and `listFeatures` on each would
+ * fetch every feature those projects have rather than the handful actually referenced. Bounded
+ * by the ids handed in — an empty list short-circuits, since `inArray` with no values is a
+ * degenerate query.
+ *
+ * Deliberately **not** project-scoped, unlike `findFeature`, and here is the audit trail for why
+ * that is safe rather than merely convenient. `tasks.feature_id` has exactly two writers, and
+ * both check the feature against the task's *own* project before storing it: `lib/dispatch.ts`
+ * (`parseFeatureRef(input.projectId, …)`) and `PATCH /api/tasks/[id]`
+ * (`parseFeatureRef(task.projectId, …)`). So a stored id is already known to belong to its
+ * task's project, and the one caller here (`/tasks`) draws its ids from `ownedBy`-scoped rows.
+ * There is no path by which a client-supplied id reaches this function.
+ *
+ * That makes this a read over ids the system has already validated — **not** a general-purpose
+ * lookup. Anything that takes a `featureId` from a request must still go through
+ * `findFeature`/`parseFeatureRef`, and a future caller that cannot show its ids were validated
+ * upstream needs a project-scoped variant rather than this one.
+ */
+export function findFeaturesByIds(ids: readonly string[]): Feature[] {
+  if (ids.length === 0) return [];
+  return db.select().from(features).where(inArray(features.id, [...ids])).all();
 }
 
 /** One feature, but only within the given project — so an id from another project reads as

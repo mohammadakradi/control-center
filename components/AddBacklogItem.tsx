@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, fieldClasses } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
+import { featureOptions, type FeatureChoice } from "@/lib/ui";
 
 /** Mirror `MAX_TITLE_LENGTH` / `MAX_DESCRIPTION_LENGTH` in `lib/backlog.ts`, which can't be
  *  imported here (that module reaches for `node:fs`). The server still enforces both; these
@@ -33,17 +34,25 @@ const ASSIGNEES = [
 export function AddBacklogItem({
   projectId,
   projectName,
+  features = [],
 }: {
   projectId: string;
   projectName: string;
+  /** The project's features, for filing this item under one. Empty (the default) hides the
+   *  control — see `featureOptions`. Passed down from the page, which is a server component
+   *  holding them already; fetching here would add a loading state inside a dialog. */
+  features?: FeatureChoice[];
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [assignee, setAssignee] = useState("");
+  const [featureId, setFeatureId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const featureChoices = useMemo(() => featureOptions(features), [features]);
+  const offerFeatures = featureChoices.length > 1;
 
   /**
    * Escape, the backdrop and the header ✕ all land here, so this is the one place that has to
@@ -67,7 +76,14 @@ export function AddBacklogItem({
       const res = await fetch(`/api/projects/${projectId}/backlog`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title, description, assignee }),
+        // `featureId` only when the control was offered, so a stale id can't turn an add into
+        // a 400 the user can do nothing about; the route reads "" as no feature either way.
+        body: JSON.stringify({
+          title,
+          description,
+          assignee,
+          featureId: (offerFeatures && featureId) || null,
+        }),
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error ?? `Could not add the item (${res.status})`);
@@ -76,6 +92,7 @@ export function AddBacklogItem({
       setTitle("");
       setDescription("");
       setAssignee("");
+      setFeatureId("");
       setOpen(false);
       router.refresh();
     } catch (err) {
@@ -146,6 +163,24 @@ export function AddBacklogItem({
                   className={fieldClasses("md", "default", "min-h-32 resize-y leading-relaxed")}
                 />
               </div>
+
+              {offerFeatures && (
+                <div>
+                  <span className="mb-1.5 block text-xs font-medium text-fg-muted">
+                    Feature{" "}
+                    <span className="font-normal text-fg-faint">
+                      — groups this item with related work on one branch
+                    </span>
+                  </span>
+                  <Select
+                    value={featureId}
+                    onChange={setFeatureId}
+                    options={featureChoices}
+                    ariaLabel="Feature"
+                    className="w-full"
+                  />
+                </div>
+              )}
 
               <div>
                 {/* The control's accessible name is `ariaLabel="Agent"`, matching this

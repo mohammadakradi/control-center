@@ -703,7 +703,32 @@ test("listBacklog reports the linked task's state, and nothing else about it", (
   backlog.linkBacklogTask(item.id, "t_view");
 
   const view = backlog.listBacklog("p1").find((i) => i.id === item.id)!;
-  assert.deepEqual(view.linkedTask, { id: "t_view", status: "awaiting_report" });
+  // A `deepEqual` on the whole object, not field-by-field assertions: the backlog is shared
+  // with every workspace on the install while a transcript is not, so this pins the *absence*
+  // of everything else on the task row as much as the presence of these three. A column added
+  // to the projection has to be justified here before it can reach a shared list.
+  assert.deepEqual(view.linkedTask, {
+    id: "t_view",
+    status: "awaiting_report",
+    // How the platform's merge of that run went. Public for the same reason `status` is: that
+    // a run happened, and how it ended, is not the private part — what the agent wrote is.
+    mergeState: null,
+  });
+});
+
+test("listBacklog carries the linked run's merge state through", () => {
+  // The grouped backlog renders a chip from this, and the feature heading counts conflicts out
+  // of it — so a column that silently read null would show every run as unmerged.
+  const item = backlog.createBacklogItem("p1", { title: "Conflicted", source: "manual" });
+  makeTask("t_conflict", "done");
+  db.update(schema.tasks)
+    .set({ mergeState: "conflict" })
+    .where(eq(schema.tasks.id, "t_conflict"))
+    .run();
+  backlog.linkBacklogTask(item.id, "t_conflict");
+
+  const view = backlog.listBacklog("p1").find((i) => i.id === item.id)!;
+  assert.equal(view.linkedTask?.mergeState, "conflict");
 });
 
 test("listBacklog orders newest batch first, plan order within a batch", () => {
@@ -1110,7 +1135,11 @@ test("loadProjectBacklog carries the linked task's state onto the item", () => {
   const view = backlog
     .loadProjectBacklog({ id: "p1", path: projectDir })
     .items.find((i) => i.id === item.id)!;
-  assert.deepEqual(view.linkedTask, { id: "t_loaded", status: "running" });
+  assert.deepEqual(view.linkedTask, {
+    id: "t_loaded",
+    status: "running",
+    mergeState: null,
+  });
 
   // …and finishing that task closes the item out on the next load.
   db.update(schema.tasks).set({ status: "done" }).where(eq(schema.tasks.id, "t_loaded")).run();

@@ -15,12 +15,14 @@ import { db } from "@/lib/db";
 import { tasks } from "@/lib/db/schema";
 import { backlogItemCount } from "@/lib/backlog";
 import { parallelOffer } from "@/lib/dispatch";
+import { listFeatures } from "@/lib/features";
 import { syncAgents } from "@/lib/discovery/agents";
 import { isAgentOnboarded, refreshProject } from "@/lib/discovery/projects";
 import { gitBranchInfo, gitChanges } from "@/lib/git";
 import { resolveMembers } from "@/lib/workspace";
 import { AgentContributors } from "@/components/AgentContributors";
 import { AtAGlance } from "@/components/AtAGlance";
+import type { FeatureLite } from "@/components/FeatureGroup";
 import { SourceControl } from "@/components/SourceControl";
 import { TaskHistory } from "@/components/TaskHistory";
 import { NewTaskForm } from "@/components/NewTaskForm";
@@ -105,6 +107,13 @@ export default async function ProjectDetail({
   // `createAndStartTask` will accept. Only a boolean crosses to the client, so it reveals
   // nothing about whose task is holding the checkout.
   const offerParallel = parallelOffer(project);
+
+  // The project's features, for grouping the history below and for the composer's picker. A
+  // plain read — deriving features from `.pm/tasks/` is the backlog load's job, so this page
+  // sees whatever the last backlog load derived and never does that filesystem walk itself.
+  const featureList = listFeatures(project.id);
+  const featureById: Record<string, FeatureLite> = {};
+  for (const f of featureList) featureById[f.id] = f;
 
   const aheadBehind = branchInfo
     ? branchInfo.ahead || branchInfo.behind
@@ -195,6 +204,7 @@ export default async function ProjectDetail({
             agents={agents}
             onboardedByAgent={onboardedByAgent}
             parallelOffer={offerParallel}
+            features={featureList}
           />
         </CardSection>
 
@@ -220,6 +230,7 @@ export default async function ProjectDetail({
         <TaskHistory
           history={history}
           namespaceById={namespaceById}
+          featureById={featureById}
           className="lg:col-span-2"
         />
       </div>
