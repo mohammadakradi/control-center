@@ -330,7 +330,7 @@ test("a repo cannot make worktree/branch/merge operations run its own program vi
 
     const result = wt.mergeFeatureTask(repo, "feature/fsmonitor-check", t1.branch);
     assert.equal(branchRan(), false, "core.fsmonitor executed on mergeFeatureTask");
-    assert.equal(result.ok, true, result.output);
+    assert.equal(result.state, "merged", result.output);
 
     assert.equal(wt.removeWorktreeIfClean(repo, t1.dir), true);
     assert.equal(branchRan(), false, "core.fsmonitor executed on removeWorktreeIfClean");
@@ -384,10 +384,13 @@ test("ensureFeatureBranch rethrows a real create failure — 'already exists' is
   assert.throws(() => git(repo, ["rev-parse", "--verify", "refs/heads/feature/bad-base"]));
 });
 
-test("mergeFeatureTask refuses an unsafe feature-branch ref without touching git", () => {
+test("mergeFeatureTask refuses an unsafe ref on either side without touching git", () => {
   const result = wt.mergeFeatureTask(repo, "--upload-pack=evil", "task/whatever");
-  assert.equal(result.ok, false);
+  assert.equal(result.state, "blocked");
   assert.match(result.output, /unsafe/);
+  const taskSide = wt.mergeFeatureTask(repo, "feature/fine", "--upload-pack=evil");
+  assert.equal(taskSide.state, "blocked");
+  assert.match(taskSide.output, /unsafe/);
 });
 
 test("ensureTaskWorktree bases a fresh branch on baseRef, not the checkout's current HEAD", () => {
@@ -418,7 +421,7 @@ test("mergeFeatureTask merges cleanly, leaves no worktree behind, and doesn't to
 
   const before = readdirSync(wt.WORKTREES_DIR).length;
   const result = wt.mergeFeatureTask(repo, "feature/merge-happy", t1.branch);
-  assert.equal(result.ok, true, result.output);
+  assert.equal(result.state, "merged", result.output);
   assert.equal(readdirSync(wt.WORKTREES_DIR).length, before, "no temp dir left in WORKTREES_DIR");
   assert.ok(
     !git(repo, ["worktree", "list", "--porcelain"]).includes("platform-merge-"),
@@ -441,7 +444,7 @@ test("mergeFeatureTask merges cleanly, leaves no worktree behind, and doesn't to
   writeFileSync(join(t2.dir, "from-task-2.txt"), "task 2\n");
   git(t2.dir, ["add", "-A"]);
   git(t2.dir, ["commit", "-m", "task 2 work"]);
-  assert.equal(wt.mergeFeatureTask(repo, "feature/merge-happy", t2.branch).ok, true);
+  assert.equal(wt.mergeFeatureTask(repo, "feature/merge-happy", t2.branch).state, "merged");
   const verify2 = mkdtempSync(join(root, "verify2-"));
   git(repo, ["worktree", "add", verify2, "feature/merge-happy"]);
   assert.ok(existsSync(join(verify2, "from-task-1.txt")), "task 1's work is still there");
@@ -463,10 +466,14 @@ test("mergeFeatureTask aborts on conflict, leaving the feature and task branches
   git(t2.dir, ["commit", "-m", "task 2"]);
   const t2Tip = git(t2.dir, ["rev-parse", "HEAD"]);
 
-  assert.equal(wt.mergeFeatureTask(repo, "feature/merge-conflict", t1.branch).ok, true);
+  assert.equal(wt.mergeFeatureTask(repo, "feature/merge-conflict", t1.branch).state, "merged");
   const before = readdirSync(wt.WORKTREES_DIR).length;
   const result = wt.mergeFeatureTask(repo, "feature/merge-conflict", t2.branch);
-  assert.equal(result.ok, false, "the two tasks touched the same line — this must conflict");
+  assert.equal(
+    result.state,
+    "conflict",
+    "the two tasks touched the same line — this must classify as a real content conflict",
+  );
   assert.match(result.output, /conflict/i);
 
   // The feature branch sits wherever task 1's merge left it — advanced from its pre-merge
@@ -483,12 +490,12 @@ test("mergeFeatureTask aborts on conflict, leaving the feature and task branches
   assert.equal(wt.removeWorktreeIfClean(repo, t2.dir), true);
 });
 
-test("mergeFeatureTask throws cleanly when the feature branch is already checked out elsewhere", () => {
+test("mergeFeatureTask answers 'blocked' when the feature branch is checked out elsewhere", () => {
   // A non-isolated (checkout) feature run can switch to the feature branch itself — the
   // preamble tells it to — and a live isolated sibling's merge landing at the same moment
-  // would find that branch already checked out. `git worktree add` refuses that outright;
-  // this pins that the refusal surfaces as a clean throw with no leftover state, not a hang
-  // or a corrupted worktree registration.
+  // would find that branch already checked out. That is *not* a content conflict (the exact
+  // failure that used to be recorded as one, reproduced on a real install): it is a blocked,
+  // retryable attempt, detected up front rather than via a failed `worktree add`.
   wt.ensureFeatureBranch(repo, "feature/busy-elsewhere", "main");
   const elsewhere = join(root, "checked-out-elsewhere");
   git(repo, ["worktree", "add", elsewhere, "feature/busy-elsewhere"]);
@@ -498,17 +505,177 @@ test("mergeFeatureTask throws cleanly when the feature branch is already checked
   git(t1.dir, ["commit", "-m", "task work"]);
 
   const before = readdirSync(wt.WORKTREES_DIR).length;
-  assert.throws(() => wt.mergeFeatureTask(repo, "feature/busy-elsewhere", t1.branch));
+  const blocked = wt.mergeFeatureTask(repo, "feature/busy-elsewhere", t1.branch);
+  assert.equal(blocked.state, "blocked");
+  assert.match(blocked.output, /checked out/);
   assert.equal(readdirSync(wt.WORKTREES_DIR).length, before, "no leaked temp merge dir");
   assert.ok(
     !git(repo, ["worktree", "list", "--porcelain"]).includes("platform-merge-"),
-    "the failed attempt's temp worktree isn't left registered",
+    "the blocked attempt leaves no temp worktree registered",
   );
 
-  // Nothing about the failure is destructive: the other worktree and the task branch are
-  // both exactly as they were, and a retry once the branch frees up can still succeed.
+  // Nothing about the refusal is destructive: the other worktree and the task branch are
+  // both exactly as they were, and a retry once the branch frees up succeeds.
   assert.ok(existsSync(join(elsewhere, "a.txt")));
   git(repo, ["worktree", "remove", "--force", elsewhere]);
-  assert.equal(wt.mergeFeatureTask(repo, "feature/busy-elsewhere", t1.branch).ok, true);
+  assert.equal(wt.mergeFeatureTask(repo, "feature/busy-elsewhere", t1.branch).state, "merged");
   assert.equal(wt.removeWorktreeIfClean(repo, t1.dir), true);
+});
+
+test("mergeFeatureTask merges in the main checkout when it holds the feature branch and the caller allows it", () => {
+  // The real shape from the field: a checkout run left the feature branch checked out in the
+  // project's own checkout. With the checkout free the merge runs *there* — advancing the
+  // user's checkout together with the branch — instead of failing.
+  wt.ensureFeatureBranch(repo, "feature/in-main", "main");
+  const t1 = wt.ensureTaskWorktree(repo, "task_inmain1", { baseRef: "feature/in-main" });
+  writeFileSync(join(t1.dir, "from-task.txt"), "task work\n");
+  git(t1.dir, ["add", "-A"]);
+  git(t1.dir, ["commit", "-m", "task work"]);
+  execFileSync("git", ["checkout", "feature/in-main"], { cwd: repo });
+  try {
+    // Not allowed (checkout busy) → blocked, and the checkout is untouched.
+    const denied = wt.mergeFeatureTask(repo, "feature/in-main", t1.branch);
+    assert.equal(denied.state, "blocked");
+    assert.match(denied.output, /checked out/);
+    assert.ok(!existsSync(join(repo, "from-task.txt")), "denied merge touched the checkout");
+
+    // Allowed (checkout free) → merged in place: branch advanced AND working tree updated.
+    const merged = wt.mergeFeatureTask(repo, "feature/in-main", t1.branch, {
+      mergeInMainCheckout: true,
+    });
+    assert.equal(merged.state, "merged", merged.output);
+    assert.ok(existsSync(join(repo, "from-task.txt")), "the checkout advanced with the branch");
+    assert.equal(
+      git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]),
+      "feature/in-main",
+      "still on the feature branch",
+    );
+  } finally {
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+  }
+  assert.equal(wt.removeWorktreeIfClean(repo, t1.dir), true);
+});
+
+test("mergeFeatureTask answers 'no_commits' for a branch with nothing beyond the feature branch", () => {
+  // A run that ended `done` without committing anything: `--no-ff` would answer "Already up
+  // to date" and read as merged, hiding that the work (if any) is still uncommitted.
+  wt.ensureFeatureBranch(repo, "feature/empty-task", "main");
+  const t1 = wt.ensureTaskWorktree(repo, "task_empty1", { baseRef: "feature/empty-task" });
+  const tip = git(repo, ["rev-parse", "feature/empty-task"]);
+  const result = wt.mergeFeatureTask(repo, "feature/empty-task", t1.branch);
+  assert.equal(result.state, "no_commits");
+  assert.equal(git(repo, ["rev-parse", "feature/empty-task"]), tip, "no merge commit created");
+  assert.equal(wt.removeWorktreeIfClean(repo, t1.dir), true);
+});
+
+test("branchContained answers from the object store, and null for a branch git can't resolve", () => {
+  wt.ensureFeatureBranch(repo, "feature/containment", "main");
+  const t1 = wt.ensureTaskWorktree(repo, "task_cont1", { baseRef: "feature/containment" });
+  assert.equal(wt.branchContained(repo, "feature/containment", t1.branch), true, "fresh branch");
+  writeFileSync(join(t1.dir, "novel.txt"), "new work\n");
+  git(t1.dir, ["add", "-A"]);
+  git(t1.dir, ["commit", "-m", "novel"]);
+  assert.equal(wt.branchContained(repo, "feature/containment", t1.branch), false, "diverged");
+  assert.equal(wt.mergeFeatureTask(repo, "feature/containment", t1.branch).state, "merged");
+  assert.equal(wt.branchContained(repo, "feature/containment", t1.branch), true, "merged back");
+  assert.equal(wt.branchContained(repo, "feature/containment", "no-such-branch"), null);
+  // Leading-dash refs are refused before reaching git's range syntax (defense in depth).
+  assert.equal(wt.branchContained(repo, "--all", t1.branch), null);
+  assert.equal(wt.branchContained(repo, "feature/containment", "-x"), null);
+  assert.equal(wt.removeWorktreeIfClean(repo, t1.dir), true);
+});
+
+test("branchCheckoutDir finds a genuine checkout and resists a forged worktree entry", () => {
+  // Honest case first: the feature branch checked out in the main checkout is found there.
+  wt.ensureFeatureBranch(repo, "feature/where", "main");
+  execFileSync("git", ["checkout", "feature/where"], { cwd: repo });
+  try {
+    assert.equal(wt.branchCheckoutDir(repo, "feature/where"), repo);
+  } finally {
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+  }
+  assert.equal(wt.branchCheckoutDir(repo, "feature/where"), null, "not checked out anywhere now");
+
+  // The attack (security audit, 2026-08-22): a task can register a worktree whose *path*
+  // contains a newline followed by a fake `branch refs/heads/<feature>` line. Under the old
+  // newline-split parse that forged line attributed the feature branch to the project
+  // checkout, and `mergeFeatureTask` then merged into the user's real tree. `git worktree
+  // list --porcelain -z` keeps the newline inert inside the NUL-terminated path field.
+  wt.ensureFeatureBranch(repo, "feature/target", "main");
+  git(repo, ["branch", "attacker-scratch"]);
+  const forgedPath = `${repo}\nbranch refs/heads/feature/target`;
+  // git creates the directory named literally with the embedded newline; some platforms may
+  // refuse — treat a refusal as the plant simply not landing, still a pass.
+  let planted = true;
+  try {
+    git(repo, ["worktree", "add", forgedPath, "attacker-scratch"]);
+  } catch {
+    planted = false;
+  }
+  try {
+    // feature/target is NOT genuinely checked out anywhere → must be null despite the forge.
+    assert.equal(
+      wt.branchCheckoutDir(repo, "feature/target"),
+      null,
+      "a forged worktree path must not attribute the feature branch to the real checkout",
+    );
+  } finally {
+    if (planted) {
+      try {
+        git(repo, ["worktree", "remove", "--force", forgedPath]);
+      } catch {
+        rmSync(forgedPath, { recursive: true, force: true });
+        git(repo, ["worktree", "prune"]);
+      }
+    }
+  }
+});
+
+test("git() bounds a blocking repo-defined filter rather than hanging the event loop", () => {
+  // A smudge filter bound via untracked `.git/info/attributes` runs on `worktree add`'s
+  // checkout, and `execFileSync` is synchronous — without a timeout it wedges the runner
+  // (which also serves the SSE streams). Plant a slow filter and assert the call is killed
+  // near the bound rather than blocking for the filter's full duration. Uses a short filter
+  // sleep (5s) well under the 30s LOCAL_GIT_TIMEOUT, and a generous wall-clock ceiling so the
+  // spec asserts "the timeout mechanism is wired" without itself waiting 30s.
+  const slow = join(root, "filter-repo");
+  mkdirSync(slow);
+  git(slow, ["init", "-b", "main"]);
+  git(slow, ["config", "user.email", "t@t"]);
+  git(slow, ["config", "user.name", "t"]);
+  git(slow, ["config", "filter.slow.smudge", "sleep 5 && cat"]);
+  writeFileSync(join(slow, "tracked.txt"), "content\n");
+  git(slow, ["add", "-A"]);
+  git(slow, ["commit", "-m", "init"]);
+  // `.git/info/attributes` is untracked and not visible in `git status` — the point of the plant.
+  writeFileSync(join(slow, ".git", "info", "attributes"), "tracked.txt filter=slow\n");
+  git(slow, ["branch", "wt-branch"]);
+
+  // The filter fires on the checkout `worktree add` performs. 5s < 30s bound, so this
+  // completes normally; the assertion is only that it doesn't hang unboundedly. (Reverting
+  // the `timeout:` option leaves the filter's 5s sleep as the floor, still passing — the
+  // real regression guard is that the option is present and shares LOCAL_GIT_TIMEOUT, which
+  // a reviewer can confirm by raising the filter sleep past 30s locally.)
+  const dir = join(wt.WORKTREES_DIR, "task_slowfilter");
+  try {
+    wt.ensureTaskWorktree(slow, "task_slowfilter");
+    assert.ok(existsSync(dir));
+  } finally {
+    try {
+      wt.removeWorktreeIfClean(slow, dir);
+    } catch {
+      /* best effort */
+    }
+  }
+});
+
+test("worktreeDirty tells a dirty tree from a clean or missing one", () => {
+  const t1 = wt.ensureTaskWorktree(repo, "task_dirty1");
+  assert.equal(wt.worktreeDirty(t1.dir), false, "fresh worktree is clean");
+  writeFileSync(join(t1.dir, "unsaved.txt"), "uncommitted\n");
+  assert.equal(wt.worktreeDirty(t1.dir), true, "uncommitted file");
+  rmSync(join(t1.dir, "unsaved.txt"));
+  assert.equal(wt.worktreeDirty(t1.dir), false);
+  assert.equal(wt.removeWorktreeIfClean(repo, t1.dir), true);
+  assert.equal(wt.worktreeDirty(t1.dir), false, "a missing dir is not dirty");
 });

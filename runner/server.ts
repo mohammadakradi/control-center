@@ -18,6 +18,7 @@ import {
   taskWorktreeDir,
   WORKTREES_DIR,
 } from "./worktree";
+import { sweepFeatureMerges } from "./merge-sweep";
 import { RUNNER_HOST, RUNNER_PORT } from "../lib/config";
 import {
   continueTask,
@@ -252,6 +253,26 @@ try {
   }
 } catch {
   /* a missing/unreadable worktrees dir is not a reason to refuse to serve */
+}
+
+// Settle feature merges left unresolved by earlier runs (blocked by a busy checkout, or
+// mis-recorded before the outcome vocabulary existed). At boot no session is live anywhere,
+// so a merge may run in a project's main checkout when that is where the feature branch is.
+try {
+  const retryable = db
+    .selectDistinct({ projectId: tasks.projectId })
+    .from(tasks)
+    .where(inArray(tasks.mergeState, ["blocked", "conflict"]))
+    .all();
+  for (const { projectId } of retryable) {
+    try {
+      sweepFeatureMerges(projectId, { mergeInMainCheckout: true });
+    } catch {
+      // One project's sweep failing must not stop the others — or boot.
+    }
+  }
+} catch {
+  /* best-effort — the sweep must never refuse to serve */
 }
 
 serve({ fetch: app.fetch, port: RUNNER_PORT, hostname: RUNNER_HOST }, (info) => {

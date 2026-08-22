@@ -945,6 +945,7 @@ test("gitMerge merges cleanly with --no-ff, and aborts cleanly on conflict", () 
   g(["checkout", "-q", "main"]);
   const clean = gitMerge(base, "task/clean");
   assert.equal(clean.ok, true, clean.output);
+  assert.equal(clean.conflict, false, "a clean merge is not a conflict");
   assert.equal(readFileSync(join(base, "new.md"), "utf8"), "added by task\n");
   // --no-ff always leaves a merge commit, even though this merge could have fast-forwarded —
   // so the feature branch's history shows one boundary per merged task branch consistently.
@@ -973,7 +974,16 @@ test("gitMerge merges cleanly with --no-ff, and aborts cleanly on conflict", () 
 
   const conflict = gitMerge(base, "task/conflict-b");
   assert.equal(conflict.ok, false);
+  // Classified structurally (unmerged index entries read before the abort), not from git's
+  // prose — this is what lets a caller tell "needs reconciling" from "couldn't be attempted".
+  assert.equal(conflict.conflict, true, "a real content conflict is flagged as one");
   assert.match(conflict.output, /conflict/i);
+
+  // A failure that never produced unmerged entries is NOT a conflict: merging a branch that
+  // doesn't exist fails before any merge starts.
+  const missing = gitMerge(base, "task/does-not-exist");
+  assert.equal(missing.ok, false);
+  assert.equal(missing.conflict, false, "a refused merge must not read as a content conflict");
   // Aborted, not left half-done: HEAD never moved, the file still holds task A's committed
   // content (not conflict markers), and the working tree is clean — so a caller can remove
   // this worktree afterward without `--force` fighting a real mess.
@@ -995,6 +1005,7 @@ test("gitMerge refuses a ref that could read as a git option", () => {
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
   const result = gitMerge(dir, "--help");
   assert.equal(result.ok, false);
+  assert.equal(result.conflict, false);
   assert.match(result.output, /unsafe/);
 });
 

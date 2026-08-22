@@ -427,6 +427,44 @@ test("a task can be assigned to a feature and unassigned again", () => {
   assert.equal(features.setTaskFeature("t_assign", null)?.featureId, null);
 });
 
+test("hand-grouping a task gives it a merge state, and ungrouping takes pending back", () => {
+  // The invariant everywhere else is "mergeState null ⇔ no feature" (dispatch sets pending
+  // the moment a featureId is attached). A task grouped *after* dispatch used to stay null
+  // forever — indistinguishable from ungrouped, so the merge chip silently omitted itself.
+  const feature = features.createFeature("p1", { name: "Late grouping" })!;
+  makeTask("t_late");
+  assert.equal(features.setTaskFeature("t_late", feature.id)?.mergeState, "pending");
+  assert.equal(features.setTaskFeature("t_late", null)?.mergeState, null);
+});
+
+test("ungrouping always clears mergeState — the sweep can never reach a feature-less row", () => {
+  // The invariant the merge sweep depends on: it joins through featureId, so a row with no
+  // feature is unreachable. A leftover "blocked"/"conflict" would render a chip claiming an
+  // automatic retry that nothing will ever perform (correctness review, 2026-08-22).
+  const feature = features.createFeature("p1", { name: "Reachable" })!;
+  makeTask("t_blocked", "p1", feature.id);
+  db.update(schema.tasks)
+    .set({ mergeState: "blocked" })
+    .where(eq(schema.tasks.id, "t_blocked"))
+    .run();
+  assert.equal(features.setTaskFeature("t_blocked", null)?.mergeState, null);
+});
+
+test("moving a task to a different feature resets a stale outcome to pending", () => {
+  // "merged" describes a merge against the *old* feature's branch; carrying it onto feature
+  // B's heading would read as "this work is in B's branch" when it isn't. An unchanged
+  // (idempotent) feature keeps the outcome.
+  const a = features.createFeature("p1", { name: "Origin" })!;
+  const b = features.createFeature("p1", { name: "Destination" })!;
+  makeTask("t_outcome", "p1", a.id);
+  db.update(schema.tasks)
+    .set({ mergeState: "merged" })
+    .where(eq(schema.tasks.id, "t_outcome"))
+    .run();
+  assert.equal(features.setTaskFeature("t_outcome", a.id)?.mergeState, "merged", "same feature keeps it");
+  assert.equal(features.setTaskFeature("t_outcome", b.id)?.mergeState, "pending", "moved → pending");
+});
+
 test("closing out a feature never deletes the work recorded under it", () => {
   // The FK is `set null`, which is what keeps history when a feature row goes away. The
   // migration has to actually say so — drizzle-kit omits `ON DELETE` from an ALTER TABLE, so

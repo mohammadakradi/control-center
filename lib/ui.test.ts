@@ -12,12 +12,15 @@ import {
   BACKLOG_STATUS_LABEL,
   backlogStatusDot,
   dispatchErrorAction,
+  featureGroupDefaultOpen,
   featureMergeSummary,
   featureOptions,
   groupByFeature,
   hasMergeSummary,
   isOpenBacklogStatus,
   MERGE_STATE_LABEL,
+  MERGE_STATE_TITLE,
+  mergeChipView,
   mergeStateTone,
   orderSkills,
   statusColor,
@@ -295,6 +298,8 @@ const ALL_MERGE_STATES: Record<TaskMergeState, true> = {
   pending: true,
   merged: true,
   conflict: true,
+  blocked: true,
+  no_commits: true,
 };
 
 type Row = { id: string; featureId: string | null; mergeState?: TaskMergeState | null };
@@ -376,26 +381,86 @@ test("groupByFeature keeps a row whose feature no longer resolves", () => {
   assert.deepEqual(groups[1].rows.map((r) => r.id), ["t2"]);
 });
 
-test("featureMergeSummary counts merged and conflict, and never pending", () => {
+test("featureMergeSummary counts merged, conflict and blocked — never pending or no_commits", () => {
   // Pending is excluded on purpose: a checkout-bound feature run stays pending forever by
   // design, so aggregating it would put a permanent "N pending" on the heading of every
-  // feature whose work ran in the checkout. Reverting this turns the assertion below red.
+  // feature whose work ran in the checkout. Blocked IS counted — unlike pending it is a queue
+  // that genuinely drains (the sweep retries it when the project frees up). `no_commits` is
+  // terminal with nothing anyone will do about it, so it stays off the heading too.
   const summary = featureMergeSummary([
     "merged",
     "pending",
     "conflict",
     "merged",
+    "blocked",
+    "no_commits",
     null,
     undefined,
   ]);
-  assert.deepEqual(summary, { merged: 2, conflict: 1 });
+  assert.deepEqual(summary, { merged: 2, conflict: 1, blocked: 1 });
   assert.equal(hasMergeSummary(summary), true);
 });
 
 test("featureMergeSummary has nothing to show for pending-only or feature-less rows", () => {
   assert.equal(hasMergeSummary(featureMergeSummary(["pending", "pending"])), false);
+  assert.equal(hasMergeSummary(featureMergeSummary(["no_commits"])), false);
   assert.equal(hasMergeSummary(featureMergeSummary([null, null])), false);
   assert.equal(hasMergeSummary(featureMergeSummary([])), false);
+  assert.equal(hasMergeSummary(featureMergeSummary(["blocked"])), true, "blocked is worth a chip");
+});
+
+// ------------------------------------------------------------- mergeChipView
+
+test("a recorded outcome renders as itself, with label, tone and tooltip from one vocabulary", () => {
+  for (const state of ["merged", "conflict", "blocked", "no_commits"] as const) {
+    const view = mergeChipView({ mergeState: state, status: "done" });
+    assert.ok(view, `${state} must render`);
+    assert.equal(view.state, state);
+    assert.equal(view.label, MERGE_STATE_LABEL[state]);
+    assert.equal(view.tone, mergeStateTone(state));
+    assert.equal(view.title, MERGE_STATE_TITLE[state]);
+  }
+});
+
+test("no feature, no chip", () => {
+  assert.equal(mergeChipView({ mergeState: null, status: "done" }), null);
+  assert.equal(mergeChipView({ mergeState: undefined, status: "running" }), null);
+});
+
+test("a cancelled or failed run gets no merge chip — no merge was ever attempted", () => {
+  // The screenshot case: a cancelled task's "Not merged" chip told the user nothing except
+  // that something merge-shaped might be wrong. Nothing was attempted; silence is honest.
+  assert.equal(mergeChipView({ mergeState: "pending", status: "cancelled" }), null);
+  assert.equal(mergeChipView({ mergeState: "pending", status: "failed" }), null);
+  // …but a *recorded* outcome still shows on a cancelled continue: it really happened.
+  assert.ok(mergeChipView({ mergeState: "conflict", status: "cancelled" }));
+});
+
+test("pending on a live run promises the merge; on a checkout run it explains itself", () => {
+  const live = mergeChipView({ mergeState: "pending", status: "running", parallel: true });
+  assert.equal(live?.label, "Merges when done");
+  assert.equal(live?.tone, "muted");
+
+  // A live run that explicitly opted out of isolation is a checkout run already.
+  const queued = mergeChipView({ mergeState: "pending", status: "running", parallel: false });
+  assert.equal(queued?.label, MERGE_STATE_LABEL.pending);
+
+  // A projection that doesn't carry `parallel` (a backlog item's linked task) still promises
+  // — isolation is the default, so that is the likely truth.
+  const unknown = mergeChipView({ mergeState: "pending", status: "queued" });
+  assert.equal(unknown?.label, "Merges when done");
+
+  // Done + still pending ⇒ the run shared the checkout; the agent committed directly.
+  const checkout = mergeChipView({ mergeState: "pending", status: "done" });
+  assert.equal(checkout?.label, "In checkout");
+  assert.match(checkout!.title, /nothing separate/);
+});
+
+test("featureGroupDefaultOpen: active and ungrouped start open, closed features collapsed", () => {
+  assert.equal(featureGroupDefaultOpen(null), true, "the ungrouped bucket is live work");
+  assert.equal(featureGroupDefaultOpen({ status: "active" }), true);
+  assert.equal(featureGroupDefaultOpen({ status: "done" }), false);
+  assert.equal(featureGroupDefaultOpen({ status: "cancelled" }), false);
 });
 
 test("featureOptions offers no-feature first and hides closed features", () => {

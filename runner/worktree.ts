@@ -39,7 +39,13 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DATA_DIR } from "../lib/config";
-import { gitMerge, gitEnv, repoOpts, type GitResult } from "../lib/git";
+import {
+  gitMerge,
+  gitEnv,
+  LOCAL_GIT_TIMEOUT,
+  repoOpts,
+  type MergeResult,
+} from "../lib/git";
 
 export const WORKTREES_DIR = resolve(DATA_DIR, "worktrees");
 
@@ -114,6 +120,12 @@ function git(cwd: string, args: string[]): string {
       env: gitEnv(),
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 16 * 1024 * 1024,
+      // A repo can make a git command never return — a `filter.<driver>.smudge` bound via
+      // untracked `.git/info/attributes` runs on the `worktree add` this file issues, and
+      // `execFileSync` is synchronous, so a blocking filter wedges the runner's event loop
+      // (which also serves the SSE streams) until someone restarts it. The boot sweep runs
+      // this before the server even listens. Same 30s bound as lib/git.ts's own `git()`.
+      timeout: LOCAL_GIT_TIMEOUT,
     }).trim();
   } catch (e) {
     const err = e as { stderr?: string; message?: string };
@@ -260,43 +272,194 @@ export function ensureFeatureBranch(
 }
 
 /**
- * Merge `taskBranch` into `featureBranch`, entirely inside a throwaway worktree of the
- * feature branch — never the project's own checkout, and never the task's own worktree
- * (which the caller still needs intact to read the branch off before its own cleanup).
+ * How a feature merge-back attempt ended. Exactly the vocabulary `tasks.mergeState` records
+ * (minus "pending", which is the not-yet/never answer, not an attempt's outcome):
+ * - "merged"     — the task branch is in the feature branch now.
+ * - "conflict"   — a real content conflict (unmerged index entries); needs reconciling.
+ * - "blocked"    — the merge couldn't be *attempted* (branch checked out in a busy checkout,
+ *                  a git failure, an unsafe ref). Retryable; nothing needs resolving.
+ * - "no_commits" — the task branch holds no commits beyond the feature branch, so there was
+ *                  nothing to merge. Deliberately not "merged": for a run that committed
+ *                  nothing, "merged" would hide that its work (if any) is still uncommitted
+ *                  in its kept worktree.
+ */
+export type FeatureMergeOutcome = {
+  state: "merged" | "conflict" | "blocked" | "no_commits";
+  output: string;
+};
+
+const fromMerge = (r: MergeResult): FeatureMergeOutcome =>
+  r.ok
+    ? { state: "merged", output: r.output }
+    : { state: r.conflict ? "conflict" : "blocked", output: r.output };
+
+/**
+ * Is every commit of `branch` already reachable from `containerBranch`? Decided from the
+ * object store alone (`rev-list -n 1 container..branch` finding nothing), so it never
+ * touches any working tree. Null when git can't answer (a deleted branch, a broken repo) —
+ * distinct from false, because "couldn't tell" must not read as "there is work to merge".
+ */
+export function branchContained(
+  projectPath: string,
+  containerBranch: string,
+  branch: string,
+): boolean | null {
+  // Leading-dash guard even though both current callers already check — this file's stated
+  // policy is that every ref gets it, so a future third caller can't reintroduce the hole by
+  // forgetting. A `-`-led ref would be read by git as an option in the range below.
+  if (containerBranch.startsWith("-") || branch.startsWith("-")) return null;
+  try {
+    const unique = git(projectPath, [
+      "rev-list",
+      "-n",
+      "1",
+      `${containerBranch}..${branch}`,
+    ]);
+    return unique.length === 0;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Where `branch` is currently checked out, if anywhere — the absolute worktree path, or null.
+ * Git refuses to check one branch out in two worktrees, so this is what decides whether a
+ * merge-back can use a throwaway worktree at all, and it is how "the feature branch lives in
+ * the main checkout" is detected instead of via a failed `worktree add` (which used to read
+ * as a "conflict").
  *
- * The temp worktree lives under the OS tmpdir, not `WORKTREES_DIR`: it must never count
- * against `MAX_WORKTREES`, and it is gone — via `worktree remove --force`, plus a defensive
- * `rmSync` — before this function returns either way, so a listing of `WORKTREES_DIR` can
- * never catch it mid-flight. On conflict (or any other merge failure) `gitMerge` has already
- * run `merge --abort`, restoring the temp tree to a clean checkout of the feature branch's
- * previous tip, so the force-remove has nothing real to override; the task branch itself is
- * never written to, so a failed merge can always be retried later or resolved by hand.
+ * **Parsed with `--porcelain -z`, and that is a security fix, not tidiness** — the same class
+ * CLAUDE.md documents for `git status -z`/`--numstat -z`. A worktree path is any byte except
+ * NUL, and git does **not** quote/escape a **newline** inside a path in the plain porcelain
+ * output. A task (agent + Bash, its own worktree writable, `.git` bookkeeping shared across a
+ * project's linked worktrees) could `git worktree add "$(printf '%s\nbranch refs/heads/<feat>'
+ * "$PROJECT")" <scratch>` to register an entry whose printed path *contains* a fake
+ * `branch refs/heads/<feature>` line — a newline-split parser then attributes the feature
+ * branch to the project checkout that never held it, and `mergeFeatureTask` runs `git merge`
+ * in the user's real checkout. Under `-z` every field is NUL-terminated and records are
+ * separated by an empty field, so an embedded newline stays inert inside the path token.
+ * Reproduced end to end before the fix (security audit, 2026-08-22).
+ */
+export function branchCheckoutDir(projectPath: string, branch: string): string | null {
+  const out = git(projectPath, ["worktree", "list", "--porcelain", "-z"]);
+  const wantBranch = `branch refs/heads/${branch}`;
+  let dir: string | null = null;
+  for (const field of out.split("\0")) {
+    if (field.startsWith("worktree ")) dir = field.slice("worktree ".length);
+    else if (dir && field === wantBranch) return dir;
+    else if (field === "") dir = null; // record separator — a stray field can't cross records
+  }
+  return null;
+}
+
+/**
+ * Merge `taskBranch` into `featureBranch`, never touching the task's own worktree (which the
+ * caller still needs intact to read the branch off before its own cleanup). Never throws —
+ * every failure is a classified outcome, because the caller's next move differs by kind:
+ * a "conflict" is offered to the live session to resolve, a "blocked" is retried by the
+ * sweep, and neither should be guessed from an exception's prose.
+ *
+ * Where the merge runs depends on where the feature branch is checked out:
+ * - nowhere → a throwaway worktree of the feature branch under the OS tmpdir (never
+ *   `WORKTREES_DIR` — it must not count against `MAX_WORKTREES`), removed before returning
+ *   either way. On failure `gitMerge` has already aborted, so the temp tree is clean.
+ * - in the project's own checkout → merge **there**, but only when the caller says the
+ *   checkout is free (`mergeInMainCheckout`). This is the honest fix for the failure that
+ *   used to be recorded as "conflict": non-isolated feature runs check the feature branch
+ *   out in the main checkout and leave it there, and git refuses to check it out a second
+ *   time in a temp worktree. Merging in place advances the user's checkout together with
+ *   the branch — exactly what a checkout sitting on that branch means — and `gitMerge`
+ *   aborts on any failure, so a dirty checkout that would collide refuses cleanly instead
+ *   of half-merging. When the checkout is busy (a session is live there), the answer is
+ *   "blocked", and the sweep retries once it frees up.
+ * - in any other worktree → "blocked" (we own neither that tree nor its timing).
+ *
+ * The task branch itself is never written to, whatever the outcome, so a failed merge can
+ * always be retried later or resolved by hand.
  */
 export function mergeFeatureTask(
   projectPath: string,
   featureBranch: string,
   taskBranch: string,
-): GitResult {
-  // `featureBranch` always comes from `features.branch` today (an allowlisted slug that can
-  // never start with a dash), but this function takes a bare string — the same
-  // defense-in-depth every other ref in this file gets before reaching git's argv.
+  opts: { mergeInMainCheckout?: boolean } = {},
+): FeatureMergeOutcome {
+  // Both refs get the same leading-dash guard as everything else in this file before
+  // reaching git's argv — `featureBranch` always comes from `features.branch` today (an
+  // allowlisted slug), but this function takes bare strings.
   if (!featureBranch || featureBranch.startsWith("-")) {
-    return { ok: false, output: `refusing to merge into an unsafe ref: ${featureBranch}` };
+    return {
+      state: "blocked",
+      output: `refusing to merge into an unsafe ref: ${featureBranch}`,
+    };
   }
-  // Stale bookkeeping from a crashed earlier attempt would make `worktree add` refuse the
-  // path below — the same reason `ensureTaskWorktree` prunes before creating.
-  git(projectPath, ["worktree", "prune"]);
-  const dir = mkdtempSync(join(tmpdir(), "platform-merge-"));
+  if (!taskBranch || taskBranch.startsWith("-")) {
+    return { state: "blocked", output: `refusing to merge an unsafe ref: ${taskBranch}` };
+  }
   try {
-    git(projectPath, ["worktree", "add", dir, featureBranch]);
-    return gitMerge(dir, taskBranch);
-  } finally {
-    try {
-      git(projectPath, ["worktree", "remove", "--force", dir]);
-    } catch {
-      /* best-effort — the directory is removed directly below regardless */
+    // Nothing to merge? Decided from the object store before any worktree is touched — a
+    // `--no-ff` merge of an already-contained branch answers "Already up to date" without a
+    // commit, which used to read as "merged" even for a run that committed nothing at all.
+    const contained = branchContained(projectPath, featureBranch, taskBranch);
+    if (contained === null) {
+      return {
+        state: "blocked",
+        output: `could not compare ${taskBranch} against ${featureBranch}`,
+      };
     }
-    rmSync(dir, { recursive: true, force: true });
+    if (contained) return { state: "no_commits", output: "" };
+
+    const checkoutDir = branchCheckoutDir(projectPath, featureBranch);
+    if (checkoutDir) {
+      let isMainCheckout = false;
+      try {
+        isMainCheckout = realpathSync(checkoutDir) === realpathSync(projectPath);
+      } catch {
+        /* a vanished worktree path — fall through to blocked below */
+      }
+      if (isMainCheckout && opts.mergeInMainCheckout) {
+        return fromMerge(gitMerge(projectPath, taskBranch));
+      }
+      return {
+        state: "blocked",
+        output:
+          `${featureBranch} is checked out at ${checkoutDir}` +
+          (isMainCheckout
+            ? " and the checkout is busy — the merge will be retried when it frees up"
+            : " — git refuses a second checkout of one branch"),
+      };
+    }
+
+    // Stale bookkeeping from a crashed earlier attempt would make `worktree add` refuse the
+    // path below — the same reason `ensureTaskWorktree` prunes before creating.
+    git(projectPath, ["worktree", "prune"]);
+    const dir = mkdtempSync(join(tmpdir(), "platform-merge-"));
+    try {
+      git(projectPath, ["worktree", "add", dir, featureBranch]);
+      return fromMerge(gitMerge(dir, taskBranch));
+    } finally {
+      try {
+        git(projectPath, ["worktree", "remove", "--force", dir]);
+      } catch {
+        /* best-effort — the directory is removed directly below regardless */
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  } catch (err) {
+    return { state: "blocked", output: (err as Error).message };
+  }
+}
+
+/** Does this worktree hold uncommitted changes? Used by the merge sweep to tell "nothing to
+ *  merge because the work was never committed" (worktree kept, dirty) apart from "everything
+ *  this branch had is in the feature branch" — the two honest readings of an empty
+ *  `rev-list`. Unreadable (e.g. removed mid-check) counts as clean: the caller only uses
+ *  this to pick a label, never to decide whether to delete anything. */
+export function worktreeDirty(dir: string): boolean {
+  if (!existsSync(dir)) return false;
+  try {
+    return git(dir, ["status", "--porcelain"]).length > 0;
+  } catch {
+    return false;
   }
 }
 

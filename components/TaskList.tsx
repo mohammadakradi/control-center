@@ -102,10 +102,13 @@ export function TaskList({
               {/* `sr-only sm:not-sr-only`, not `hidden sm:*`: below `sm` the row has no width
                   to spare, but "Merge conflict" must stay in the row's accessible name at
                   every size rather than dropping out of it — the trick `MobileTabBar` and the
-                  command palette's status badge both use. */}
-              {showMergeState && t.mergeState && (
+                  command palette's status badge both use. The chip decides for itself whether
+                  it has anything honest to say (`mergeChipView` — e.g. a cancelled run whose
+                  merge was never attempted renders nothing), so the row passes the whole task
+                  and doesn't second-guess it. */}
+              {showMergeState && (
                 <span className="sr-only shrink-0 text-xs sm:not-sr-only">
-                  <MergeStateChip state={t.mergeState} />
+                  <MergeStateChip task={t} />
                 </span>
               )}
               <StatusBadge status={t.status} />

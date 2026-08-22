@@ -130,14 +130,21 @@ export function backlogStatusDot(status: BacklogStatus): string {
  * Where a feature-linked task's branch stands relative to its feature branch, in words.
  *
  * Sentence case like the other two label maps, so a merge chip and a `StatusBadge` sitting in
- * one row read as the same vocabulary. The three names are exactly the ones the runner records
+ * one row read as the same vocabulary. The names are exactly the ones the runner records
  * (`TaskMergeState`) — a second spelling here would be a vocabulary that could drift from the
- * state it describes.
+ * state it describes. Note `pending`'s label describes the *run*, not a verdict: the old
+ * "Not merged" read as one, when for a checkout run the honest reading is "the agent commits
+ * directly, there is nothing separate to merge" — its work is typically already in the
+ * feature branch. That misreading happened to a real user (2026-08-22). Rows render through
+ * `mergeChipView`, which picks the right pending phrasing per run; this map is the shared
+ * vocabulary it draws from.
  */
 export const MERGE_STATE_LABEL: Record<TaskMergeState, string> = {
-  pending: "Not merged",
+  pending: "In checkout",
   merged: "Merged",
   conflict: "Merge conflict",
+  blocked: "Merge waiting",
+  no_commits: "Nothing to merge",
 };
 
 /**
@@ -150,9 +157,11 @@ export const MERGE_STATE_LABEL: Record<TaskMergeState, string> = {
  * is precisely the state. Reserving `danger` for a failed run also means the two can be told
  * apart at a glance in a list that holds both.
  *
- * `pending` is `muted` rather than `info` because for a checkout run it is the *terminal*
- * answer, not a step on the way to one (see below) — a tone implying "in flight" would be a
- * promise nothing is going to keep.
+ * `blocked` is `muted`, not `warn`: nothing needs doing — the platform retries it by itself
+ * whenever the project frees up, and a caution tone would summon the user to a job that isn't
+ * theirs. `pending` and `no_commits` are `muted` because they are honest terminal answers,
+ * not steps on the way to one — a tone implying "in flight" would be a promise nothing is
+ * going to keep.
  */
 export function mergeStateTone(state: TaskMergeState): "ok" | "warn" | "muted" {
   switch (state) {
@@ -165,35 +174,138 @@ export function mergeStateTone(state: TaskMergeState): "ok" | "warn" | "muted" {
   }
 }
 
+/** Tooltip prose per state — beside the labels so the whole vocabulary has one testable home
+ *  (it used to live in the component, where `pnpm test` can't reach); the branchy pending
+ *  phrasings live in `mergeChipView` below. */
+export const MERGE_STATE_TITLE: Record<TaskMergeState, string> = {
+  merged: "This task's branch was merged into the feature branch when the run finished.",
+  conflict:
+    "Merging this task's branch into the feature branch hit a real content conflict. Both " +
+    "branches are intact — resolve and merge by hand; the chip updates once the branch is in.",
+  blocked:
+    "The merge couldn't run yet (the feature branch's checkout was in use). The platform " +
+    "retries it automatically when the project frees up — nothing to do.",
+  no_commits:
+    "This run's branch has no commits of its own — either nothing was committed, or its work " +
+    "already reached the feature branch. A kept worktree still holds any uncommitted work.",
+  pending:
+    "This run works directly in the project checkout, where the agent commits itself — " +
+    "normally on the feature branch — so there is nothing separate for the platform to merge.",
+};
+
+/** What a merge chip needs of a task row. `parallel` is optional because some projections (a
+ *  backlog item's linked task) don't carry it — the view degrades to the generic phrasing. */
+export type MergeChipInput = {
+  mergeState: TaskMergeState | null | undefined;
+  status: TaskStatus | string;
+  parallel?: boolean | null;
+};
+
+export type MergeChipView = {
+  state: TaskMergeState;
+  label: string;
+  tone: "ok" | "warn" | "muted";
+  title: string;
+};
+
 /**
- * A feature heading's merge summary: how many of the group's rows merged, and how many hit a
- * conflict.
+ * What a task row's merge chip should say — or null for no chip at all.
+ *
+ * The recorded outcomes (`merged` / `conflict` / `blocked` / `no_commits`) speak for
+ * themselves. `pending` doesn't: it means three different things depending on where the run
+ * stands, and rendering one word for all three is exactly what confused a real user
+ * (2026-08-22 — "other tasks show not merged which I don't know what they mean"):
+ *
+ * - a **cancelled or failed** run gets **no chip** — no merge was ever attempted, and a merge
+ *   verdict on a run that didn't finish is noise implying the merge itself went wrong;
+ * - a **live run that may isolate** (`parallel` not explicitly false) reads "Merges when
+ *   done" — the one pending that really is a step on the way somewhere, so it may promise;
+ * - everything else reads "In checkout": the run shares the project checkout, the agent
+ *   commits there directly (normally on the feature branch itself), so the platform never has
+ *   anything separate to merge — the work is typically *in* the branch despite no platform
+ *   merge having happened, which is why the old "Not merged" label was worse than silence.
+ */
+export function mergeChipView(t: MergeChipInput): MergeChipView | null {
+  if (!t.mergeState) return null;
+  if (t.mergeState !== "pending") {
+    return {
+      state: t.mergeState,
+      label: MERGE_STATE_LABEL[t.mergeState],
+      tone: mergeStateTone(t.mergeState),
+      title: MERGE_STATE_TITLE[t.mergeState],
+    };
+  }
+  if (t.status === "cancelled" || t.status === "failed") return null;
+  const terminal = t.status === "done";
+  if (!terminal && t.parallel !== false) {
+    return {
+      state: "pending",
+      label: "Merges when done",
+      tone: "muted",
+      title:
+        "This run is isolated on its own branch — the platform merges it into the feature " +
+        "branch automatically when the run finishes.",
+    };
+  }
+  return {
+    state: "pending",
+    label: MERGE_STATE_LABEL.pending,
+    tone: "muted",
+    title: MERGE_STATE_TITLE.pending,
+  };
+}
+
+/**
+ * A feature heading's merge summary: how many of the group's rows merged, hit a conflict, or
+ * are waiting for a blocked merge to retry.
  *
  * **`pending` is deliberately not counted**, and this is the one decision in here worth not
  * relitigating. A *non-isolated* (checkout) feature run stays `pending` forever by design — the
  * platform never system-merges one, so `pending` there is the honest answer rather than a stuck
  * state (see the runner notes in CLAUDE.md). Summarising it would put a "3 pending" chip on the
  * heading of every feature whose work ran in the checkout, which reads as a queue that is never
- * going to drain. The per-row chip still says `Not merged`, so nothing is hidden — what's
- * dropped is only the *aggregate*, which is where the false impression came from.
+ * going to drain. The per-row chip still renders (via `mergeChipView`), so nothing is hidden —
+ * what's dropped is only the *aggregate*, which is where the false impression came from.
  *
- * Returns zeroes rather than null so a caller can render both chips conditionally without a
+ * `blocked` **is** counted, because unlike `pending` it genuinely is a queue that drains: the
+ * sweep retries it whenever the project frees up. `no_commits` is not — there is nothing
+ * anyone or anything is going to do with it.
+ *
+ * Returns zeroes rather than null so a caller can render the chips conditionally without a
  * null check; `hasMergeSummary` is the "is there anything to show" test.
  */
 export function featureMergeSummary(
   states: readonly (TaskMergeState | null | undefined)[],
-): { merged: number; conflict: number } {
+): { merged: number; conflict: number; blocked: number } {
   let merged = 0;
   let conflict = 0;
+  let blocked = 0;
   for (const s of states) {
     if (s === "merged") merged += 1;
     else if (s === "conflict") conflict += 1;
+    else if (s === "blocked") blocked += 1;
   }
-  return { merged, conflict };
+  return { merged, conflict, blocked };
 }
 
-export const hasMergeSummary = (s: { merged: number; conflict: number }): boolean =>
-  s.merged > 0 || s.conflict > 0;
+export const hasMergeSummary = (s: {
+  merged: number;
+  conflict: number;
+  blocked: number;
+}): boolean => s.merged > 0 || s.conflict > 0 || s.blocked > 0;
+
+/**
+ * Whether a feature group starts expanded. Active features (and the ungrouped bucket, whose
+ * `feature` is null) do — they are the work in flight, the thing the reader came for. Closed
+ * features start collapsed: their rows are history, and on a long-lived project they would
+ * otherwise push every live group below the fold. The heading itself always renders, so
+ * nothing is hidden — collapsed is a default, not a filter.
+ */
+export function featureGroupDefaultOpen(
+  feature: { status: FeatureStatus } | null,
+): boolean {
+  return feature === null || feature.status === "active";
+}
 
 /** One feature's worth of rows. `feature` is null for the ungrouped bucket. */
 export type FeatureGroup<Row, F> = { feature: F | null; rows: Row[] };

@@ -29,7 +29,9 @@ import {
   mergeFeatureTask,
   removeWorktreeIfClean,
   worktreeBranch,
+  worktreeDirty,
 } from "./worktree";
+import { sweepFeatureMerges } from "./merge-sweep";
 import {
   isZeroUsage,
   LAUNCH_LOG,
@@ -71,6 +73,16 @@ type SessionHandle = {
    *  merge-on-done step in `finalize` — all read this rather than the row, which nothing
    *  here ever re-fetches mid-run. */
   featureId: string | null;
+  /** Set once the one automatic conflict-resolution turn has been pushed (see `mergeOnDone`).
+   *  Whatever that turn achieves, there is never a second one — the bound that keeps a merge
+   *  the agent can't resolve from looping the session forever. */
+  mergeResolveAttempted?: boolean;
+  /** Set when the resolve turn was pushed *mid-turn* (the agent's [[DONE]] text finalizes
+   *  before its own `result` message arrives). The next `result` then belongs to the turn
+   *  that already ended, not to the resolve turn — the result handler must swallow it, or it
+   *  would re-attempt the merge before the agent has even seen the resolve prompt and seal
+   *  the task as `conflict` with the resolution still in flight. */
+  mergeResolveSwallowResult?: boolean;
 };
 
 /** A feature row by id, or null if it's gone (deleted mid-run — its FK is `set null`, so a
@@ -126,6 +138,13 @@ function projectBusy(projectId: string, exceptTaskId?: string): boolean {
  */
 function promoteNext(projectId: string): void {
   if (projectBusy(projectId)) return;
+  // The checkout is free right now — settle any feature merges that were blocked on it
+  // (and reclassify rows an earlier failure mis-recorded), before a promoted job takes it.
+  try {
+    sweepFeatureMerges(projectId, { mergeInMainCheckout: true });
+  } catch {
+    /* best-effort — a sweep failure must never stop the queue */
+  }
   const next = db
     .select()
     .from(tasks)
@@ -201,6 +220,54 @@ function nudgePrompt(reason: PauseReason): string {
   );
 }
 
+/**
+ * What to do with a turn-ending `result` message, given the run's state. Pure and exported
+ * so the ordering can be unit-tested — the loop that consumes it can't be (it needs a live
+ * SDK `query`), but this is where the load-bearing precedence lives.
+ *
+ * **`"swallow"` comes first, before `"fail"`, and that ordering is the fix for a real bug**
+ * (correctness review, 2026-08-22): after a mid-turn `[[DONE]]` triggers the merge step and
+ * pushes the conflict-resolve turn, the *next* result is that same ended turn's own — stale,
+ * to be eaten. If it happens to carry an error subtype (`error_max_turns`/`_max_budget_usd`,
+ * plausible exactly when a turn both finishes its text and trips a limit), letting the error
+ * branch win would seal the task `failed` and orphan the just-pushed resolve turn. Swallowing
+ * regardless of subtype lets the resolve turn run; if it can't, the post-loop finalize is the
+ * backstop.
+ */
+export type ResultAction =
+  | "swallow"
+  | "fail"
+  | "none"
+  | "await"
+  | "gate"
+  | "nudge"
+  | "pause-fail"
+  | "complete";
+export function resultAction(s: {
+  /** handle.mergeResolveSwallowResult — this stale result must be eaten whatever it says. */
+  swallow: boolean;
+  /** subtype !== "success" || is_error — a hard failure. */
+  isError: boolean;
+  /** handle.done — already finalized (e.g. a mid-turn [[DONE]] sealed it). */
+  done: boolean;
+  /** A tool-based gate is awaiting the user. */
+  pendingApproval: boolean;
+  /** A prose gate marker closed the last assistant message. */
+  hasGate: boolean;
+  /** The turn ended mid-workflow (narration / waiting), not on a real result. */
+  paused: boolean;
+  /** Nudge budget remains (autoContinues < MAX_AUTO_CONTINUE). */
+  canNudge: boolean;
+}): ResultAction {
+  if (s.swallow) return "swallow";
+  if (s.isError) return "fail";
+  if (s.done) return "none";
+  if (s.pendingApproval) return "await";
+  if (s.hasGate) return "gate";
+  if (s.paused) return s.canNudge ? "nudge" : "pause-fail";
+  return "complete";
+}
+
 /** True for messages from the main agent thread (subagent messages carry a
  *  parent_tool_use_id / subagent_type and must not drive task completion). */
 function isMainThread(m: SDKMessage): boolean {
@@ -271,8 +338,27 @@ function setStatus(handle: SessionHandle, status: TaskStatus): void {
   record(handle, "status", { status });
 }
 
-function finalize(handle: SessionHandle, status: TaskStatus, rawError?: string): void {
+/** How a `finalize(…, "done")` call may react to a merge conflict: by pushing the one
+ *  automatic resolve turn ("mid-turn" / "boundary" — see `mergeOnDone` for why the two
+ *  differ), or not at all ("none": the input channel is closed or closing, so a pushed turn
+ *  could never run). The default is "none" so a future finalize call site can't start an
+ *  agent turn by accident. */
+type MergeResolveContext = "mid-turn" | "boundary" | "none";
+
+function finalize(
+  handle: SessionHandle,
+  status: TaskStatus,
+  rawError?: string,
+  opts: { resolve?: MergeResolveContext } = {},
+): void {
   if (handle.done) return;
+  // A feature-linked isolated run merges back into its feature branch *before* the task is
+  // sealed, because a real content conflict gets one shot at being resolved by the still-live
+  // session — in which case the task is not done yet: the resolve turn runs, and finalize is
+  // reached again after it (every path back here re-attempts the merge exactly once more).
+  if (status === "done" && handle.worktree && handle.featureId) {
+    if (!mergeOnDone(handle, opts.resolve ?? "none")) return;
+  }
   handle.done = true;
   // The error column is user-visible too — scrub it like any event payload.
   const error = rawError ? redactString(rawError, handle.secrets) : rawError;
@@ -287,17 +373,12 @@ function finalize(handle: SessionHandle, status: TaskStatus, rawError?: string):
   if (handle.worktree && status === "done") {
     try {
       // The agent may have switched branches mid-run; record where the commits actually
-      // are before the tree goes away — the file view's `git show` fallback reads this, and
-      // it's the branch a feature merge below targets.
+      // are before the tree goes away — the file view's `git show` fallback reads this.
+      // (`mergeOnDone` above already recorded it too; a fresh read here costs nothing and
+      // stays correct for a done path that skipped the merge, e.g. a deleted feature.)
       const branch = worktreeBranch(handle.worktree.dir);
       if (branch) {
         db.update(tasks).set({ branch }).where(eq(tasks.id, handle.taskId)).run();
-      }
-      // A feature-linked isolated run gets merged back before its worktree goes away. The
-      // task branch survives either outcome — a clean tree with nothing uncommitted has
-      // nothing left to lose by being cleaned up next, win or lose the merge.
-      if (handle.featureId && branch) {
-        mergeIntoFeature(handle, handle.worktree.projectPath, handle.featureId, branch);
       }
       const removed = removeWorktreeIfClean(handle.worktree.projectPath, handle.worktree.dir);
       record(handle, "log", {
@@ -315,39 +396,112 @@ function finalize(handle: SessionHandle, status: TaskStatus, rawError?: string):
   promoteNext(handle.projectId);
 }
 
+/** The one automatic turn a run gets to resolve its own merge conflict, in its own worktree.
+ *  Both interpolations are safe in agent-facing text: the branch is an allowlisted slug and
+ *  the name was reduced to one control-character-free line at creation (`cleanFeatureName`) —
+ *  same stance as `featureBranchPreamble`. Exported only for its spec, like the preamble. */
+export function mergeResolvePrompt(featureName: string, featureBranch: string): string {
+  return (
+    "Your work on this task is finished, but merging your branch into the feature branch " +
+    `\`${featureBranch}\` (feature "${featureName}") hit a real merge conflict with work ` +
+    "that is already on it from another run. Resolve it now, here in your own worktree:\n" +
+    `1. Run \`git merge ${featureBranch}\`.\n` +
+    "2. Resolve every conflict by reconciling BOTH sides' intent. Never discard the other " +
+    "run's changes and never discard your own — integrate them.\n" +
+    "3. Stage the resolutions and commit the merge.\n" +
+    "4. If the project has a cheap check (typecheck, lint, the affected tests), run it on " +
+    "the resolved files.\n" +
+    "Then reply with one short line describing how you resolved it and end with [[DONE]]. " +
+    "Do not open an approval gate for this, do not push, and do not start any new work — " +
+    "once your branch contains the resolution, the platform merges it into the feature " +
+    "branch itself."
+  );
+}
+
 /**
- * Merge a finished isolated task's branch into its feature branch, recording the outcome on
- * the task row so it survives past this run (task 04's chips read `mergeState`). Never
- * throws — a merge failure is a fact about the work, not a reason to fail bookkeeping that
- * has already happened (the task is `done`; the row update above already landed).
+ * Merge a finishing isolated task's branch into its feature branch, recording the outcome on
+ * the task row (`mergeState`) and in the transcript. Returns whether finalize may proceed:
+ * false means a resolve turn was pushed and the session continues — the task is not done yet.
+ *
+ * Never throws — a merge failure is a fact about the work, not a reason to fail bookkeeping.
+ * The outcome is recorded *before* the resolve turn is pushed, so a run cancelled or crashed
+ * mid-resolution keeps the honest `conflict` state rather than a stale `pending`.
+ *
+ * The `resolve` context exists because the two ways a run reaches "done" sit differently in
+ * the turn lifecycle (see `MergeResolveContext`): after a mid-turn [[DONE]], the ending
+ * turn's own `result` message is still in flight and must be swallowed
+ * (`mergeResolveSwallowResult`); at a turn boundary the next `result` already belongs to the
+ * resolve turn and is handled normally.
  */
-function mergeIntoFeature(
-  handle: SessionHandle,
-  projectPath: string,
-  featureId: string,
-  taskBranchName: string,
-): void {
-  const feature = getFeature(featureId);
-  if (!feature) return; // the feature was deleted mid-run; nothing left to merge into
+function mergeOnDone(handle: SessionHandle, resolve: MergeResolveContext): boolean {
+  if (!handle.worktree) return true;
   try {
-    const result = mergeFeatureTask(projectPath, feature.branch, taskBranchName);
+    const branch = worktreeBranch(handle.worktree.dir);
+    if (!branch) return true; // detached HEAD — nothing safely mergeable
+    db.update(tasks).set({ branch }).where(eq(tasks.id, handle.taskId)).run();
+    const feature = handle.featureId ? getFeature(handle.featureId) : null;
+    if (!feature) return true; // deleted mid-run; nothing left to merge into
+    const outcome = mergeFeatureTask(handle.worktree.projectPath, feature.branch, branch, {
+      // The merge may run in the project's main checkout when that is where the feature
+      // branch is checked out — but only while no session is live there. This run itself is
+      // isolated, so it never holds the checkout.
+      mergeInMainCheckout: !projectBusy(handle.projectId, handle.taskId),
+    });
     db.update(tasks)
-      .set({ mergeState: result.ok ? "merged" : "conflict" })
+      .set({ mergeState: outcome.state })
       .where(eq(tasks.id, handle.taskId))
       .run();
-    record(handle, "log", {
-      message: result.ok
-        ? `🔀 Merged ${taskBranchName} into ${feature.branch}.`
-        : `⚠️ Couldn't merge ${taskBranchName} into ${feature.branch} — left for manual ` +
-          `resolution:\n${result.output}`,
-    });
+    if (
+      outcome.state === "conflict" &&
+      resolve !== "none" &&
+      !handle.mergeResolveAttempted
+    ) {
+      handle.mergeResolveAttempted = true;
+      record(handle, "log", {
+        message:
+          `⚠️ Merging ${branch} into ${feature.branch} hit a real conflict — asking the ` +
+          "agent to resolve it in its worktree (one attempt), then retrying the merge.",
+      });
+      handle.pushInput(userMessage(mergeResolvePrompt(feature.name, feature.branch)));
+      if (resolve === "mid-turn") handle.mergeResolveSwallowResult = true;
+      return false;
+    }
+    record(handle, "log", { message: mergeOutcomeLog(outcome, branch, feature.branch, handle) });
+    return true;
   } catch (err) {
-    db.update(tasks).set({ mergeState: "conflict" }).where(eq(tasks.id, handle.taskId)).run();
     record(handle, "log", {
-      message:
-        `⚠️ Couldn't merge ${taskBranchName} into ${feature.branch}: ` +
-        `${(err as Error).message}`,
+      message: `merge step skipped: ${(err as Error).message}`,
     });
+    return true;
+  }
+}
+
+function mergeOutcomeLog(
+  outcome: { state: string; output: string },
+  branch: string,
+  featureBranch: string,
+  handle: SessionHandle,
+): string {
+  switch (outcome.state) {
+    case "merged":
+      return `🔀 Merged ${branch} into ${featureBranch}.`;
+    case "no_commits":
+      return (
+        `Nothing to merge into ${featureBranch}: ${branch} has no commits of its own.` +
+        (handle.worktree && worktreeDirty(handle.worktree.dir)
+          ? " The run's uncommitted work is kept in its worktree — continue the task to commit it."
+          : "")
+      );
+    case "blocked":
+      return (
+        `⏸ Merge into ${featureBranch} deferred — it will be retried automatically when the ` +
+        `project frees up: ${outcome.output}`
+      );
+    default:
+      return (
+        `⚠️ Couldn't merge ${branch} into ${featureBranch} — left for manual resolution ` +
+        `(both branches are intact):\n${outcome.output}`
+      );
   }
 }
 
@@ -672,7 +826,9 @@ function runTask(
           if (text.trim()) lastAssistantText = text;
           if (DONE_AT_END.test(text)) {
             producedReport = true;
-            finalize(handle, "done");
+            // Mid-turn: this message's own `result` is still in flight. If the merge step
+            // pushes a resolve turn, that stale result must be swallowed (see mergeOnDone).
+            finalize(handle, "done", undefined, { resolve: "mid-turn" });
           }
         }
         // A `result` message marks the end of a turn. In streaming-input mode the
@@ -708,76 +864,98 @@ function runTask(
           // 401) as subtype "success" with is_error: true — treat those as failed
           // too, so a bad credential doesn't masquerade as a completed task.
           const isErr = (m as { is_error?: boolean }).is_error === true;
-          if (sub !== "success" || isErr) {
+          const gate = lastAssistantText.match(GATE_AT_END);
+          // Did this turn actually end on a result, or on the agent narrating its next
+          // step? Classified from the turn's own last message, then reset for the next.
+          const endText = turnText;
+          const turnEnd = classifyTurnEnd(endText);
+          turnText = "";
+          // Captured here (not in the nudge branch) so the "paused" variant's `reason` is
+          // available where the action-dispatch has widened `turnEnd` back to the union.
+          const pauseReason = turnEnd.kind === "paused" ? turnEnd.reason : null;
+          const action = resultAction({
+            swallow: Boolean(handle.mergeResolveSwallowResult),
+            isError: sub !== "success" || isErr,
+            done: handle.done,
+            pendingApproval: Boolean(handle.pendingApproval),
+            hasGate: Boolean(gate),
+            paused: turnEnd.kind === "paused",
+            canNudge: autoContinues < MAX_AUTO_CONTINUE,
+          });
+          if (action === "swallow") {
+            // This result belongs to the turn whose [[DONE]] already triggered the merge
+            // step, which pushed the conflict-resolve turn — the agent hasn't seen that
+            // prompt yet. Eaten *whatever its subtype*: even an error result here must not
+            // seal the task, or the resolve turn is orphaned (usage above is already banked
+            // — that must never be skipped). If the resolve turn can't run, the post-loop
+            // finalize below is the backstop.
+            handle.mergeResolveSwallowResult = false;
+          } else if (action === "fail") {
             // error_during_execution / error_max_turns / error_max_budget_usd / …
+            // (finalize no-ops if the task was already sealed.)
             const detail = (m as { result?: string }).result;
             finalize(
               handle,
               "failed",
               (isErr && detail) || `run ended: ${sub || "unknown error"}`,
             );
-          } else if (!handle.done) {
-            const gate = lastAssistantText.match(GATE_AT_END);
-            // Did this turn actually end on a result, or on the agent narrating its next
-            // step? Classified from the turn's own last message, then reset for the next.
-            const endText = turnText;
-            const turnEnd = classifyTurnEnd(endText);
-            turnText = "";
-            if (handle.pendingApproval) {
-              // A tool-based gate is awaiting the user — keep the session alive.
-            } else if (gate) {
-              // Prose-gate fallback: the agent signalled a gate via the marker
-              // instead of the approval tool. Surface it so it stays actionable
-              // (respond() pushes the decision back as a reply) rather than stuck.
-              const kind = gate[1] === "PROPOSAL" ? "proposal" : "report";
-              const summary = lastAssistantText
-                .replace(/\[\[(DONE|GATE:[A-Z]+)\]\]/g, "")
-                .trim();
-              record(handle, "gate", { gate: kind, summary });
-              setStatus(
-                handle,
-                kind === "proposal" ? "awaiting_proposal" : "awaiting_report",
-              );
-            } else if (turnEnd.kind === "paused" && autoContinues < MAX_AUTO_CONTINUE) {
-              // The agent ended the turn mid-workflow — it dispatched review subagents and
-              // said it would resume, or it just announced its next step ("Let me read the
-              // workflow rules:") and stopped. Either way it isn't done: nudge it to
-              // continue rather than finalizing and passing its narration off as the report.
-              autoContinues += 1;
-              record(handle, "log", {
-                message: `Agent paused mid-workflow (${turnEnd.reason}); nudging it to finish (continue → report gate).`,
+          } else if (action === "await") {
+            // A tool-based gate is awaiting the user — keep the session alive.
+          } else if (action === "gate") {
+            // Prose-gate fallback: the agent signalled a gate via the marker
+            // instead of the approval tool. Surface it so it stays actionable
+            // (respond() pushes the decision back as a reply) rather than stuck.
+            const kind = gate![1] === "PROPOSAL" ? "proposal" : "report";
+            const summary = lastAssistantText
+              .replace(/\[\[(DONE|GATE:[A-Z]+)\]\]/g, "")
+              .trim();
+            record(handle, "gate", { gate: kind, summary });
+            setStatus(
+              handle,
+              kind === "proposal" ? "awaiting_proposal" : "awaiting_report",
+            );
+          } else if (action === "nudge") {
+            // The agent ended the turn mid-workflow — it dispatched review subagents and
+            // said it would resume, or it just announced its next step ("Let me read the
+            // workflow rules:") and stopped. Either way it isn't done: nudge it to
+            // continue rather than finalizing and passing its narration off as the report.
+            autoContinues += 1;
+            record(handle, "log", {
+              message: `Agent paused mid-workflow (${pauseReason}); nudging it to finish (continue → report gate).`,
+            });
+            handle.pushInput(userMessage(nudgePrompt(pauseReason ?? "narration")));
+          } else if (action === "pause-fail") {
+            // Out of nudges and still stopping mid-work. Saying "done" here would be a
+            // lie — and stapling [[DONE]] onto narration is exactly how a preamble ends
+            // up rendered as the task's report. Fail honestly; Continue resumes it.
+            const nudged = `nudged ${autoContinues} time${autoContinues === 1 ? "" : "s"}`;
+            finalize(
+              handle,
+              "failed",
+              producedReport
+                ? `Agent stopped mid-workflow after its report (${nudged}), so the run may be incomplete. Use Continue to resume it.`
+                : `Agent stopped mid-workflow without producing a final report (${nudged}). Use Continue to resume it.`,
+            );
+          } else if (action === "complete") {
+            // Turn ended on a result-shaped message with nothing pending → the task is
+            // complete. If the run produced no report (e.g. onboard, which prints a plain
+            // summary with no [[DONE]] and no report gate), surface that summary as the
+            // report so the user sees a result rather than an activity-only view. Only
+            // this turn's own closing text qualifies — never stale prose from earlier.
+            if (!producedReport && endText.trim()) {
+              record(handle, "message", {
+                type: "assistant",
+                message: {
+                  content: [{ type: "text", text: `${endText.trim()}\n\n[[DONE]]` }],
+                },
               });
-              handle.pushInput(userMessage(nudgePrompt(turnEnd.reason)));
-            } else if (turnEnd.kind === "paused") {
-              // Out of nudges and still stopping mid-work. Saying "done" here would be a
-              // lie — and stapling [[DONE]] onto narration is exactly how a preamble ends
-              // up rendered as the task's report. Fail honestly; Continue resumes it.
-              const nudged = `nudged ${autoContinues} time${autoContinues === 1 ? "" : "s"}`;
-              finalize(
-                handle,
-                "failed",
-                producedReport
-                  ? `Agent stopped mid-workflow after its report (${nudged}), so the run may be incomplete. Use Continue to resume it.`
-                  : `Agent stopped mid-workflow without producing a final report (${nudged}). Use Continue to resume it.`,
-              );
-            } else {
-              // Turn ended on a result-shaped message with nothing pending → the task is
-              // complete. If the run produced no report (e.g. onboard, which prints a plain
-              // summary with no [[DONE]] and no report gate), surface that summary as the
-              // report so the user sees a result rather than an activity-only view. Only
-              // this turn's own closing text qualifies — never stale prose from earlier.
-              if (!producedReport && endText.trim()) {
-                record(handle, "message", {
-                  type: "assistant",
-                  message: {
-                    content: [{ type: "text", text: `${endText.trim()}\n\n[[DONE]]` }],
-                  },
-                });
-                producedReport = true;
-              }
-              finalize(handle, "done");
+              producedReport = true;
             }
+            // Turn boundary: the next `result` (if the merge step pushes a resolve turn)
+            // belongs to the resolve turn itself and is handled normally.
+            finalize(handle, "done", undefined, { resolve: "boundary" });
           }
+          // action === "none": already finalized, nothing to do.
         }
       }
       finalize(handle, "done");
