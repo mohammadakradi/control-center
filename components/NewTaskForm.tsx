@@ -99,10 +99,10 @@ export function NewTaskForm({
    * loading state and a second round trip for data already on screen.
    */
   features?: FeatureChoice[];
-  /** Offer "Run in parallel": the project's checkout is busy right now AND it's a plain git
-   *  repo (worktree isolation is refused for non-git projects and workspaces). Computed
-   *  server-side at page load — if the other run finishes before dispatch, the flag simply
-   *  runs this task normally. */
+  /** Offer "Run isolated": this project can isolate runs at all (a plain git repo, not a
+   *  workspace — `parallelOffer` server-side). Where offered the box defaults to *checked*:
+   *  isolation is the default and queueing is the manual choice (2026-08-22). On a free
+   *  checkout with no feature the flag is harmless — the runner just runs normally. */
   parallelOffer?: boolean;
 }) {
   const router = useRouter();
@@ -129,7 +129,9 @@ export function NewTaskForm({
   // error then carries a link instead of being a dead end.
   const [errorAction, setErrorAction] = useState<ErrorAction | null>(null);
   const [files, setFiles] = useState<File[]>([]);
-  const [parallel, setParallel] = useState(false);
+  // Defaults to true — isolation is the default; unticking is how a run is deliberately
+  // queued into the shared checkout instead.
+  const [parallel, setParallel] = useState(true);
   const [featureId, setFeatureId] = useState("");
   const featureChoices = useMemo(() => featureOptions(features), [features]);
   // One real choice plus "No feature" is not a choice — and a project with only closed features
@@ -392,8 +394,9 @@ export function NewTaskForm({
         </div>
       )}
 
-      {/* Offered only while another run occupies this project's checkout (and only for a
-          plain git repo — the API refuses the flag anywhere a worktree can't isolate). */}
+      {/* Offered wherever a worktree can isolate (a plain git repo, not a workspace — the API
+          refuses the flag anywhere else) and checked by default: isolation is the default,
+          queueing is the manual choice. */}
       {parallelOffer && (
         <label className="mt-3 flex items-start gap-2 text-sm text-fg-subtle">
           <input
@@ -403,9 +406,11 @@ export function NewTaskForm({
             className="mt-1"
           />
           <span>
-            <span className="font-medium text-fg">Run in parallel</span> — another task is
-            running on this project. Instead of queueing, this run gets its own isolated git
-            worktree and branch; merging the branch afterwards is the normal PR flow.
+            <span className="font-medium text-fg">Run isolated (in parallel)</span> — the task
+            works in its own copy of the project (a git worktree) on its own branch, so it
+            never collides with other runs or your own edits. A feature-linked run is merged
+            back into the feature branch automatically when it finishes. Untick to queue this
+            run into the shared project checkout instead.
           </span>
         </label>
       )}

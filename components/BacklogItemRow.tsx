@@ -70,10 +70,10 @@ export function BacklogItemRow({
   /** Whether the viewer owns the linked task. A shared backlog can point at someone else's
    *  run, and `/tasks/<id>` 404s for them by design — so don't offer a link that can't work. */
   canOpenLinkedTask: boolean;
-  /** Offer "Parallel": this project's checkout is busy right now AND it's a plain git repo
-   *  (worktree isolation is refused for non-git projects and workspaces). Computed server-side
-   *  at page load by `parallelOffer` — if the run holding the checkout finishes first, the flag
-   *  simply runs this item normally. */
+  /** Offer "Isolated": this project can isolate runs at all (a plain git repo, not a
+   *  workspace — `parallelOffer` server-side). Where offered the box defaults to *checked*:
+   *  isolation is the default and queueing is the manual choice (2026-08-22). On a free
+   *  checkout with no feature the flag is harmless — the runner just runs normally. */
   parallelOffer?: boolean;
 }) {
   const router = useRouter();
@@ -82,9 +82,9 @@ export function BacklogItemRow({
   /** Set when dispatch was refused for a reason the user can act on, so the message can
    *  carry a link instead of being a dead end. */
   const [errorLink, setErrorLink] = useState<ErrorAction | null>(null);
-  /** Per-row, because the choice is per-run: one item may be worth isolating while the next
-   *  should wait its turn in the checkout. */
-  const [parallel, setParallel] = useState(false);
+  /** Per-row, because the choice is per-run. Defaults to true — isolation is the default;
+   *  unticking is how a run is deliberately queued into the shared checkout instead. */
+  const [parallel, setParallel] = useState(true);
 
   const running = item.linkedTask !== null && ACTIVE_STATUSES.has(item.linkedTask.status);
   // Finished work doesn't offer a Run button — it says so instead. `item.status`, not the
@@ -202,10 +202,9 @@ export function BacklogItemRow({
                   <StatusBadge status={item.linkedTask.status} />
                   {/* Where that run's branch stands. Beside the run's own status rather than
                       replacing it, because the two are independent: a task can be `done` with
-                      `mergeState: "conflict"` — the agent finished, the merge didn't. */}
-                  {item.linkedTask.mergeState && (
-                    <MergeStateChip state={item.linkedTask.mergeState} />
-                  )}
+                      `mergeState: "conflict"` — the agent finished, the merge didn't. The chip
+                      decides for itself whether it has anything to say (`mergeChipView`). */}
+                  <MergeStateChip task={item.linkedTask} />
                   {canOpenLinkedTask && (
                     <Link
                       href={`/tasks/${item.linkedTask.id}`}
@@ -237,24 +236,25 @@ export function BacklogItemRow({
             ariaLabel={`Status — ${item.title}`}
             className="min-w-36 flex-1 sm:flex-none"
           />
-          {/* Only where the run can actually take it: offered for a busy checkout on a plain
-              git repo, and only next to a Run button that isn't already spent. Not disabled
-              while a dispatch is in flight — the value was read when Run was pressed, and
-              disabling a focused control drops the keyboard user out of this row. */}
+          {/* Only where the run can actually take it (a plain git repo, not a workspace), and
+              only next to a Run button that isn't already spent. Checked by default —
+              isolation is the default; unticking queues the run into the shared checkout. Not
+              disabled while a dispatch is in flight — the value was read when Run was pressed,
+              and disabling a focused control drops the keyboard user out of this row. */}
           {parallelOffer && !completed && !running && (
             <label
               className="inline-flex items-center gap-1.5 text-xs text-fg-subtle"
-              title="Another task is using this project's checkout. Instead of queueing behind it, this run gets its own isolated git worktree and branch."
+              title="Runs in its own copy of the project (a git worktree) on its own branch, so it can't collide with other runs — and a feature task is merged back automatically when it finishes. Untick to queue this run into the shared project checkout instead."
             >
               <input
                 type="checkbox"
                 checked={parallel}
                 onChange={(e) => setParallel(e.target.checked)}
                 // A page holds many of these, so the accessible name has to say which item
-                // it belongs to — "Parallel" alone repeats down the whole list.
-                aria-label={`Run in parallel — ${item.title}`}
+                // it belongs to — "Isolated" alone repeats down the whole list.
+                aria-label={`Run isolated (in parallel) — ${item.title}`}
               />
-              Parallel
+              Isolated
             </label>
           )}
           {/* `md`, not `sm`: `Select`'s trigger is a `py-2 text-sm` control with no size

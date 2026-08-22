@@ -51,9 +51,10 @@ export function FileModal({
   /** Read the file from this task's own working dir — a parallel run executes in an
    *  isolated git worktree, so files it wrote aren't in the project checkout. */
   taskId?: string;
-  /** Offer "Parallel" on the Create-task button: the project's checkout is busy right now AND
-   *  it's a plain git repo. Computed server-side by `parallelOffer` and passed down from the
-   *  page — the same signal, and the same refusals, as the project composer's checkbox. */
+  /** Offer "Isolated" on the Create-task button: this project can isolate runs at all (a
+   *  plain git repo, not a workspace). Computed server-side by `parallelOffer` and passed down
+   *  from the page — the same signal, the same default-checked box, and the same refusals as
+   *  the project composer's checkbox. */
   parallelOffer?: boolean;
   onClose: () => void;
 }) {
@@ -68,8 +69,9 @@ export function FileModal({
   const [createErrAction, setCreateErrAction] = useState<ErrorAction | null>(null);
   /** Isolate this run in its own worktree rather than queueing behind the checkout. Read at
    *  dispatch and sent down whichever of the two paths below takes the spec, so the choice
-   *  doesn't depend on whether the backlog happens to hold this file. */
-  const [parallel, setParallel] = useState(false);
+   *  doesn't depend on whether the backlog happens to hold this file. Defaults to true —
+   *  isolation is the default; unticking queues the run into the shared checkout instead. */
+  const [parallel, setParallel] = useState(true);
 
   useEffect(() => {
     const params = new URLSearchParams({ path });
@@ -253,19 +255,20 @@ export function FileModal({
             {copied ? "Copied" : "Copy"}
           </Button>
           {/* Only beside a button that can dispatch, and only where the run can take the flag
-              (busy checkout, plain git repo — see `parallelOffer`). */}
+              (a plain git repo, not a workspace — see `parallelOffer`). Checked by default:
+              isolation is the default, unticking queues into the shared checkout. */}
           {isTask && parallelOffer && (
             <label
               className="inline-flex items-center gap-1.5 text-xs text-fg-subtle"
-              title="Another task is using this project's checkout. Instead of queueing behind it, this run gets its own isolated git worktree and branch."
+              title="Runs in its own copy of the project (a git worktree) on its own branch, so it can't collide with other runs — and a feature task is merged back automatically when it finishes. Untick to queue this run into the shared project checkout instead."
             >
               <input
                 type="checkbox"
                 checked={parallel}
                 onChange={(e) => setParallel(e.target.checked)}
-                aria-label="Run in parallel"
+                aria-label="Run isolated (in parallel)"
               />
-              Parallel
+              Isolated
             </label>
           )}
           {isTask && (

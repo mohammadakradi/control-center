@@ -357,8 +357,31 @@ export function parseFeatureRef(
 }
 
 /** Assign (or, with null, unassign) a task's feature. The caller has already established that
- *  the task is theirs (`findOwnedTask`) and that the feature is the project's. */
+ *  the task is theirs (`findOwnedTask`) and that the feature is the project's.
+ *
+ *  `mergeState` tracks a task's relationship to *its* feature's branch, so it moves with the
+ *  grouping — and the only sound reading is that it describes the **current** feature:
+ *  - **ungroup (`featureId → null`) → `mergeState` null.** This is the invariant the whole
+ *    codebase relies on ("`mergeState` null ⇔ no feature"): the merge sweep joins through
+ *    `featureId`, so a row with no feature can never be retried or reclassified again — a
+ *    leftover `blocked`/`conflict`/`no_commits` would show a chip claiming an automatic retry
+ *    that nothing will ever perform (correctness review, 2026-08-22).
+ *  - **group or move to a feature → `pending`**, unless the feature is unchanged (an
+ *    idempotent PATCH keeps the recorded outcome). A recorded `merged`/`conflict` describes a
+ *    merge against the branch of *whatever feature the task was on then*; carrying it onto a
+ *    different feature's heading would read as "this work is in feature B's branch" when it
+ *    isn't. `pending` is the honest "not (yet) merged into this feature's branch". The
+ *    grouped-by-hand task was the reason this function had to touch `mergeState` at all — it
+ *    used to stay null forever, so the chip silently omitted itself. */
 export function setTaskFeature(taskId: string, featureId: string | null): Task | null {
-  db.update(tasks).set({ featureId }).where(eq(tasks.id, taskId)).run();
+  const current = db.select().from(tasks).where(eq(tasks.id, taskId)).get();
+  if (!current) return null;
+  const mergeState =
+    featureId === null
+      ? null
+      : featureId === current.featureId
+        ? current.mergeState
+        : "pending";
+  db.update(tasks).set({ featureId, mergeState }).where(eq(tasks.id, taskId)).run();
   return db.select().from(tasks).where(eq(tasks.id, taskId)).get() ?? null;
 }

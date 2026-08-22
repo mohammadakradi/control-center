@@ -1,11 +1,21 @@
-import { GitBranch, GitMerge, Layers, TriangleAlert } from "lucide-react";
-import type { ReactNode } from "react";
+"use client";
+
+import {
+  ChevronRight,
+  Clock3,
+  GitBranch,
+  GitMerge,
+  Layers,
+  TriangleAlert,
+} from "lucide-react";
+import { useId, useState, type ReactNode } from "react";
 import type { Feature, TaskMergeState } from "@/lib/db/schema";
 import {
+  featureGroupDefaultOpen,
   featureMergeSummary,
   hasMergeSummary,
-  MERGE_STATE_LABEL,
-  mergeStateTone,
+  mergeChipView,
+  type MergeChipInput,
 } from "@/lib/ui";
 import { Chip } from "./ui-cards";
 
@@ -17,19 +27,30 @@ import { Chip } from "./ui-cards";
 export type FeatureLite = Pick<Feature, "id" | "name" | "branch" | "status">;
 
 /**
- * One feature's heading, above whatever rows belong to it.
+ * One feature's heading, above whatever rows belong to it — now a **disclosure**: the heading
+ * always renders, the rows collapse under it.
  *
  * Three surfaces group work by feature — the backlog, project detail's task history and the
  * cross-project Tasks page — and this is the single heading treatment they share, for the same
  * reason `TaskList` is the single task row: three hosts hand-rolling "name + branch + merge
  * state" is three chances for a feature to look like a different kind of thing on each page.
+ * Making it collapsible here rather than per-host is the same argument again.
  *
- * It is an **`<h3>`**, which is what makes it composable: every host renders these inside a
- * `CardSection`, whose title is an `<h2>`, so the document outline stays correct wherever this
- * lands (project → feature on `/tasks`, "Open" → feature on the backlog). Deliberately not a
- * `<section aria-labelledby>`: a named `section` is an ARIA landmark, and a card holding five
- * features would put five landmarks in the page's region list for no navigational gain —
- * heading navigation is already the right way through this.
+ * A client component now (the open state is the whole point), but the children are rendered by
+ * the server hosts and passed through — collapsing only hides them, nothing refetches. Active
+ * features and the ungrouped bucket start open; closed features start collapsed
+ * (`featureGroupDefaultOpen`), since their rows are history that would otherwise push live
+ * work below the fold. The state is per-render on purpose: a persisted collapse (localStorage)
+ * would make a feature someone closed *stay* invisible on every future visit, which is a
+ * filter, not a fold.
+ *
+ * The heading is an **`<h3>`**, which is what makes it composable: every host renders these
+ * inside a `CardSection`, whose title is an `<h2>`, so the document outline stays correct
+ * wherever this lands. The disclosure is a real `<button>` inside the heading (name + chevron)
+ * with `aria-expanded`/`aria-controls`, so it works from the keyboard and reads as a
+ * disclosure to assistive tech. The chips and the count stay *outside* the button — they are
+ * reference material (the branch chip is a string to copy), and folding them into the button
+ * would bloat its accessible name and make the branch text unselectable-without-toggling.
  */
 export function FeatureGroup({
   feature,
@@ -50,6 +71,8 @@ export function FeatureGroup({
   mergeStates?: readonly (TaskMergeState | null | undefined)[];
   children: ReactNode;
 }) {
+  const [open, setOpen] = useState(() => featureGroupDefaultOpen(feature));
+  const bodyId = useId();
   const summary = featureMergeSummary(mergeStates);
 
   return (
@@ -59,14 +82,26 @@ export function FeatureGroup({
             characters of prose and this is the group's only label, so wrapping it is right
             where ellipsising a task title in a dense row is. */}
         <h3 className="min-w-0 text-sm font-semibold break-words text-fg-strong">
-          {feature ? (
-            feature.name
-          ) : (
-            <span className="inline-flex items-center gap-1.5">
-              <Layers className="size-3.5 text-fg-ghost" aria-hidden="true" />
-              No feature
-            </span>
-          )}
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            aria-controls={bodyId}
+            className="inline-flex min-w-0 items-center gap-1.5 rounded-md text-left hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <ChevronRight
+              className={`size-3.5 shrink-0 text-fg-ghost transition-transform ${open ? "rotate-90" : ""}`}
+              aria-hidden="true"
+            />
+            {feature ? (
+              <span className="min-w-0 break-words">{feature.name}</span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5">
+                <Layers className="size-3.5 text-fg-ghost" aria-hidden="true" />
+                No feature
+              </span>
+            )}
+          </button>
         </h3>
 
         {feature && (
@@ -97,18 +132,28 @@ export function FeatureGroup({
           </span>
         )}
 
-        {/* Merge state of the group as a whole. Both chips carry a word as well as a tone and an
-            icon, so nothing here is conveyed by colour alone. `pending` is never summarised —
-            see `featureMergeSummary`. */}
+        {/* Merge state of the group as a whole. Every chip carries a word as well as a tone and
+            an icon, so nothing here is conveyed by colour alone. `pending` is never summarised;
+            `blocked` is — unlike pending it is a queue that genuinely drains (the sweep retries
+            it when the project frees up). See `featureMergeSummary`. */}
         {hasMergeSummary(summary) && (
           <span className="flex shrink-0 flex-wrap items-center gap-1.5 text-xs">
             {summary.conflict > 0 && (
               <Chip
                 tone="warn"
                 icon={<TriangleAlert className="size-3" aria-hidden="true" />}
-                title="The platform could not merge these runs into the feature branch. Each task's own branch is intact — resolve the merge by hand."
+                title="Merging these runs into the feature branch hit real conflicts. Each task's own branch is intact — resolve the merges by hand."
               >
                 {`${summary.conflict} conflict${summary.conflict === 1 ? "" : "s"}`}
+              </Chip>
+            )}
+            {summary.blocked > 0 && (
+              <Chip
+                tone="muted"
+                icon={<Clock3 className="size-3" aria-hidden="true" />}
+                title="These merges couldn't run yet (the feature branch's checkout was in use). The platform retries them automatically when the project frees up."
+              >
+                {`${summary.blocked} waiting`}
               </Chip>
             )}
             {summary.merged > 0 && (
@@ -123,50 +168,45 @@ export function FeatureGroup({
           </span>
         )}
 
+        {/* The count stays visible while collapsed — it is what says the fold is hiding
+            something, and how much. */}
         <span className="ml-auto shrink-0 text-xs text-fg-faint">
           {`${count} ${unit}${count === 1 ? "" : "s"}`}
         </span>
       </div>
-      {children}
+      <div id={bodyId} hidden={!open}>
+        {children}
+      </div>
     </div>
   );
 }
 
 /**
- * A row's own merge state, as a chip.
+ * A row's own merge state, as a chip — or nothing, when there is nothing honest to say.
  *
- * Rendered from the state the runner actually recorded, so `pending` shows here even though the
- * heading's summary never counts it: on a row it is the honest answer to "did this get merged",
- * and for a checkout run that answer is permanent (the platform never system-merges one). What
- * it must not become is an *aggregate* implying a queue that will drain.
+ * All the wording, tones and the hide-on-cancelled rule live in `mergeChipView` (`lib/ui.ts`),
+ * where `pnpm test` can reach them; this component only draws the answer. A chip is tempted
+ * toward a shorter word ("Conflict"), and that is exactly how a second vocabulary for one
+ * state gets started — the kind of drift `STATUS_LABEL` exists to prevent.
  */
-export function MergeStateChip({ state }: { state: TaskMergeState }) {
+export function MergeStateChip({ task }: { task: MergeChipInput }) {
+  const view = mergeChipView(task);
+  if (!view) return null;
   return (
     <Chip
-      tone={mergeStateTone(state)}
+      tone={view.tone}
       icon={
-        state === "conflict" ? (
+        view.state === "conflict" ? (
           <TriangleAlert className="size-3" aria-hidden="true" />
+        ) : view.state === "blocked" ? (
+          <Clock3 className="size-3" aria-hidden="true" />
         ) : (
           <GitMerge className="size-3" aria-hidden="true" />
         )
       }
-      title={MERGE_TITLE[state]}
+      title={view.title}
     >
-      {/* Label and tone both come from `lib/ui.ts`, never restated here. A chip is tempted
-          toward a shorter word ("Conflict"), and that is exactly how a second vocabulary for
-          one state gets started — the kind of drift `STATUS_LABEL` exists to prevent. */}
-      {MERGE_STATE_LABEL[state]}
+      {view.label}
     </Chip>
   );
 }
-
-/** Tooltip prose for each state — presentational, and only this file renders it, so unlike the
- *  label and the tone it has no second call site to drift from. */
-const MERGE_TITLE: Record<TaskMergeState, string> = {
-  merged: "This task's branch was merged into the feature branch when the run finished.",
-  conflict:
-    "The platform could not merge this task's branch into the feature branch. The branch is intact — resolve the merge by hand.",
-  pending:
-    "Not merged into the feature branch. A run that shares the project's own checkout is never merged by the platform, so this can be its final state.",
-};

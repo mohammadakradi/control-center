@@ -226,9 +226,12 @@ items, one branch. `lib/features.ts` owns every rule; the routes under
 
 ### The feature branch: lifecycle and merge-back (runner)
 Each feature has one real `feature/<slug>` git ref, and a feature-linked task's finished work
-ends up merged into it — deterministically, never auto-resolved, never silent on conflict.
+ends up merged into it. The *system* merge stays deterministic and never silent — but a real
+content conflict now gets **one** shot at being resolved by the run's own still-live session
+(below), and a merge that couldn't be *attempted* is retried automatically by the merge sweep.
 `runner/worktree.ts` owns the git mechanics; `runner/session-manager.ts` wires them into
-dispatch and `finalize()`; `lib/git.ts` gets the one new hardened primitive.
+dispatch and `finalize()`; `runner/merge-sweep.ts` is the retry half; `lib/git.ts` holds the
+hardened merge primitive.
 - **A feature-linked parallel run always isolates, busy checkout or not.** `launchMode` gained
   a `feature` input: `canIsolate && (workdir || (parallel && (busy || feature)))`. Before this,
   isolation only kicked in when the checkout was already busy — so the *first* of N parallel
@@ -247,32 +250,74 @@ dispatch and `finalize()`; `lib/git.ts` gets the one new hardened primitive.
   every task of a feature (and the merge below) a common ancestor. `baseRef` only matters on
   first creation; reattaching an existing branch (continue, or a recreate after cleanup)
   ignores it, same as it already ignored HEAD.
-- **On `done`, `finalize()` merges the task's branch into the feature branch before the
-  worktree is cleaned up** — in a **throwaway worktree of the feature branch**, never the
-  project's own checkout and never the task's own worktree (which is still needed a moment
-  longer to read the branch off). `mergeFeatureTask` (`runner/worktree.ts`) creates that temp
-  worktree under the **OS tmpdir, not `WORKTREES_DIR`** — it must never count against
-  `MAX_WORKTREES` — and force-removes it (plus a defensive `rmSync`) before returning either
-  way, win or lose the merge.
+- **On `done`, the merge-back runs *before* the task is sealed (`mergeOnDone`, called from
+  `finalize()`), and where it runs depends on where the feature branch is checked out.**
+  `mergeFeatureTask` (`runner/worktree.ts`) decides per attempt:
+  - branch checked out **nowhere** → a **throwaway worktree of the feature branch** under the
+    **OS tmpdir, not `WORKTREES_DIR`** (it must never count against `MAX_WORKTREES`),
+    force-removed (plus a defensive `rmSync`) before returning either way;
+  - branch checked out **in the project's main checkout** → the merge runs **there**, but only
+    while no session is live in it (the caller passes `mergeInMainCheckout`). This was the
+    single biggest source of bogus "conflict" rows: a checkout run leaves the feature branch
+    checked out (the preamble tells it to work there), git refuses a second checkout of one
+    branch, and the failed `worktree add` used to be recorded as a content conflict. Merging
+    in place advances the user's checkout together with the branch — which is what a checkout
+    sitting on that branch means — and `gitMerge` aborts clean on any failure;
+  - branch checked out **anywhere else**, or the checkout is busy → `"blocked"`, retried later.
+  It never touches the task's own worktree (still needed a moment longer to read the branch
+  off), and never merges a branch with no commits of its own (`branchContained` pre-check —
+  a `--no-ff` merge of an already-contained branch answers "Already up to date" and used to
+  read as `"merged"` even for a run that committed nothing).
 - **The actual merge (`gitMerge`, `lib/git.ts`) is `git merge --no-ff --no-edit <branch>`,
-  aborting on any failure.** `--no-ff` always leaves a merge commit — without it, the first
-  task merged into a fresh feature branch would fast-forward with no merge commit while every
-  later one (having diverged) couldn't, an inconsistency with nothing to do with the content.
-  On failure — a real content conflict, or anything else git refuses — `merge --abort` runs
-  immediately, so the temp worktree is never left mid-merge (which would make its own
-  `worktree remove` refuse it as unclean) and the task's branch is never touched either way: a
-  failed merge can always be retried later or resolved by hand, because nothing about it is
-  destructive.
+  aborting on any failure, and it classifies what happened.** `--no-ff` always leaves a merge
+  commit — without it, the first task merged into a fresh feature branch would fast-forward
+  with no merge commit while every later one (having diverged) couldn't, an inconsistency with
+  nothing to do with the content. On failure `merge --abort` runs immediately, so no tree is
+  ever left mid-merge, and the task's branch is never touched either way. `MergeResult.conflict`
+  is decided **structurally, before the abort**: `MERGE_HEAD` exists only once a merge genuinely
+  started and stopped needing resolution, so a refused merge (missing ref, dirty files in the
+  way) can never read as a content conflict. Deliberately not `ls-files -u` through `runGit` —
+  that helper maps empty output to `"Done."`, so emptiness there is unreadable (found by a spec
+  that asserted a missing branch isn't a conflict and failed).
 - **The outcome is recorded on the task row as `mergeState`** (`lib/db/schema.ts`; migration
-  `drizzle/0005`) — `"pending" | "merged" | "conflict"`, the exact three names task 04's chips
-  read. Set to `"pending"` at **dispatch** (`lib/dispatch.ts`) the moment a `featureId` is
-  attached, before the runner has even decided how the task will run, so a queued or
-  checkout-bound feature task shows a state rather than reading identically to one with no
-  feature. An isolated run updates it to `"merged"` or `"conflict"` on `done`; a **non-isolated
-  run leaves it `"pending"` forever** — the platform never system-merges one, so `"pending"`
-  there is the honest answer, not a stuck one. `mergeState` is independent of the task's own
-  `status`: a task can be `done` with `mergeState: "conflict"` at once — the agent's work
-  finished; the system's merge of it didn't.
+  `drizzle/0005`) — now five states, and the column is plain text with no CHECK, so widening it
+  needed **no migration**: `"pending" | "merged" | "conflict" | "blocked" | "no_commits"`.
+  `"pending"` is set at **dispatch** (`lib/dispatch.ts`) the moment a `featureId` is attached
+  — and by `setTaskFeature` when a task is grouped by hand *after* dispatch, which used to
+  leave null forever (indistinguishable from ungrouped, so the chip silently omitted itself).
+  `"conflict"` now means a **real content conflict only**; `"blocked"` is "couldn't be
+  attempted" (retryable, nothing to resolve); `"no_commits"` is "the branch holds nothing to
+  merge" — honest for a run that ended `done` without committing (its kept worktree still has
+  the work; the log entry says so). A **non-isolated run stays `"pending"` forever** — the
+  platform never system-merges one, so that is the honest answer, not a stuck one. `mergeState`
+  is independent of the task's own `status`: a task can be `done` with `mergeState:
+  "conflict"` at once — the agent's work finished; the system's merge of it didn't.
+- **A real conflict gets one automatic resolve turn in the same live session, then the merge
+  is retried — nothing is ever auto-picked.** On `conflict`, `mergeOnDone` records the state
+  first (a cancel mid-resolve keeps the honest answer), then pushes `mergeResolvePrompt` into
+  the session: merge the feature branch *into your branch* in your own worktree, reconcile
+  both sides — never discard either — commit, no gates, no push. When that turn ends,
+  `finalize()` re-runs the deterministic merge, which now fast-forwards content-wise; if it
+  still conflicts, `"conflict"` stands, exactly as before. Bounded by
+  `handle.mergeResolveAttempted` (one attempt per run, ever) and it costs one extra agent turn
+  on the owner's token, logged in the transcript. The delicate part is turn accounting:
+  a mid-turn `[[DONE]]` finalize pushes the prompt while that turn's own `result` is still in
+  flight, so `mergeResolveSwallowResult` eats exactly that one stale result — otherwise the
+  handler would re-attempt the merge before the agent had even seen the prompt and seal the
+  task as `conflict` with the resolution still ahead of it. The stream-end finalize passes
+  `resolve: "none"` (the input channel is closing; a pushed turn could never run).
+- **`blocked` merges retry themselves: `sweepFeatureMerges` (`runner/merge-sweep.ts`)** runs
+  at boot and from `promoteNext` — i.e. every time a project's checkout frees up, which is
+  exactly when a merge blocked on that checkout can succeed (it passes
+  `mergeInMainCheckout: true`; at that instant nothing is live there). It also **reclassifies
+  from the object store**: any `blocked`/`conflict` row whose branch is now fully contained in
+  the feature branch becomes `"merged"` (someone resolved it by hand — that is also what heals
+  rows the old catch-all mis-recorded), or `"no_commits"` when the run's kept worktree is
+  still dirty (marking that "merged" would hide uncommitted work). A `conflict` row with real
+  divergent commits is **left alone** — it needs reconciling, not retrying on every sweep.
+  Every state change writes a log event into the task's transcript; a chip that silently flips
+  is a mystery. Bounded (`MAX_SWEEP_TASKS`), best-effort, and one task's git hiccup never
+  stops the rest — or boot, or the queue.
 - **A non-isolated (checkout) feature run gets an instruction-level guarantee only, and says so
   to the agent.** The platform can't system-merge a run sharing the user's own checkout, so
   `featureBranchPreamble` (`runner/session-manager.ts`, exported for its own spec) appends a
@@ -308,15 +353,32 @@ FeatureGroup.tsx` is the single heading; the grouping and merge-state rules are 
   only when something is in it. A row whose `featureId` doesn't resolve lands there rather than
   vanishing: `feature_id` is `set null`, so a row can briefly outlive its feature and work must
   never disappear from a list because its grouping did.
-- **`featureMergeSummary` deliberately never counts `pending`.** A checkout-bound feature run
-  stays `pending` forever by design (above), so aggregating it would put a permanent "N pending"
-  on the heading of every feature whose work ran in the checkout — a queue that never drains. The
-  per-row chip still says "Not merged", so only the misleading *aggregate* is dropped. A spec
-  pins it.
-- **A merge conflict is toned `warn`, not `danger`**, and `MERGE_STATE_LABEL`/`mergeStateTone`
-  are the one vocabulary for the three states: the merge failing is not the *run* failing (a task
-  can be `done` with `mergeState: "conflict"`), and reserving `danger` for a failed run keeps the
-  two tellable apart in a list holding both.
+- **Every feature group is a disclosure.** `FeatureGroup` is a client component holding the
+  open state; the heading (name + chevron, a real `<button>` with
+  `aria-expanded`/`aria-controls`) always renders, the rows fold under it. Active features and
+  the ungrouped bucket start open, closed features start collapsed
+  (`featureGroupDefaultOpen`, spec'd) — their rows are history that would otherwise push live
+  work below the fold. Deliberately **not persisted**: a remembered collapse is a filter, not
+  a fold. The chips and the count stay outside the button — the branch chip is a string to
+  copy, and folding it into the button would make it unselectable without toggling.
+- **A row's chip goes through `mergeChipView` (`lib/ui.ts`), and `pending` is no longer one
+  word.** The old label "Not merged" was read by a real user as a verdict on work that was in
+  fact sitting *in* the feature branch (a checkout run's agent commits there directly). Now:
+  a cancelled/failed run whose merge was never attempted gets **no chip**; a live run that may
+  isolate reads "Merges when done"; everything else reads "In checkout", with a tooltip
+  explaining the agent commits directly. Recorded outcomes render as themselves — labels,
+  tones and tooltips all come from `MERGE_STATE_LABEL`/`mergeStateTone`/`MERGE_STATE_TITLE` in
+  `lib/ui.ts` (the tooltips moved out of the component so the whole vocabulary is testable).
+- **`featureMergeSummary` never counts `pending` or `no_commits`, and does count `blocked`.**
+  A checkout-bound feature run stays `pending` forever by design (above), so aggregating it
+  would put a permanent "N pending" on every heading — a queue that never drains. `blocked`
+  IS that queue's opposite: the sweep genuinely drains it, so "N waiting" earns its chip.
+  `no_commits` is terminal with nothing anyone will do about it. A spec pins all of it.
+- **A merge conflict is toned `warn`, not `danger`** — the merge failing is not the *run*
+  failing (a task can be `done` with `mergeState: "conflict"`), and reserving `danger` for a
+  failed run keeps the two tellable apart in a list holding both. `blocked` is `muted`, not
+  `warn`: it needs nothing from the user, and a caution tone would summon them to a job the
+  sweep already owns.
 - **The `feature/<slug>` branch chip wraps and is never truncated.** It is the string a user has
   to type into `git checkout`, so a truncated prefix is useless and a `title` tooltip is
   unreachable by keyboard. It is `min-w-0` + `break-all`, **not** `shrink-0` — at `featureSlug`'s
@@ -481,10 +543,14 @@ translate HTTP. An item can be dispatched as a real task and links back to it.
     an item before pressing Run.
 
 ### Running planned work in parallel
-A backlog item or a pm spec can opt into the same git-worktree isolation the composer offers, so
-a batch of planned tasks can be fanned out instead of queueing single-file behind the checkout.
+A backlog item or a pm spec runs with the same git-worktree isolation the composer offers, so
+a batch of planned tasks fans out instead of queueing single-file behind the checkout.
 Nothing new happens at launch — this is the existing `tasks.parallel` opt-in reaching two more
-buttons.
+buttons. **Since 2026-08-22 isolation is the default**: the checkbox ("Isolated") is offered
+wherever the dispatch would accept the flag and starts **checked** in all three hosts —
+queueing into the shared checkout is the manual choice (untick). The copy explains the
+worktree in plain words (own copy of the project, own branch, feature runs merged back
+automatically) instead of assuming the user knows what a worktree is.
 - **`POST …/backlog/[itemId]/run` takes an optional body, and `parallel` is the only thing in
   it.** Everything about *what* runs is read off the item's own row — its text, its title, its
   assignee, its feature — so the only thing a caller gets to say is *how* to launch it.
@@ -501,22 +567,18 @@ buttons.
   can't tell their flag was dropped. Parsed after the project/item 404s, so a malformed body
   can't turn a missing id into a different status code and be used to probe for ids.
 - **`parallelOffer` (`lib/dispatch.ts`) is the one definition of when the choice is offered** —
-  busy checkout + plain git repo + not a workspace — and it lives beside `createAndStartTask`
-  because **the offer must not drift from the refusal**: offering the flag where the dispatch
-  answers 400 turns a click into a dead end, and withholding it where the dispatch would take it
-  queues a run for no reason. `lib/dispatch.test.ts` pins the two together by asserting they
-  agree row-for-row, rather than restating either one's logic. It replaced the same query
-  inlined in the project page, now shared by the project composer, the backlog and a task page's
-  file modal.
-- **`checkoutBusy` is deliberately not owner-scoped** (the runner serializes install-wide, so
-  someone else's run holds the checkout just as firmly) and a worktree-isolated run doesn't count
-  — the distinction `projectBusy` already makes in the runner. Only a boolean crosses to the
-  client, which says nothing about whose task it is.
-- **The offer is a page-load snapshot**, exactly like the composer's: the *first* dispatch against
-  a free checkout never sees it, and a checkout that becomes busy after the render doesn't grow
-  one until the next load. If the other run finishes first the flag simply runs the task normally
-  — the runner re-decides at launch. Feature-linked runs are due to sidestep this entirely: the
-  feature-branch work makes them isolate whether or not the checkout is busy.
+  a plain git repo that isn't a workspace, i.e. **exactly where the dispatch accepts the
+  flag** — and it lives beside `createAndStartTask` because **the offer must not drift from
+  the refusal**: offering the flag where the dispatch answers 400 turns a click into a dead
+  end. `lib/dispatch.test.ts` pins the two together by asserting they agree row-for-row,
+  rather than restating either one's logic. Shared by the project composer, the backlog and a
+  task page's file modal. It **no longer consults busyness** (and `checkoutBusy` is gone with
+  no other consumer): the busy clause made the offer a page-load snapshot — the first dispatch
+  against a free checkout never saw it, a batch needed a reload between runs, and a
+  feature-linked task dispatched without the flag ran in the checkout, checked the feature
+  branch out there, and blocked every isolated sibling's merge-back (the exact failure
+  measured on a real install). The flag is harmless on a free checkout: the runner re-decides
+  at launch, and free + no feature simply runs in the checkout as before.
 - **The clients gate on `parallel && parallelOffer` before sending**, so a stale checkbox can't
   send a flag that will be refused. Not a security boundary — the server's refusal is — just the
   difference between a run that queues and an error the user can do nothing about.
@@ -924,6 +986,27 @@ only as a cheap pre-filter.
     path is readable. Unfixed because a linked worktree's `.git` legitimately *is* a file, so the
     guard must validate the resolved gitdir against allowed roots — a change to
     `lib/discovery/projects.ts` plus the worktree machinery, not a flag.
+  - **`merge.<driver>.driver` is the same class on `git merge`, reproduced 2026-08-22 and *not*
+    fixed** (found by the security audit of the feature merge-back work). A custom merge driver
+    is a shell command in `.git/config`, bound to a path by `.gitattributes` *or* untracked
+    `.git/info/attributes`, and git runs it for a conflicting file during **any** `git merge` —
+    including the platform-issued `gitMerge` behind the feature merge-back and the merge sweep.
+    Verified: a planted `merge.custom.driver` executed in the runner process during a real
+    `gitMerge` (full `repoOpts`/`gitEnv` hardening applied). Like `filter.<driver>.clean` the
+    driver name is attacker-chosen, so there is no key to `-c` away, and `.git/info/attributes`
+    isn't reachable by `--attr-source`. **First introduced by the 2026-08-21 `gitMerge` (a merge
+    only ran in a disposable temp worktree then); the merge-back honesty work made it materially
+    worse and that is the part this note owns:** the merge can now also run in the project's
+    **main checkout** (via `mergeInMainCheckout`), and it re-fires unattended from the boot
+    sweep and `promoteNext`. Two of those three amplifiers were closed in the same task — the
+    forged-worktree parser that let the main-checkout merge target an arbitrary branch (see
+    `branchCheckoutDir`'s `-z` note above) and the missing subprocess timeout that made the
+    driver a DoS as well as an RCE — so what remains is the base class: a *legitimately*
+    checked-out feature branch's merge, or a temp-worktree merge, still runs a repo-defined
+    driver. The sound fix is the same redesign owed for `filter.clean` (stop letting a
+    platform-issued git command execute repo-defined driver config, or refuse to merge a repo
+    whose resolved driver isn't git's default). Filed to the backlog; the `timeout` now bounds
+    the hang, not the execution.
 - **This is defence in depth, not a perimeter.** It needs write access to a project tree to
   exploit, and these routes still have no auth on the non-task path — the same gap documented
   under the backlog. What it removes is a confused deputy: the server no longer reads outside a
@@ -1294,10 +1377,11 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `components/` — All reusable UI components (bespoke)
 - `components/ui-cards.tsx` — Core primitives: `card`, `CardSection`, `PageHeader`,
   `EmptyState`, `Chip`, `Tile`, `Fact`
-- `components/FeatureGroup.tsx` — `FeatureGroup` (the one feature heading: name + branch chip +
-  merge summary + count, `<h3>` so it nests under every host's `CardSection`) and
-  `MergeStateChip` (one row's merge state). Shared by the backlog, project detail and `/tasks`;
-  see "Following one feature in the UI"
+- `components/FeatureGroup.tsx` — `FeatureGroup` (the one feature heading, now a collapsible
+  disclosure: chevron button + name + branch chip + merge summary + count, `<h3>` so it nests
+  under every host's `CardSection`; active features start open, closed ones collapsed) and
+  `MergeStateChip` (one row's merge state, wording decided by `mergeChipView` in `lib/ui.ts`).
+  Shared by the backlog, project detail and `/tasks`; see "Following one feature in the UI"
 - `components/ui/` — Base primitives: `button.tsx`, `modal.tsx`, `select.tsx`
 - `components/Sidebar.tsx` — Desktop primary nav (collapsible rail, `md+`)
 - `components/MobileNav.tsx` — Mobile top bar + bottom tab bar (`< md`)
@@ -1327,9 +1411,9 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `lib/dispatch.ts` — Creating + starting a task: token gate, model allowlist, agent-version
   snapshot, optional pre-set `title` (which suppresses the runner's naming call), project↔agent
   link, failure bookkeeping. `POST /api/tasks` and the backlog's run action both go through it —
-  anything else that dispatches should too. Also `parallelOffer`/`checkoutBusy`: whether a page
-  may offer "Run in parallel", kept in this file so the offer can't drift from the refusal beside
-  it (see "Running planned work in parallel")
+  anything else that dispatches should too. Also `parallelOffer`: whether a page may offer
+  "Run isolated" (default-checked where offered), kept in this file so the offer can't drift
+  from the refusal beside it (see "Running planned work in parallel")
 - `lib/uploads.ts` — Saving request/gate/follow-up attachments under
   `data/uploads/<taskId>/`, plus `readFormData` (a malformed multipart body answers 400 instead
   of throwing a 500) and `attachmentNote` (the "read these with the Read tool" note, shared by
@@ -1365,6 +1449,9 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   `request_approval` (the workflow gate — its handler stays suspended, and that *is* the pause)
   and `add_backlog_item` (`runner/backlog-tool.ts`). `runner/gate-prompt.ts` is what tells the
   agent they exist; a tool nothing mentions is a tool nothing calls
+- `runner/merge-sweep.ts` (+ `.test.ts`) — retries `blocked` feature merge-backs and
+  reclassifies settled ones from the git object store; runs at boot and whenever a project's
+  checkout frees up. See "The feature branch: lifecycle and merge-back"
 - `app/api/usage/` — Per-user usage: real spend from `lib/usage-summary.ts` plus a
   best-effort Claude plan-limits block. **Plan limits are normally `available: false`** —
   the SDK only reports them for a logged-in profile, and this app injects tokens via

@@ -263,7 +263,7 @@ export function repoOpts(cwd: string): string[] {
  * while `pull`/`push` are network operations where a slow-but-legitimate transfer is ordinary, and
  * killing one of those mid-flight would be a self-inflicted failure.
  */
-const LOCAL_GIT_TIMEOUT = 30_000;
+export const LOCAL_GIT_TIMEOUT = 30_000;
 const NETWORK_GIT_TIMEOUT = 120_000;
 
 function git(cwd: string, args: string[]): string {
@@ -903,12 +903,27 @@ export const gitPush = (cwd: string): GitResult =>
  * with nothing to do with the content. `--no-edit` is what keeps this non-interactive (no
  * `$EDITOR` spawned for the merge commit message).
  */
-export function gitMerge(cwd: string, branch: string): GitResult {
+export type MergeResult = GitResult & {
+  /** True only for a real *content* conflict: the merge genuinely started and stopped
+   *  mid-way needing resolution. False for every other failure — a merge git refused to
+   *  start (missing ref, dirty files in the way, unrelated histories), an unsafe ref — so
+   *  the caller can tell "needs a human/agent to reconcile" apart from "couldn't be
+   *  attempted", which retries. Decided structurally from `MERGE_HEAD` existing *before*
+   *  the abort (git creates it only once a merge is underway, and a refused merge never
+   *  gets that far), never by parsing git's prose, which is localised and
+   *  version-dependent. Deliberately not `ls-files -u` through `runGit`: that helper maps
+   *  empty output to "Done.", so an empty unmerged list is indistinguishable from prose —
+   *  the exit code of `rev-parse --verify` can't be misread that way. */
+  conflict: boolean;
+};
+
+export function gitMerge(cwd: string, branch: string): MergeResult {
   if (!branch || branch.startsWith("-")) {
-    return { ok: false, output: `refusing to merge an unsafe ref: ${branch}` };
+    return { ok: false, conflict: false, output: `refusing to merge an unsafe ref: ${branch}` };
   }
   const result = runGit(cwd, ["merge", "--no-ff", "--no-edit", branch]);
-  if (result.ok) return result;
+  if (result.ok) return { ...result, conflict: false };
+  const inMerge = runGit(cwd, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
   runGit(cwd, ["merge", "--abort"]);
-  return result;
+  return { ...result, conflict: inMerge.ok };
 }

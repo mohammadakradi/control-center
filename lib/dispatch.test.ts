@@ -331,36 +331,24 @@ function liveTask(id: string, projectId: string, workdir: string | null = null) 
   return () => db.delete(schema.tasks).where(eq(schema.tasks.id, id)).run();
 }
 
-test("a busy checkout is what turns the offer on, and only a checkout run counts", () => {
+test("the offer no longer depends on busyness — isolation is the default wherever it can work", () => {
+  // 2026-08-22: the offer used to require a busy checkout at render time, which made it a
+  // page-load snapshot (the first dispatch against a free checkout never saw it) and let a
+  // feature-linked run land in the checkout, check the feature branch out there, and block
+  // every isolated sibling's merge-back. Now the offer is exactly "where the dispatch accepts
+  // the flag": busy, free, or busy-only-with-isolated-runs must all answer the same.
   db.insert(schema.projects)
     .values({ id: "p_busy", name: "Busy", path: join(root, "busy"), isGit: true })
     .run();
   const project = { id: "p_busy", isGit: true, isWorkspace: false };
 
-  assert.equal(dispatch.checkoutBusy("p_busy"), false, "nothing running yet");
-  assert.equal(dispatch.parallelOffer(project), false, "nothing to run in parallel *with*");
+  assert.equal(dispatch.parallelOffer(project), true, "offered on a free checkout too");
 
-  // A worktree-isolated run doesn't hold the checkout — the same distinction `projectBusy`
-  // makes in the runner, which is why `promoteNext` keeps filling the checkout past one.
   const dropIsolated = liveTask("task_isolated", "p_busy", join(root, "worktrees", "t1"));
-  assert.equal(dispatch.checkoutBusy("p_busy"), false, "an isolated run frees the checkout");
-  assert.equal(dispatch.parallelOffer(project), false);
+  assert.equal(dispatch.parallelOffer(project), true, "an isolated run changes nothing");
 
   const dropCheckout = liveTask("task_in_checkout", "p_busy");
-  assert.equal(dispatch.checkoutBusy("p_busy"), true);
-  assert.equal(dispatch.parallelOffer(project), true, "queueing behind it is now the default");
-
-  // Another project's run says nothing about this one.
-  assert.equal(dispatch.checkoutBusy("p1"), false);
-
-  // A finished run releases it, whichever way it ended.
-  for (const status of schema.TERMINAL_TASK_STATUSES) {
-    db.update(schema.tasks)
-      .set({ status })
-      .where(eq(schema.tasks.id, "task_in_checkout"))
-      .run();
-    assert.equal(dispatch.checkoutBusy("p_busy"), false, `${status} is not busy`);
-  }
+  assert.equal(dispatch.parallelOffer(project), true, "a busy checkout changes nothing");
 
   dropIsolated();
   dropCheckout();
@@ -448,9 +436,6 @@ test("a non-git project and a workspace are never offered the choice, busy or no
     dispatch.parallelOffer({ id: "p_off_ws", isGit: true, isWorkspace: true }),
     false,
   );
-  // A project row that no longer exists can't be busy either — the page it was rendered for
-  // is already stale, and the dispatch answers 404.
-  assert.equal(dispatch.checkoutBusy("p_deleted"), false);
 });
 
 // ------------------------------------------------------------------ features

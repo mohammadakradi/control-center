@@ -7,14 +7,13 @@
  * won't take it. Anything that dispatches must go through here, or it will drift from the
  * guarantees the API route already makes.
  */
-import { and, eq, isNull, notInArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "./db";
 import {
   agents,
   projectAgents,
   projects,
   tasks,
-  TERMINAL_TASK_STATUSES,
   type Attachment,
   type Project,
   type Task,
@@ -73,49 +72,29 @@ export function dispatchRefusal(userId: string): DispatchRefusal | null {
 }
 
 /**
- * Is a run occupying this project's *main checkout* right now?
- *
- * Deliberately **not** scoped to an owner: the runner serializes install-wide, so someone
- * else's task holds the checkout just as firmly as your own — and only a boolean ever crosses
- * to the client, which says nothing about whose run it is. A worktree-isolated run (`workdir`
- * set) doesn't hold the checkout, so it doesn't count; that is the same distinction
- * `projectBusy` makes in the runner.
- */
-export function checkoutBusy(projectId: string): boolean {
-  return Boolean(
-    db
-      .select({ id: tasks.id })
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.projectId, projectId),
-          notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
-          isNull(tasks.workdir),
-        ),
-      )
-      .get(),
-  );
-}
-
-/**
- * Should a dispatch UI offer "Run in parallel" for this project?
+ * Should a dispatch UI offer "Run isolated (parallel)" for this project?
  *
  * One definition, shared by every page that dispatches — the composer, the backlog and a
  * task's file modal — and it lives beside `createAndStartTask` on purpose: **the offer and the
  * refusal must not drift.** Offering the flag where the dispatch answers 400 turns a click into
- * an error, and withholding it where the dispatch would accept it means a task queues behind a
- * busy checkout for no reason. `lib/dispatch.test.ts` pins the two together.
+ * an error. `lib/dispatch.test.ts` pins the two together.
  *
- * It is a snapshot taken while the page renders: if the other run finishes before the dispatch
- * lands, the flag just runs the task normally (the runner re-decides at launch), and a checkout
- * that becomes busy *after* the render isn't offered until the next load.
+ * This is exactly "where the dispatch accepts the flag" — a plain git repo that isn't a
+ * workspace — with **no busyness clause**, and the checkbox defaults to *checked* in every
+ * host (2026-08-22, at the user's request: isolation is the default, queueing is the manual
+ * choice). It used to also require the checkout to be busy at render time, which made the
+ * offer a page-load snapshot: the first dispatch against a free checkout never saw it, a
+ * batch needed a reload between runs, and — the part that actually hurt — a feature-linked
+ * task dispatched without the flag ran *in the checkout*, checked the feature branch out
+ * there, and blocked every isolated sibling's merge-back. The flag is harmless when the
+ * checkout is free (the runner re-decides at launch: free + no feature simply runs in the
+ * checkout), so gating the offer on busyness bought nothing except those misses.
  */
 export function parallelOffer(
   project: Pick<Project, "id" | "isGit" | "isWorkspace">,
 ): boolean {
-  // The two refusals in `createAndStartTask`, checked first because they cost no query.
-  if (!project.isGit || project.isWorkspace) return false;
-  return checkoutBusy(project.id);
+  // The two refusals in `createAndStartTask` — nothing else.
+  return project.isGit && !project.isWorkspace;
 }
 
 export type DispatchInput = {

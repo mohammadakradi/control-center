@@ -155,12 +155,26 @@ export const features = sqliteTable(
  * Where a feature-linked task's branch stands relative to its feature branch. Null means
  * "no feature" — there is nothing to merge. Set to "pending" at dispatch whenever `featureId`
  * is set, before the runner has decided how the task will even run; an isolated run that
- * reaches `done` updates it to "merged" (its branch merged cleanly into the feature branch)
- * or "conflict" (the merge was aborted — the task branch is left intact for manual
- * resolution). A non-isolated (checkout) feature run stays "pending" forever: the platform
- * never system-merges it, so "pending" there is the honest answer, not a stuck state.
+ * reaches `done` updates it to one of the outcomes below. A non-isolated (checkout) feature
+ * run stays "pending" forever: the platform never system-merges it (the agent commits
+ * directly, normally on the feature branch itself), so "pending" there is the honest answer,
+ * not a stuck state.
+ *
+ * - "merged"     — the task branch merged cleanly into the feature branch.
+ * - "conflict"   — a real content conflict; the merge was aborted and the task branch is left
+ *                  intact (the runner asks the live session to resolve it once before this
+ *                  sticks — see `mergeOnDone` in runner/session-manager.ts).
+ * - "blocked"    — the merge could not be *attempted* (e.g. the feature branch is checked out
+ *                  in a busy checkout). Not a conflict; retried automatically by the merge
+ *                  sweep whenever the project frees up.
+ * - "no_commits" — the task branch holds no commits beyond the feature branch, so there was
+ *                  nothing to merge: either the run committed nothing (its kept worktree may
+ *                  still hold uncommitted work) or its commits already reached the branch.
+ *
+ * The column is plain text with no CHECK constraint, so widening this union needs no SQL
+ * migration — only the vocabulary in `lib/ui.ts` and the runner reads it.
  */
-export type TaskMergeState = "pending" | "merged" | "conflict";
+export type TaskMergeState = "pending" | "merged" | "conflict" | "blocked" | "no_commits";
 
 export type TaskStatus =
   | "queued"
