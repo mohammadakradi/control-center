@@ -15,6 +15,9 @@ import {
   featureGroupDefaultOpen,
   featureMergeSummary,
   featureOptions,
+  featureRowActions,
+  FILE_OWNED_FEATURE_NOTE,
+  fixTaskReasons,
   groupByFeature,
   hasMergeSummary,
   isOpenBacklogStatus,
@@ -492,4 +495,187 @@ test("featureOptions always yields the no-feature entry, so callers can gate on 
     ]).length,
     1,
   );
+});
+
+// -------------------------------------------------- managing feature groups
+
+test("featureRowActions: a hand-made feature can be renamed and deleted", () => {
+  const a = featureRowActions({ status: "active", sourceDir: null });
+  assert.equal(a.canRename, true);
+  assert.equal(a.canDelete, true);
+  assert.equal(a.sourceDir, null, "no folder owns it, so the row has nothing to point at");
+  assert.equal(a.canClose, true);
+  assert.equal(a.canReopen, false, "it isn't closed");
+});
+
+test("featureRowActions: a pm-derived feature withholds rename and delete", () => {
+  // Both would appear to work and then undo themselves — the next backlog load re-reads
+  // index.md for the name and re-derives the row itself. The server refuses both too; this is
+  // what keeps a click from becoming a 409 the user can't act on.
+  const a = featureRowActions({ status: "active", sourceDir: ".pm/tasks/20260823-thing" });
+  assert.equal(a.canRename, false);
+  assert.equal(a.canDelete, false);
+  assert.equal(a.sourceDir, ".pm/tasks/20260823-thing", "the row points at its own folder");
+});
+
+test("the file-owned explanation names the action it withholds and the one it doesn't", () => {
+  // Said once per card, so it has to carry the whole rule on its own — including that closing
+  // out still works, which is the action a user is most likely to actually want.
+  assert.match(FILE_OWNED_FEATURE_NOTE, /renamed or deleted/);
+  assert.match(FILE_OWNED_FEATURE_NOTE, /index\.md/);
+  assert.match(FILE_OWNED_FEATURE_NOTE, /[Cc]losing/);
+});
+
+test("featureRowActions: status is nobody's file, so closing is always offered", () => {
+  // The one edit a derived feature does accept: no file records whether work finished.
+  for (const sourceDir of [null, ".pm/tasks/x"]) {
+    assert.equal(featureRowActions({ status: "active", sourceDir }).canClose, true);
+    assert.equal(featureRowActions({ status: "done", sourceDir }).canReopen, true);
+    assert.equal(featureRowActions({ status: "cancelled", sourceDir }).canReopen, true);
+  }
+});
+
+test("featureRowActions: close and reopen are never both offered", () => {
+  for (const status of ["active", "done", "cancelled"] as const) {
+    const a = featureRowActions({ status, sourceDir: null });
+    assert.notEqual(a.canClose, a.canReopen, `${status} must offer exactly one`);
+  }
+});
+
+test("featureRowActions: an empty sourceDir counts as hand-made, not as a folder", () => {
+  // Defensive: "" is falsy but not null, and a row carrying it would otherwise be locked out
+  // of rename and delete while pointing the user at a folder called "/".
+  const a = featureRowActions({ status: "active", sourceDir: "" });
+  assert.equal(a.canDelete, true);
+  assert.equal(a.canRename, true);
+  assert.equal(a.sourceDir, null);
+});
+
+// ------------------------------------------------- why a report offers a fix task
+
+test("a clean report offers no fix task, so no button can appear", () => {
+  for (const report of [
+    "Committed on feat/x. Build, lint and tests all pass. Nothing blocking.",
+    "Audit complete: no outstanding issues, no secrets, no regressions.",
+    "## Verdict\nLGTM — all clear.",
+  ]) {
+    assert.deepEqual(fixTaskReasons(report), [], report);
+  }
+});
+
+test("a real finding is named, and quoted in its own words", () => {
+  const reasons = fixTaskReasons(
+    "Done and committed.\n\n## Blocking\n- [High] the token is logged in plain text\n",
+  );
+  assert.equal(reasons.length, 2, "the heading and the graded line are different signals");
+  assert.deepEqual(
+    reasons.map((r) => r.label).sort(),
+    ["Findings section", "Severity callout"],
+  );
+  // The evidence has to be the report's own sentence — a paraphrase is a second thing that
+  // can be wrong, and the point of the callout is that the user can judge it themselves.
+  const severity = reasons.find((r) => r.label === "Severity callout");
+  assert.equal(severity?.evidence, "[High] the token is logged in plain text");
+});
+
+test("an all-clear line doesn't light up the word it happens to contain", () => {
+  // "no outstanding issues" contains `issues`, which the old whole-blob heuristic matched as a
+  // findings section. Judged per line, it is what it says it is.
+  assert.deepEqual(fixTaskReasons("Reviewed everything: no outstanding issues."), []);
+  // …but an explicitly graded line still counts, even alongside reassuring words.
+  const graded = fixTaskReasons("[Medium] looks good overall, but the count leaks.");
+  assert.equal(graded.length, 1);
+  assert.equal(graded[0].label, "Severity callout");
+});
+
+test("an unfinished checklist item is a reason on its own", () => {
+  const reasons = fixTaskReasons("Progress:\n- [x] wired the route\n- [ ] add the migration\n");
+  assert.equal(reasons.length, 1);
+  assert.equal(reasons[0].label, "Unfinished item");
+  assert.equal(reasons[0].evidence, "add the migration", "the box markup is stripped");
+});
+
+test("each kind is reported once, and the list is capped", () => {
+  // An audit can list twenty findings; twenty near-identical callout rows would be a second
+  // copy of the report where the job was to explain one button.
+  const many = Array.from({ length: 30 }, (_, i) => `- [High] finding ${i}`).join("\n");
+  const reasons = fixTaskReasons(many);
+  assert.equal(reasons.length, 1, "one row per kind, not per occurrence");
+  assert.ok(fixTaskReasons(many).length <= 4);
+});
+
+test("evidence is trimmed of markdown and cut by code point", () => {
+  const long = `- **${"🚀".repeat(300)}**`;
+  const [reason] = fixTaskReasons(`## Findings\n${long}\n`);
+  assert.equal(reason.label, "Findings section");
+  // Cut with [...str], not slice: a UTF-16 cut splits a surrogate pair into U+FFFD.
+  const evidence = fixTaskReasons(`- [ ] ${"🚀".repeat(300)}`)[0].evidence;
+  assert.ok([...evidence].length <= 160);
+  assert.doesNotMatch(evidence, /�/, "no half-eaten emoji");
+});
+
+test("a report that only describes bugs it already FIXED still explains itself", () => {
+  // The false positive that started this: my own report's "Bugs found beyond the reported
+  // symptoms" heading (about bugs it had just fixed) got a bare, unexplained button. The
+  // heuristic still fires — prose is prose — but it can no longer fire *silently*: the reason
+  // is named and quoted, so the user can see it's about finished work and ignore it.
+  const reasons = fixTaskReasons(
+    "## Bugs found beyond the reported symptoms\nThe release workflow published the tag before uploading the tarball; that's now fixed.",
+  );
+  assert.equal(reasons.length, 1);
+  assert.equal(reasons[0].label, "Findings section");
+  assert.match(reasons[0].evidence, /Bugs found beyond the reported symptoms/);
+});
+
+/** Written as escapes, not literals — these bytes don't survive a copy-paste or a heredoc. */
+const BIDI = [
+  "\u202a", // LEFT-TO-RIGHT EMBEDDING
+  "\u202b", // RIGHT-TO-LEFT EMBEDDING
+  "\u202c", // POP DIRECTIONAL FORMATTING
+  "\u202d", // LEFT-TO-RIGHT OVERRIDE
+  "\u202e", // RIGHT-TO-LEFT OVERRIDE
+  "\u2066", // LEFT-TO-RIGHT ISOLATE
+  "\u2069", // POP DIRECTIONAL ISOLATE
+  "\u200e", // LEFT-TO-RIGHT MARK
+  "\u200f", // RIGHT-TO-LEFT MARK
+  "\u200b", // ZERO WIDTH SPACE
+  "\ufeff", // BOM
+];
+
+test("evidence can't smuggle bidi overrides into a callout meant to be trusted", () => {
+  // Trojan Source, aimed at the one place designed to be believed. Report text is agent-authored
+  // and steerable by a file or page that agent read; React escapes *markup*, not Unicode, so an
+  // override survives and makes the quote display as something other than what it says. The
+  // security audit reproduced this against the first version of `evidenceOf`.
+  const sneaky = `- Recommend you check ${"\u202e"}gnihtemos${"\u202c"} before shipping`;
+  const [reason] = fixTaskReasons(sneaky);
+  assert.equal(reason.label, "Recommendation");
+  for (const ch of BIDI) {
+    assert.ok(
+      !reason.evidence.includes(ch),
+      `still carries U+${ch.codePointAt(0)!.toString(16).toUpperCase()}`,
+    );
+  }
+  // …and the visible words survive: stripping must not eat the sentence it was protecting.
+  assert.match(reason.evidence, /Recommend you check/);
+  assert.match(reason.evidence, /before shipping/);
+});
+
+test("real whitespace becomes a space; a zero-width character just goes", () => {
+  // The distinction the two passes exist for. A TAB is genuine whitespace, so deleting it
+  // outright would turn "add<TAB>the" into "addthe" — it becomes a space instead. A BEL or a
+  // ZERO WIDTH SPACE separates nothing, so removing it is right even though it closes the gap:
+  // it was never a word boundary, and leaving it in is what lets a name be disguised.
+  assert.equal(fixTaskReasons("- [ ] add\tthe migration")[0].evidence, "add the migration");
+  assert.equal(fixTaskReasons("- [ ] add the mig\u200bration")[0].evidence, "add the migration");
+  assert.equal(fixTaskReasons("- [ ] add the mig\u0007ration")[0].evidence, "add the migration");
+  // A NO-BREAK SPACE is whitespace `\\s` matches but that must not survive as itself.
+  assert.equal(fixTaskReasons("- [ ] add\u00a0the migration")[0].evidence, "add the migration");
+});
+
+test("a C0 control can't forge a second line inside one quote", () => {
+  // A bare \r renders as a line break in some contexts, which would let one finding present
+  // itself as two. Lines are split on \r\n and \n, so a lone \r reaches `evidenceOf`.
+  const [reason] = fixTaskReasons("## Findings\r  nothing here ");
+  assert.doesNotMatch(reason.evidence, /[\r ]/);
 });

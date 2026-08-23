@@ -15,7 +15,8 @@ import { db } from "@/lib/db";
 import { tasks } from "@/lib/db/schema";
 import { backlogItemCount } from "@/lib/backlog";
 import { parallelOffer } from "@/lib/dispatch";
-import { listFeatures } from "@/lib/features";
+import { backlogCountsByFeature, listFeatures } from "@/lib/features";
+import { FeatureManager } from "@/components/FeatureManager";
 import { syncAgents } from "@/lib/discovery/agents";
 import { isAgentOnboarded, refreshProject } from "@/lib/discovery/projects";
 import { gitBranchInfo, gitChanges } from "@/lib/git";
@@ -114,6 +115,10 @@ export default async function ProjectDetail({
   const featureList = listFeatures(project.id);
   const featureById: Record<string, FeatureLite> = {};
   for (const f of featureList) featureById[f.id] = f;
+  // Backlog items per feature, for the management card's counts and its delete confirmation.
+  // Items only — a task is private to whoever ran it, so an unscoped count of those on this
+  // shared page would disclose that someone else is working on the feature.
+  const featureItemCounts = backlogCountsByFeature(project.id);
 
   const aheadBehind = branchInfo
     ? branchInfo.ahead || branchInfo.behind
@@ -225,6 +230,16 @@ export default async function ProjectDetail({
           members={members}
           branchInfo={branchInfo}
           changes={changes}
+        />
+
+        {/* Managing the groupings themselves, above the history that renders them: features
+            were readable everywhere and editable nowhere. */}
+        <FeatureManager
+          projectId={project.id}
+          projectName={project.name}
+          features={featureList}
+          itemCounts={featureItemCounts}
+          className="lg:col-span-2"
         />
 
         <TaskHistory

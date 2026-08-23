@@ -294,6 +294,62 @@ export const hasMergeSummary = (s: {
   blocked: number;
 }): boolean => s.merged > 0 || s.conflict > 0 || s.blocked > 0;
 
+/** A feature as the management card sees it — enough to decide what may be done to it. */
+export type FeatureAdmin = {
+  status: FeatureStatus;
+  /** Set when the backlog sync derived this from a `.pm/tasks/<request>/` folder. */
+  sourceDir: string | null;
+};
+
+/**
+ * Which actions a feature row offers, and — when one is withheld — why.
+ *
+ * The "why" is the point. A row that silently omits Rename and Delete for a sync-derived
+ * feature looks broken; the same row saying its name comes from `.pm/tasks/…/index.md` tells
+ * the user where to go instead. Both refusals are enforced server-side as well
+ * (`folderOwnedFeatureEdits`, `deleteFeature`); this is only what stops a click becoming a 409
+ * the user can do nothing with.
+ *
+ * Deliberately *not* consulting live tasks. The other delete refusal — a run still in flight —
+ * depends on rows this shared page can't scope to the reader, and it changes second to second.
+ * That one stays a server-side 409, surfaced as the error on the attempt.
+ */
+export type FeatureRowActions = {
+  canRename: boolean;
+  canDelete: boolean;
+  /**
+   * The `.pm/tasks/<request>/` folder this row was derived from, when it was one — the fact
+   * that genuinely differs per row, and the thing a user needs in order to go and edit it.
+   * The *reason* it can't be edited here is `FILE_OWNED_FEATURE_NOTE`, said once per card.
+   */
+  sourceDir: string | null;
+  /** Closing out and reopening are always offered: no file has an opinion about status. */
+  canClose: boolean;
+  canReopen: boolean;
+};
+
+/**
+ * Why some rows withhold Rename and Delete. Rendered **once per card**, not per row.
+ *
+ * It started as a sentence on every derived row, which reads fine for one and is a wall of text
+ * for a project planned by pm — measured on this repo, all twelve features were derived, so the
+ * list carried twenty-four lines of the same explanation. The folder path varies per row and
+ * stays there; the rule does not.
+ */
+export const FILE_OWNED_FEATURE_NOTE =
+  "Features planned by /pm are named by their folder's index.md and are re-derived on every backlog load, so they can't be renamed or deleted here — change the folder instead. Closing one out still works.";
+
+export function featureRowActions(f: FeatureAdmin): FeatureRowActions {
+  const derived = f.sourceDir !== null && f.sourceDir !== "";
+  return {
+    canRename: !derived,
+    canDelete: !derived,
+    sourceDir: derived ? f.sourceDir : null,
+    canClose: f.status === "active",
+    canReopen: f.status !== "active",
+  };
+}
+
 /**
  * Whether a feature group starts expanded. Active features (and the ungrouped bucket, whose
  * `feature` is null) do — they are the work in flight, the thing the reader came for. Closed
@@ -453,46 +509,106 @@ export function taskDisplayTitle(task: {
 }
 
 /**
- * Whether a change/audit report surfaces actionable findings or recommendations
- * worth spinning up a fix task. Completion reports ("Committed… complete") and
- * all-clear audits ("Nothing blocking") return false, so the "Create fix task"
- * CTA only shows when there's something to fix.
+ * Why a report might warrant a follow-up fix task — **with the line that says so**.
+ *
+ * This replaced a boolean (`reportHasFindings`) that decided the same thing and could not
+ * explain itself. That asymmetry was the whole bug: the report card rendered a "Create fix
+ * task" button next to any report the heuristic liked, with nothing anywhere saying *what*
+ * needed fixing, so the honest reaction to it was "why do I need a fix task?". A report
+ * describing bugs it had already **fixed** matched `bugs?` and got the button just the same.
+ *
+ * So the button and its explanation now come from one list. No reasons → no button (it can't
+ * appear unexplained); reasons → the card quotes them. Guessing at prose is still guessing —
+ * but a guess a person can see and overrule is worth far more than a silent one.
+ *
+ * Deliberately per-line rather than over the whole blob: a line is what can be quoted back,
+ * and "no outstanding issues" has to be judged as its own sentence rather than lighting up
+ * `issues?` for the entire report. It had **no specs at all** before this.
  */
-export function reportHasFindings(report: string): boolean {
-  const t = report.toLowerCase();
+export type FixTaskReason = {
+  /** Which signal fired, as a short label for the callout. */
+  label: string;
+  /** The line that fired it — the "why", quoted. */
+  evidence: string;
+};
 
-  // Sections/labels that enumerate problems or recommended changes.
-  const hasFindingSection =
-    /(^|\n)\s*(#{1,6}\s*|\*\*\s*)?(findings?|issues?|bugs?|blocking|recommendations?|follow[- ]?ups?|action (needed|required|items?)|remaining work|out of scope|known gaps?)\b/m.test(
-      t,
-    );
+/** Enough to explain the button; more turns the callout into a second copy of the report. */
+const MAX_FIX_REASONS = 4;
+const MAX_EVIDENCE_CHARS = 160;
 
-  // Severity callouts — emoji, "[high]", or "Critical:"-style line labels.
-  const hasSeverity =
-    /[🔴🟠🟡]/.test(report) ||
-    /\[\s*(critical|high|medium|low)\s*\]/.test(t) ||
-    /(^|\n)\s*(critical|high|medium|low)\s*[:\-—]/m.test(t);
+/** Headings that enumerate outstanding work. */
+const FINDING_HEADING =
+  /^\s*(?:#{1,6}\s*|\*\*\s*)?(?:findings?|issues?|bugs?|blocking|recommendations?|follow[-\s]?ups?|action (?:needed|required|items?)|remaining work|out of scope|known gaps?)\b/i;
+/** Severity callouts — emoji, "[high]", or a "Critical:"-style line label. */
+const SEVERITY_LINE =
+  /(?:^|\s)(?:[🔴🟠🟡]|\[\s*(?:critical|high|medium|low)\s*\]|(?:critical|high|medium|low)\s*[:\-—])/i;
+const RECOMMENDATION_LINE =
+  /\b(?:recommend|suggest|you (?:should|could|may want to)|should (?:fix|address|consider|update|remove)|must (?:fix|address)|needs? to be (?:fixed|addressed)|left (?:unfixed|unresolved)|did not (?:fix|address)|consider (?:fixing|adding|removing))\b/i;
+const UNCHECKED_TODO = /^\s*[-*]\s*\[ \]/;
+const ALL_CLEAR_LINE =
+  /\b(?:no (?:real |outstanding |open |remaining |unresolved |blocking )?(?:issues?|bugs?|findings?|vulnerabilit\w+|problems?|secrets?|concerns?|regressions?)|nothing (?:to fix|blocking|actionable|of note|to address)|no action (?:needed|required)|0 (?:critical|high|blocking)|all clear|looks good|lgtm)\b/i;
 
-  // Recommendation / unresolved-work phrasing.
-  const hasRecommendation =
-    /\b(recommend|suggest|you (should|could|may want to)|should (fix|address|consider|update|remove)|must (fix|address)|needs? to be (fixed|addressed)|left (unfixed|unresolved)|did not (fix|address)|consider (fixing|adding|removing))\b/.test(
-      t,
-    );
+/**
+ * A quotable line: markdown furniture off, non-printing characters out, capped by code point.
+ *
+ * **The control-character strip is a security control, not tidiness.** A report is written by an
+ * agent and can be steered by a file or a web page that agent read, and this text is quoted into
+ * a callout whose entire purpose is to be read and trusted before someone clicks a button. A
+ * `U+202E` RIGHT-TO-LEFT OVERRIDE survives React's escaping untouched (escaping is about markup,
+ * not about Unicode), so the quoted line could be made to *display* as something other than what
+ * it says — Trojan Source, in the one place designed to be believed. The security audit
+ * reproduced it. `\p{Cf}` covers the bidi embeddings, overrides and isolates plus zero-width
+ * joiners and the BOM; `\p{Cc}` covers the C0/C1 controls that aren't ordinary whitespace.
+ *
+ * Tabs and friends become a space first, so stripping can't glue two words together.
+ */
+function evidenceOf(line: string): string {
+  const text = line
+    .replace(/^\s*(?:[-*+•>]\s+|\d+[.)]\s+|#{1,6}\s+)/, "")
+    .replace(/^\s*\[\s*\]\s*/, "")
+    .replace(/\*\*/g, "")
+    // Real whitespace first, so removing the rest below can't glue two words together.
+    // Escapes only, never literal bytes: U+2028/U+2029 are line terminators in JS source, so
+    // pasting them here broke the parser outright the first time.
+    .replace(/[\t\v\f\r\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/g, " ")
+    .replace(/[\p{Cc}\p{Cf}]/gu, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  // Cut by code point, never `slice`: a UTF-16 cut splits a surrogate pair into U+FFFD.
+  const chars = [...text];
+  if (chars.length <= MAX_EVIDENCE_CHARS) return text;
+  return `${chars.slice(0, MAX_EVIDENCE_CHARS - 1).join("")}…`;
+}
 
-  const hasUncheckedTodo = /(^|\n)\s*[-*]\s*\[ \]/m.test(report);
+export function fixTaskReasons(report: string): FixTaskReason[] {
+  const reasons: FixTaskReason[] = [];
+  const seen = new Set<string>();
 
-  if (!(hasFindingSection || hasSeverity || hasRecommendation || hasUncheckedTodo))
-    return false;
+  for (const raw of report.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
 
-  // An explicit all-clear verdict suppresses incidental matches — unless real
-  // severity-tagged findings are present (those win).
-  const allClear =
-    /\b(no (real |outstanding |open |remaining |unresolved |blocking )?(issues?|bugs?|findings?|vulnerabilit\w+|problems?|secrets?|concerns?|regressions?)|nothing (to fix|blocking|actionable|of note|to address)|no action (needed|required)|0 (critical|high|blocking)|all clear|looks good|lgtm)\b/.test(
-      t,
-    );
-  if (allClear && !hasSeverity) return false;
-
-  return true;
+    const label = UNCHECKED_TODO.test(line)
+      ? "Unfinished item"
+      : SEVERITY_LINE.test(line)
+        ? "Severity callout"
+        : FINDING_HEADING.test(line)
+          ? "Findings section"
+          : RECOMMENDATION_LINE.test(line)
+            ? "Recommendation"
+            : null;
+    if (!label) continue;
+    // "No outstanding issues" matches `issues?` and is the *opposite* of a finding. A
+    // severity tag still wins on its own line — that's an explicit grading, not prose.
+    if (label !== "Severity callout" && ALL_CLEAR_LINE.test(line)) continue;
+    // One entry per kind: an audit lists twenty findings, and twenty near-identical rows in a
+    // callout is a wall of text where the point was "here is why the button is there".
+    if (seen.has(label)) continue;
+    seen.add(label);
+    reasons.push({ label, evidence: evidenceOf(line) });
+    if (reasons.length >= MAX_FIX_REASONS) break;
+  }
+  return reasons;
 }
 
 /**

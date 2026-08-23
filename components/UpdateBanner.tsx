@@ -26,6 +26,7 @@ import {
   NO_ANSWER_ERROR,
   phaseForRun,
   phaseOnLoad,
+  shouldRecheck,
   stalledCopy,
   startErrorCopy,
   taskCount,
@@ -40,6 +41,8 @@ type UpdateStatus = {
   releaseUrl: string | null;
   releaseName: string | null;
   packaged: boolean;
+  /** When the answer was obtained — the server's stamp, which survives its own cache. */
+  checkedAt: number;
   /** The last update attempt (`lib/update-run.ts`); null in a checkout, or if there wasn't one. */
   run: UpdateRunView | null;
 };
@@ -48,6 +51,13 @@ const DISMISSED_KEY = "cc:update-dismissed";
 const POLL_MS = 2000;
 /** Long enough for download + deps + build + migrate on a slow machine. */
 const GIVE_UP_MS = 6 * 60 * 1000;
+/**
+ * How often the idle banner *considers* re-checking. Deliberately far shorter than
+ * `RECHECK_MS`: `shouldRecheck` is what decides, and a coarse timer that happens to fire a
+ * second early would otherwise skip a whole interval and double the wait. A bare timer costs
+ * nothing — no request is made unless the answer is genuinely old.
+ */
+const TICK_MS = 60 * 1000;
 
 /**
  * Every state this bar can be in. One union rather than the four independent booleans this used
@@ -130,6 +140,16 @@ export function UpdateBanner() {
    * can't be reported as the outcome of the click just made (`isFreshRun`).
    */
   const lastRun = useRef<UpdateRunView | null>(null);
+  /**
+   * The newest release we've told the user about. A re-check that turns up a *different* one
+   * retires whatever terminal notice is on screen — "You're on the latest version" must not sit
+   * above a bar offering 0.11.0.
+   */
+  const seenLatest = useRef<string | null>(null);
+  /** The version the server was reporting as *installed*. A change means it was replaced. */
+  const seenCurrent = useRef<string | null>(null);
+  /** A re-check already on the wire — see `refresh`. */
+  const refreshing = useRef(false);
   /** The action that never unmounts, so it can be given focus by one that does. */
   const primaryRef = useRef<HTMLButtonElement | null>(null);
   /** Set when we take that action away from someone who was standing on it. */
@@ -151,6 +171,60 @@ export function UpdateBanner() {
       document.activeElement === primaryRef.current;
     setPhase({ kind: "applying" });
   }
+
+  /**
+   * Adopt a fresh status, retiring a notice that was about a different release.
+   *
+   * A changed `current` means the server we're talking to has been *replaced* — the update
+   * landed, and everything server-rendered on this page is from the old version. So this
+   * reloads, exactly as `waitForRestart` does. Without it a background re-check could quietly
+   * complete an update whose banner had already given up: the bar would simply vanish from
+   * under a user still reading "the server hasn't come back, quit and open it again"
+   * (correctness review).
+   */
+  const adopt = useCallback((body: UpdateStatus) => {
+    if (seenCurrent.current !== null && seenCurrent.current !== body.current) {
+      window.location.reload();
+      return;
+    }
+    seenCurrent.current = body.current;
+    if (seenLatest.current !== null && seenLatest.current !== body.latest) {
+      setPhase({ kind: "idle" });
+    }
+    seenLatest.current = body.latest;
+    setStatus(body);
+    lastRun.current = body.run ?? null;
+  }, []);
+
+  /**
+   * Ask the server where we stand. `force` reaches past its cache for a deliberate "Check now" —
+   * the server keeps its own floor under that, so this can't be turned into a request loop.
+   *
+   * `refreshing` is not belt-and-braces: `visibilitychange` and `focus` both fire on a single
+   * real refocus, in the same turn, before either fetch's `setStatus` has committed — so both
+   * see the same `checkedAt`, both pass `shouldRecheck`, and two requests go out for one event.
+   * A ref rather than state, because it has to be readable and writable synchronously within
+   * that turn.
+   */
+  const refresh = useCallback(
+    async (force = false) => {
+      if (refreshing.current) return;
+      refreshing.current = true;
+      try {
+        const res = await fetch(force ? "/api/updates?force=1" : "/api/updates", {
+          cache: "no-store",
+        }).catch(() => null);
+        if (!res?.ok) return;
+        const body = (await res.json().catch(() => null)) as UpdateStatus | null;
+        // Resumed after two awaits: this instance may be gone (a sign-out redirect mid-fetch).
+        if (!body || cancelled.current) return;
+        adopt(body);
+      } finally {
+        refreshing.current = false;
+      }
+    },
+    [adopt],
+  );
 
   /**
    * Watch an attempt through to an outcome.
@@ -230,6 +304,10 @@ export function UpdateBanner() {
         // available while this renders on the server, and a synchronous setState in an
         // effect body is a hard lint error in this React build.
         setDismissed(localStorage.getItem(DISMISSED_KEY));
+        // Not `adopt`: on the very first answer there is nothing to compare against, and the
+        // phase is about to be set from the record below rather than reset to idle.
+        seenLatest.current = body.latest;
+        seenCurrent.current = body.current;
         setStatus(body);
         lastRun.current = body.run ?? null;
         const found = phaseOnLoad(body.run);
@@ -252,6 +330,49 @@ export function UpdateBanner() {
       cancelled.current = true;
     };
   }, [waitForRestart]);
+
+  /**
+   * Keep asking. This is the fix for "I never saw a notification after several releases".
+   *
+   * The effect above runs once per *mount*, and this component mounts in
+   * `app/(app)/layout.tsx` — a persistent App Router layout that client-side navigation never
+   * remounts. So on a window that stays open (which is exactly what the Mac app is) the check
+   * happened when the window opened and never again, and a release published afterwards was
+   * invisible until someone reloaded.
+   *
+   * Two triggers, because they cover different neglect: an interval for a window being watched,
+   * and `visibilitychange`/`focus` for one that was buried behind other apps for days and should
+   * be current by the time it's read. `shouldRecheck` owns both floors.
+   */
+  useEffect(() => {
+    // While an attempt is in flight, `waitForRestart` is already polling every 2s; a second
+    // poller would fight it for the phase.
+    if (phase.kind === "applying") return;
+
+    const consider = (becameVisible: boolean) => {
+      if (document.hidden) return; // nobody is looking; the visibility handler will catch up
+      if (
+        !shouldRecheck({
+          lastCheckedAt: status?.checkedAt ?? null,
+          now: Date.now(),
+          becameVisible,
+        })
+      ) {
+        return;
+      }
+      void refresh();
+    };
+
+    const timer = setInterval(() => consider(false), TICK_MS);
+    const onReveal = () => consider(true);
+    document.addEventListener("visibilitychange", onReveal);
+    window.addEventListener("focus", onReveal);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onReveal);
+      window.removeEventListener("focus", onReveal);
+    };
+  }, [phase.kind, status?.checkedAt, refresh]);
 
   // Give the primary action its focus back, now that this phase has re-enabled it. Runs after
   // the commit on purpose: focusing it in the same tick would hit the element while it is still

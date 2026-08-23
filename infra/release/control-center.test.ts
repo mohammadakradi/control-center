@@ -12,9 +12,12 @@
  *                     takes the up-to-date path: every lock transition happens, no download.
  *   - `unreachable` → exits 1, so `update` dies at "couldn't reach GitHub Releases" — how
  *                     release-on-`die` becomes observable.
- *   - `newer`       → `v99.0.0` for the release check but fails the tarball download, so the
- *                     `start` path actually enters `apply_update` (and thus `check_and_update`'s
- *                     own acquire/release) before dying.
+ *   - `newer`       → `v99.0.0` *with its tarball asset listed*, but the download itself fails,
+ *                     so the `start` path actually enters `apply_update` (and thus
+ *                     `check_and_update`'s own acquire/release) before dying. The asset has to be
+ *                     there or `fetch_latest_release` screens it out and nothing is entered.
+ *   - `publishing`  → `v99.0.0` with an empty asset list: a release that exists but can't be
+ *                     installed yet, which is the state every real release passes through.
  *   - `slow`        → sleeps before answering, so one process genuinely holds the lock while a
  *                     second races it — the real concurrency the other specs can't reach.
  * Everything asserted here is a behaviour a person would otherwise only see by racing two
@@ -42,10 +45,30 @@ const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "control-center.sh"
 const CURL_STUBS = {
   "up-to-date": '#!/bin/sh\nprintf \'%s\' \'{"tag_name":"v0.0.1"}\'\n',
   unreachable: "#!/bin/sh\nexit 1\n",
-  // Newer release exists, but the tarball download fails (curl exit 22) — so `apply_update`
-  // is entered and then dies, exercising the `start`/`check_and_update` acquire+release path.
+  // Newer release exists *and* lists its tarball, but the download 404s (curl exit 22, and
+  // `-w '%{http_code}'` prints the status) — so `apply_update` is entered and then dies,
+  // exercising the `start`/`check_and_update` acquire+release path. Without the asset entry
+  // `fetch_latest_release` refuses it as still publishing and `apply_update` is never reached at all.
   newer:
-    '#!/bin/sh\ncase "$*" in\n  *api.github.com*) printf \'%s\' \'{"tag_name":"v99.0.0"}\' ;;\n  *) exit 22 ;;\nesac\n',
+    '#!/bin/sh\ncase "$*" in\n  *api.github.com*) printf \'%s\' \'{"tag_name":"v99.0.0","assets":[{"name":"control-center-99.0.0.tar.gz","browser_download_url":"https://github.com/o/r/releases/download/v99.0.0/control-center-99.0.0.tar.gz"}]}\' ;;\n  *) printf 404; exit 22 ;;\nesac\n',
+  // A release that is published but whose assets haven't uploaded yet: the API answers with the
+  // new tag and an empty asset list. Nothing is installable from it.
+  publishing:
+    '#!/bin/sh\ncase "$*" in\n  *api.github.com*) printf \'%s\' \'{"tag_name":"v99.0.0","assets":[]}\' ;;\n  *) printf 404; exit 22 ;;\nesac\n',
+  // Same as `newer`, but the download fails with curl's "couldn't resolve host" — no HTTP
+  // response at all, so the failure must not be blamed on a half-published release.
+  "newer-network-fail":
+    '#!/bin/sh\ncase "$*" in\n  *api.github.com*) printf \'%s\' \'{"tag_name":"v99.0.0","assets":[{"name":"control-center-99.0.0.tar.gz","browser_download_url":"https://github.com/o/r/releases/download/v99.0.0/control-center-99.0.0.tar.gz"}]}\' ;;\n  *) printf 000; exit 6 ;;\nesac\n',
+  // …and an HTTP error that isn't a 404. "Wait for the upload" would be wrong advice here.
+  "newer-http-500":
+    '#!/bin/sh\ncase "$*" in\n  *api.github.com*) printf \'%s\' \'{"tag_name":"v99.0.0","assets":[{"name":"control-center-99.0.0.tar.gz","browser_download_url":"https://github.com/o/r/releases/download/v99.0.0/control-center-99.0.0.tar.gz"}]}\' ;;\n  *) printf 500; exit 22 ;;\nesac\n',
+  // A release with NO assets whose *body* tries to forge the asset entry — first the bare
+  // filename, then the full download URL, then the whole `"browser_download_url": "…"` pair.
+  // The last one is the security audit's spoof of the URL-only gate. JSON escaping is what
+  // defeats it: every quote in a body arrives as \\", so the bare quotes the gate matches on
+  // cannot appear. Written exactly as GitHub would encode such a body.
+  "publishing-prose":
+    '#!/bin/sh\ncase "$*" in\n  *api.github.com*) printf \'%s\' \'{"tag_name":"v99.0.0","body":"control-center-99.0.0.tar.gz and https://github.com/o/r/releases/download/v99.0.0/control-center-99.0.0.tar.gz and \\\\"browser_download_url\\\\": \\\\"https://github.com/o/r/releases/download/v99.0.0/control-center-99.0.0.tar.gz\\\\"","assets":[]}\' ;;\n  *) printf 404; exit 22 ;;\nesac\n',
   // Answers the release check, but only after a pause — long enough that a second, concurrent
   // `update` is guaranteed to find the lock held.
   slow: '#!/bin/sh\nsleep 2\nprintf \'%s\' \'{"tag_name":"v0.0.1"}\'\n',
@@ -80,6 +103,10 @@ function makeHome(curl: keyof typeof CURL_STUBS) {
     CC_HOME: home,
     PATH: `${bin}:${process.env.PATH}`,
     CC_NO_OPEN: "1",
+    // The asset gate builds the expected download URL from CC_REPO, so the stubs' asset entries
+    // have to name the same repo — which is the point: an asset URL pointing somewhere else is
+    // not evidence that *this* repo's release has a tarball.
+    CC_REPO: "o/r",
   };
   delete (env as Record<string, unknown>).CC_UPDATE_LOG;
   delete (env as Record<string, unknown>).CC_SKIP_UPDATE_CHECK;
@@ -159,6 +186,60 @@ test("update refuses on the route path too (CC_UPDATE_LOG set, no tee)", () => {
   assert.equal(res.status, 1);
   assert.match(res.stderr, /another update is already in progress/);
   assert.equal(recordedState(home), "failed");
+});
+
+/**
+ * The mid-publish window, from the CLI's side. `release: published` puts the tag on the API
+ * immediately; the workflow uploads the tarball minutes later, at the end of its run. Offering
+ * that tag meant `apply_update` 404'd on the download and the app's banner reported a failed
+ * update — on every release.
+ */
+test("a release whose assets aren't uploaded yet is not treated as available", () => {
+  const { home, env } = makeHome("publishing");
+  const res = run(env, "update");
+  assert.equal(res.status, 1, "nothing to install, so the attempt stops");
+  assert.match(res.stdout, /assets aren't uploaded yet/);
+  assert.doesNotMatch(res.stdout, /Downloading/, "apply_update must never be entered");
+  assert.doesNotMatch(
+    res.stdout,
+    /couldn't reach GitHub/,
+    "GitHub answered — saying otherwise sends the user after a network fault that isn't there",
+  );
+  assert.equal(recordedState(home), "failed");
+  assert.ok(!existsSync(lockDir(home)), "and the lock is released either way");
+});
+
+test("a release body that merely names the tarball doesn't count as having one", () => {
+  // There is no jq here, so the gate greps the whole payload — and a payload carries the release
+  // *body*, which for our own releases is a generated changelog of PR titles. Matching the bare
+  // filename let that prose stand in for a real asset (security audit). Matching the download URL
+  // is both tighter and the honest question: is the thing I'm about to fetch actually listed?
+  const { home, env } = makeHome("publishing-prose");
+  const res = run(env, "update");
+  assert.equal(res.status, 1);
+  assert.match(res.stdout, /assets aren't uploaded yet/);
+  assert.doesNotMatch(res.stdout, /Downloading/, "apply_update must never be entered");
+  assert.ok(!existsSync(lockDir(home)));
+});
+
+/**
+ * The regression the first cut of this guard introduced: screening on the asset *before*
+ * comparing versions made an older release with no assets — a fork, or this suite's own
+ * up-to-date fixture — report "still publishing" instead of "you're already current", and
+ * `update` exited 1 where it used to exit 0.
+ *
+ * Note for anyone auditing spec value by reverting: this one passes against the *pre-asset-gate*
+ * script too, because it pins an **ordering** (version compare before asset check) that the
+ * shipped code happens to get right by construction. It is a regression pin against a draft that
+ * got it wrong, not a dead spec — reverting the gate makes the other three go red, not this one.
+ */
+test("an assetless release that isn't newer still reads as up to date", () => {
+  const { home, env } = makeHome("up-to-date"); // v0.0.1, no assets, install is 9.9.9
+  const res = run(env, "update");
+  assert.equal(res.status, 0);
+  assert.match(res.stdout, /Already on the latest release/);
+  assert.doesNotMatch(res.stdout, /assets aren't uploaded/);
+  assert.equal(recordedState(home), "up-to-date");
 });
 
 test("a lock whose process is gone is reclaimed, and released again after the run", () => {
@@ -283,12 +364,36 @@ test("check_and_update on the start path acquires the lock and releases it when 
   // the failed download — exercising check_and_update's own acquire and the release-on-die.
   const res = run(env, "start");
   assert.equal(res.status, 1);
-  // `start` doesn't tee, so the die message is on stderr.
-  assert.match(res.stderr, /download failed/);
+  // `start` doesn't tee, so the die message is on stderr. The stub lists the tarball asset but
+  // 404s the download itself — the narrow race the asset check can't close — and curl's exit 22
+  // is what turns a bare "download failed" into advice the user can act on.
+  assert.match(res.stderr, /assets aren't uploaded yet/);
   assert.ok(
     !existsSync(lockDir(home)),
     "a failed apply on the start path must release the lock",
   );
+});
+
+test("a download that fails for a non-HTTP reason still says so plainly", () => {
+  const { home, env } = makeHome("newer-network-fail");
+  // curl exit 6 (host resolution) means there was no HTTP response at all, so blaming a
+  // half-published release would send the user off to wait for an upload that already finished.
+  const res = run(env, "update");
+  assert.equal(res.status, 1);
+  assert.match(res.stdout, /download failed/);
+  assert.doesNotMatch(res.stdout, /assets aren't uploaded/);
+  assert.ok(!existsSync(lockDir(home)));
+});
+
+test("an HTTP error that isn't a 404 names the status instead of blaming the upload", () => {
+  // "try again in a few minutes" is wrong advice for a 403 or a 5xx — nothing is going to
+  // finish uploading. The status is what a user can act on (or report).
+  const { home, env } = makeHome("newer-http-500");
+  const res = run(env, "update");
+  assert.equal(res.status, 1);
+  assert.match(res.stdout, /HTTP 500/);
+  assert.doesNotMatch(res.stdout, /assets aren't uploaded/);
+  assert.ok(!existsSync(lockDir(home)));
 });
 
 test("a failed update releases the lock on its way out (die path)", () => {
@@ -319,4 +424,35 @@ test("two updates overlapping in time never both hold the lock", async () => {
   assert.deepEqual(statuses, [0, 1], "exactly one update must win, the other refuse");
   const loser = a.status === 1 ? a : b;
   assert.match(loser.out, /another update is already in progress/);
+});
+
+/**
+ * A failed update must never stop the app from starting.
+ *
+ * `apply_update` ends in `die` on any problem and `die` exits the script — so on the `start`
+ * path a bad download meant the server simply never came up. That is much worse than being a
+ * version behind, and it needs no attacker: a flaky network during the download did it. (The
+ * security audit reached the same state deliberately, via CC_REPO pointing at a fork.)
+ */
+test("a failed update on the start path warns and still launches", () => {
+  const { home, env } = makeHome("newer"); // asset listed, download 404s
+  const res = run(env, "start");
+  // Combined, because only `cmd_update` tees stderr into stdout; `start` doesn't, so `warn` and
+  // `die` land on stderr here.
+  const out = res.stdout + res.stderr;
+  assert.match(out, /didn't finish/, "it says the update failed");
+  assert.match(out, /starting 9\.9\.9 instead/, "…and which version it's carrying on with");
+  // Proof it got *past* the update rather than exiting there: the launch continues into the
+  // migration step, which is what fails in this fixture (no node_modules in a fake install).
+  assert.match(out, /migration failed/);
+  assert.ok(!existsSync(lockDir(home)), "and the lock is released, not leaked");
+});
+
+test("`control-center update` still fails loudly — only the launch path is forgiving", () => {
+  // The asymmetry is deliberate: a command whose whole job is to update must exit non-zero when
+  // it couldn't, or a script driving it can't tell. Only `start` swallows the failure.
+  const { env } = makeHome("newer");
+  const res = run(env, "update");
+  assert.equal(res.status, 1);
+  assert.doesNotMatch(res.stdout + res.stderr, /starting 9\.9\.9 instead/);
 });

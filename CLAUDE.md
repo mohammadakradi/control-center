@@ -341,6 +341,52 @@ hardened merge primitive.
   the function takes a bare string, so it's guarded anyway — defense in depth, not paranoia
   about a path that's actually reachable right now.
 
+### Managing feature groups (create, rename, close out, delete)
+Features were readable everywhere and editable nowhere: the sync derived them, a picker assigned
+work to them, every list rendered them as headings — and there was no way to add one, fix a name,
+or retire one. `components/FeatureManager.tsx` (a full-width **Features** card on project detail)
+is that half; `deleteFeature` in `lib/features.ts` is the only new rule, and `DELETE
+/api/projects/[id]/features/[featureId]` only translates it.
+- **Delete ungroups; it never destroys.** Both FKs are `set null` and `foreign_keys` is ON, so
+  tasks (with their transcripts) and backlog items survive the row that grouped them. Deleting is
+  the honest verb for "this grouping was a mistake" — `status: done` keeps the heading forever as
+  collapsed history, which is right for finished work and wrong for a group nobody wants.
+- **`mergeState` is cleared by hand, because the FK can't.** `ON DELETE SET NULL` only touches
+  `feature_id`, so without this an ungrouped task keeps `blocked`/`conflict` — breaking the
+  invariant `setTaskFeature` documents (`mergeState` null ⇔ no feature) and rendering a chip that
+  promises a retry `sweepFeatureMerges` can never perform, since it joins *through* `featureId`.
+  Done in one transaction with the delete so neither half is observable alone.
+- **A sync-derived feature is refused (409), not deleted.** `ensureRequestFeature` re-derives one
+  per `.pm/tasks/<request>/` folder on the next backlog load, so a delete would appear to work and
+  then silently undo itself. Same stance renaming one already gets, and the message names the
+  folder to remove instead.
+- **A feature with a live task is refused (409).** That run's merge-back reads `featureId` when it
+  finishes (`mergeOnDone`) and targets this feature's branch; pulling the row out from under it
+  would silently drop the merge and leave committed work on `task/<id>` with nothing pointing at
+  it. Finished/failed/cancelled runs never block it — history is not a reason to keep a grouping.
+- **It never runs git.** The `feature/<slug>` ref and every commit on it are untouched; nothing in
+  `lib/features.ts` has ever executed git and this didn't change that. The response and the
+  confirmation dialog both say so, because "delete" on a thing spanning several tasks reads as
+  "delete the work".
+- **The DELETE response returns the backlog-item count and *not* the task count.** A backlog item
+  is documented as shared install-wide, so counting them discloses nothing; a task is private to
+  whoever ran it (`lib/task-access.ts`) and this route has no auth, so an aggregate over
+  everyone's tasks would be a new cross-user disclosure. `backlogCountsByFeature` exists for the
+  same reason — the card says "task history stays, ungrouped" with no number.
+- **Project-scoped like every sibling route, which is what bounds a destructive unauthenticated
+  verb.** `findFeature(projectId, featureId)` means a feature addressed through the wrong project
+  answers **404**, so ids can't be probed across projects and nothing can be deleted through a URL
+  it doesn't belong to. The wider no-auth gap is the one documented for the backlog routes; it
+  wants the same fix, not a special case here.
+- **`featureRowActions` (`lib/ui.ts`) decides what a row offers**, and it does *not* consult live
+  tasks — that refusal depends on rows a shared page can't scope to the reader and changes second
+  to second, so it stays a server 409 surfaced as an error **on the row that was clicked**.
+- **The "why you can't edit this one" note is card-level, not per-row** (`FILE_OWNED_FEATURE_NOTE`).
+  It began as a sentence on every derived row, which reads fine for one and is a wall of text for a
+  pm-planned project — measured on this repo, all twelve features were derived, so the list carried
+  twenty-four lines of the same explanation. The **folder path** varies per row and stays there;
+  the rule is said once, and only when a derived row is actually on screen.
+
 ### Following one feature in the UI
 Three surfaces group work by feature — `/backlog`, project detail's Task history and `/tasks`
 (project → feature) — so one feature's development can be read on its own. `components/
@@ -1161,6 +1207,80 @@ there is intentionally no published image and no `release` stage in the Dockerfi
   reloads. It refuses while a task is running unless forced (the restart ends the session, and
   the runner fails every non-terminal task it finds on boot), and refuses in a checkout, where
   `git pull` is the answer. Still no Docker socket anywhere.
+- **A release is only *offered* once its tarball exists, and that fixed a bug every release
+  had.** `.github/workflows/release.yml` triggers on `release: published` but uploads the assets
+  at the very **end** of the run — after typecheck, lint, test, `next build` and `pack.sh`. For
+  those minutes `/releases/latest` reports the new tag while `control-center-<v>.tar.gz` does
+  not exist, so `apply_update`'s `curl` 404'd and the banner reported a failed update. Both
+  halves now gate on the asset: `isInstallable`/`releaseTarball` (`lib/updates.ts`) check
+  `assets[]`, and `fetch_latest_release` (`infra/release/control-center.sh`) greps the payload
+  with `grep -qF` (fixed string, because `CC_REPO` can name a fork whose tag is not ours; also
+  never `grep -P`, which BSD grep answers with exit 2 — a failure an `if` reads as "no match").
+  Four details are load-bearing:
+  - **The shell gate is anchored on the unescaped `"browser_download_url": "` key, and JSON
+    escaping is what makes that sound.** There is no `jq` here, so it greps the *whole* payload —
+    which includes the release **body** (a generated changelog for us, arbitrary text for a fork).
+    Two weaker versions were both spoofed from that body by the security audit: the bare filename,
+    then the bare download URL. The key form can't be forged because every quote inside a JSON
+    string arrives as `\"`, so a body quoting this key never carries the bare quotes the pattern
+    needs. Both `": "` and `":"` spacings are tried, since the anchor now depends on GitHub's
+    formatting and a compacted payload would otherwise refuse every update forever. The URL is
+    built from `$REPO`, so an asset pointing at a *different* repo isn't evidence either.
+  - **The asset check runs *after* the version compare, not before.** Screening in
+    `fetch_latest_release` made an *older* assetless release read as "still publishing" instead
+    of "you're already up to date", and `update` exited 1 where it used to exit 0. A spec pins
+    it; the fixture that caught it is the suite's own `up-to-date` curl stub.
+  - **`fetch_latest_release` sets globals and prints nothing**, because `x=$(f)` runs `f` in a
+    subshell where an assigned global can't escape. The first cut returned the tag on stdout and
+    every caller read a stale flag.
+  - **A missing `assets` array reads as not-installable**, not as "assume fine": a real payload
+    always carries it, and a release published without our tarball genuinely has nothing to
+    fetch. `unavailable: "publishing"` is the reason code, and it gets its own 2-minute cache
+    TTL because it is the one state that resolves itself.
+- **A failed update never stops the app from starting** (`check_and_update`). `apply_update` ends
+  in `die` and `die` exits the script, so on the `start` path a bad download meant the server
+  simply never came up — much worse than being a version behind, and it needed no attacker (a
+  flaky network during the download did it; the security audit reached it deliberately by pointing
+  `CC_REPO` at a fork whose release notes forged the asset). The attempt now runs in a subshell,
+  so its exit ends the attempt and not the launch; the lock is released and the app starts on what
+  is already installed. **`control-center update` keeps the fatal behaviour on purpose** — a
+  command whose whole job is to update must exit non-zero when it couldn't. Both halves are spec'd.
+- **`checkForUpdate` coalesces concurrent callers behind one in-flight promise**, and that — not
+  the cache — is what makes `FORCE_FLOOR_MS` real. The cache is only written *after* a fetch
+  resolves, so N calls inside that window all saw an empty cache and all went to GitHub: the floor
+  was bypassable by concurrency rather than by patience (`for i in $(seq 60); do curl
+  '…?force=1' & done` burnt the whole hourly budget in one burst). The floor is **2 minutes**, not
+  1, because 60s exactly matched GitHub's 60/hour budget and left no headroom. `resetUpdateCache`
+  bumps a `generation` counter so an answer already on the wire can't repopulate a dropped cache.
+- **Nothing re-checked, which is why several releases went unseen.** `UpdateBanner` fetched
+  `/api/updates` exactly once, on mount — and it mounts in `app/(app)/layout.tsx`, a persistent
+  App Router layout that client-side navigation never remounts. On a window left open (which is
+  what the Mac app *is*) the check happened when the window opened and never again. Now: the
+  server's OK cache is **30 minutes** (was six hours), and the banner re-checks on an interval
+  **and** on `visibilitychange`/`focus`, so a window buried for days is current by the time it's
+  read. `shouldRecheck` (`lib/update-ui.ts`) owns both floors and is spec'd, since `pnpm test`
+  can't reach `components/`. A negative age (two clocks) reads as "recent" and holds — the
+  direction that can't produce a request loop.
+- **The launcher's check is still skipped when the Mac app attaches to a live server**, and that
+  is deliberately *not* fixed here. `control-center start` is what runs `check_and_update`, and
+  `ControlCenter.swift` only calls it when nothing already answers on 7373/3001 — so a server
+  someone started from a terminal never gets checked. Making the attach path update would apply
+  a release unattended while the window is loading, which is the same class of surprise the
+  in-app banner exists to avoid. With the poll above, the window tells you and you choose.
+- **`GET /api/updates?force=1` backs a "Check now", and it has a 60-second floor.**
+  `FORCE_FLOOR_MS` in `checkForUpdate`, not in the route, because that route has **no auth** and
+  is reachable over loopback from inside the container where a task's Bash tool runs (the gap
+  documented for the backlog routes). Without a floor, forcing is a primitive for burning the
+  unauthenticated 60-requests-per-hour GitHub budget, after which every user's honest check
+  answers `rate-limited`. Serving the cache inside the floor is honest rather than a refusal —
+  the answer is seconds old, and `checkedAt` is on screen so the UI can say so. Only exactly
+  `"1"` forces, so a stray `?force=` isn't truthy.
+- **`components/VersionSettings.tsx` (Settings → Version) is where "am I current?" is
+  answerable.** The banner only renders when there is something to *install*, which is right but
+  left the quiet states — offline, rate-limited, mid-publish, a git checkout — with no surface at
+  all. `versionSummary` (`lib/update-ui.ts`) has a sentence for every one, spec'd exhaustively,
+  and `publishing` is spelled out rather than hidden: someone who just read the release
+  announcement and finds nothing offered would otherwise conclude the check is broken.
 - **One update at a time, enforced in the script, not just the route.** `apply_update()` is
   reachable from `update` *and* from `check_and_update()` on the `start` path, so "click
   Update, quit the app, reopen it" used to put two swaps on the same `app/` — the route's
@@ -1287,6 +1407,66 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   It follows the OS scheme, which can disagree with the in-app light/dark/system toggle — the
   standalone window chrome can't track that toggle.
 
+## Is a turn's last message the report, or did the agent just stop?
+`runner/completion.ts` (`classifyTurnEnd`) answers that for a turn ending with **no** report
+gate, no `[[GATE:…]]` marker and no trailing `[[DONE]]` — the runner, not the SDK, decides when
+a task is finished. A pause becomes a nudge; a final answer seals the task.
+- **`IN_FLIGHT_RE` catches "my dispatched work hasn't come back", which `WAITING_RE` misses**
+  because the sentence never mentions waiting: *"both review agents are still running"*, *"the
+  audit hasn't returned"*. Measured on a real transcript that ended exactly that way and was
+  accepted as a finished report — the task went `done` while its subagents kept writing to the
+  transcript.
+- **It is deliberately far narrower than `WAITING_RE`** — a named piece of dispatched work
+  (reviewer / auditor / subagent) *and* an explicit statement that it hasn't finished — and the
+  reason is load-bearing: **`WAITING_RE` matches "I'll wait for your approval to push" and
+  "Waiting for your go-ahead", both of which are finished reports.** So `WAITING_RE` must never
+  be consulted anywhere the answer *seals* a task. `runner/completion.test.ts` pins both
+  directions: six in-flight phrasings pause, and six finished-report phrasings (including
+  "Tests are still running in CI, but the change is complete") stay final.
+- **What this does NOT fix, knowingly:** a `[[DONE]]`/`[[GATE:REPORT]]` marker skips
+  `classifyTurnEnd` entirely, so an agent can still stamp `[[DONE]]` on a report that says its
+  reviews are outstanding and seal the task — and background subagent events still land in the
+  transcript after `finalize()` writes `end`. Filed (`bli_9119b0b6`, plus the agent-rules half
+  `bli_dd973b87`) rather than patched, because the cheap patch — running `WAITING_RE` at the
+  seal point — would nudge legitimate completions into a loop, per the bullet above.
+
+## The report card, and offering a fix task
+A change report can end with a "Create fix task" button that dispatches a fresh run against the
+report's own text. `fixTaskReasons` (`lib/ui.ts`) decides whether that button exists; the card
+in `components/TaskLiveView.tsx` renders it.
+- **The button and its explanation come from one list, so it can never appear unexplained.**
+  This replaced a boolean (`reportHasFindings`) that decided the same thing and could not say
+  why — so the card showed a bare CTA beside a report that never stated what needed fixing, and
+  the only honest reaction was "why do I need a fix task?". Now: no reasons → no button; reasons
+  → a `warn`-toned callout that names each signal (**Findings section**, **Severity callout**,
+  **Unfinished item**, **Recommendation**) and **quotes the line that fired it**. The button
+  lives *inside* that callout — the two used to sit a whole report apart.
+- **Quoted, never paraphrased.** A summary of a finding is a second thing that can be wrong.
+  The evidence is the report's own line, markdown furniture stripped and cut **by code point**
+  (`[...str]`, like `cleanTitle`) so a cap can't split a surrogate pair.
+- **`evidenceOf` strips `\p{Cc}`/`\p{Cf}`, and that is a security control.** Report text is
+  agent-authored and steerable by a file or page the agent read, and React escapes *markup*, not
+  Unicode — so a `U+202E` RIGHT-TO-LEFT OVERRIDE survives and makes the quote **display as
+  something other than what it says**. Trojan Source, aimed at the one panel designed to be
+  believed before a click. Reproduced in a browser: the same planted line renders as "…the log
+  **no security** in plain text" in the report body and "…the log **ytiruces on** in plain text"
+  in the callout. Real whitespace (TAB, NBSP, U+2028/9) becomes a space *first*, or stripping
+  glues words together; `dir="ltr"` on the span bounds anything left. **Write these as `\uXXXX`
+  escapes, never literal bytes** — a literal U+2028 is a JS line terminator and broke the parse.
+  The markdown-rendered report *body* still has this exposure; it is pre-existing and filed
+  (`bli_81e3ed7c`).
+- **Judged per line, which is what makes an all-clear readable.** The old version tested the
+  whole blob, so "no outstanding issues" lit up `issues?` for the entire report. A line matching
+  an all-clear phrase is now skipped — *unless* it carries an explicit severity tag, since
+  `[Medium] looks good overall, but…` is a grading, not reassurance.
+- **One row per kind, capped at four.** An audit lists twenty findings; twenty near-identical
+  callout rows would be a second copy of the report where the job was to explain one button.
+- **It is still a guess about prose, and that's the point of showing it.** A report describing
+  bugs it already *fixed* ("## Bugs found beyond the reported symptoms") still matches — but the
+  user can now see the matched line and dismiss it, instead of being handed a silent verdict.
+  It had **no specs at all** before; `lib/ui.test.ts` now covers each signal, the all-clear
+  suppression, the cap, the code-point cut, and that exact false positive.
+
 ## Skills, and attaching files to a live run
 - **A command is called a *skill* in the UI** ("Workflow" until 2026-08-13). The code keeps
   `commands` — that's the plugin directory's own name for them (`agents/<ns>/commands/*.md`)
@@ -1349,7 +1529,7 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   follow-up can carry files; `reply` exists on the runner but no UI calls it. Also hosts the
   **Changes** card (`components/TaskChanges.tsx`) — what this run changed on disk, see
   "A task's own changes" below
-- `app/settings/` — Per-user settings (Anthropic token vault card)
+- `app/settings/` — Per-user settings (Anthropic token vault card, `Version` card, Data card)
 - `app/usage/` — Per-user usage page: spend summary + Claude plan-limit bars. A top-level
   nav entry, not a Settings sub-section (moved out of Settings 2026-08-02)
 - `app/api/` — API routes (projects, tasks, agents, git, fs, diff, file, settings/token)
@@ -1364,8 +1544,10 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   `lib/backlog.ts`; the routes only translate HTTP
 - `app/api/projects/[id]/features/` — Per-project features: `GET` (list — a plain read, it never
   touches the disk; the `.pm/tasks/` walk that *derives* features belongs to the backlog load),
-  `POST` (create by hand), `PATCH …/[featureId]` (close one out, or rename a hand-made one).
-  Logic and every bound are in `lib/features.ts`. See "Features" above
+  `POST` (create by hand), `PATCH …/[featureId]` (close one out, or rename a hand-made one),
+  `DELETE …/[featureId]` (retire a grouping — ungroups its work, refuses a pm-derived one or one
+  with a live run, never runs git). Logic and every bound are in `lib/features.ts`. See
+  "Features" and "Managing feature groups" above
 - `app/api/tasks/[id]/` — `GET` task detail + event log, and `PATCH` to move the task into a
   feature or out of one (`{ featureId }` only). The one owner-scoped feature route
 - `app/api/tasks/[id]/changes/` — This task's own uncommitted-changes summary, resolved to the
@@ -1382,6 +1564,12 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
   under every host's `CardSection`; active features start open, closed ones collapsed) and
   `MergeStateChip` (one row's merge state, wording decided by `mergeChipView` in `lib/ui.ts`).
   Shared by the backlog, project detail and `/tasks`; see "Following one feature in the UI"
+- `components/FeatureManager.tsx` — The **Features** card on project detail: add, rename, close
+  out / reopen, and delete a grouping (delete behind a confirmation that names what survives).
+  Row-level rules come from `featureRowActions` (`lib/ui.ts`); see "Managing feature groups"
+- `components/VersionSettings.tsx` — Settings → **Version**: which release this install is on,
+  what the newest one is, when that was last checked, and a "Check now" that sends `?force=1`.
+  Copy comes from `versionSummary` (`lib/update-ui.ts`), which has an answer for every state
 - `components/ui/` — Base primitives: `button.tsx`, `modal.tsx`, `select.tsx`
 - `components/Sidebar.tsx` — Desktop primary nav (collapsible rail, `md+`)
 - `components/MobileNav.tsx` — Mobile top bar + bottom tab bar (`< md`)
@@ -1398,7 +1586,9 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `lib/features.ts` (+ `lib/features.test.ts`) — The feature entity (`features`): branch naming
   (an allowlist, because the result is a git ref), idempotent derivation from a `.pm/tasks/`
   folder, the caps, the validators, and `parseFeatureRef` — the one place a client-supplied
-  `featureId` is checked against the project it claims to belong to. See "Features" above
+  `featureId` is checked against the project it claims to belong to. Also `deleteFeature` (the
+  two refusals, and the `mergeState` clearing an FK can't do) and `backlogCountsByFeature` (items
+  only, never tasks — tasks are private). See "Features" and "Managing feature groups" above
 - `lib/pm-spec.ts` — Reading a pm task spec (frontmatter → title/assignee/priority) and naming a
   request folder (`requestTitle`, which is what a derived feature is called), plus
   `specSourcePath()`, which maps a spec's on-screen path to the `sourcePath` key the backlog
@@ -1428,9 +1618,15 @@ button lives in a **normal tab's** address bar; a `--app=` window has no menu fo
 - `lib/search.ts` (+ `lib/search.test.ts`) — Global text search: one query over tasks, projects,
   agents and backlog items, with the owner scoping, the `LIKE` wildcard escaping and every bound
   (query length, per-type limit, snippet caps) in one place. See "Global search" above
-- `lib/ui.ts` — Shared UI logic with no DOM: status labels/tones, `taskDisplayTitle`, and
-  `orderSkills` (skill order + whether `onboard` is offered). Kept out of the components so
-  `pnpm test` can cover it
+- `lib/ui.ts` — Shared UI logic with no DOM: status labels/tones, `taskDisplayTitle`,
+  `orderSkills` (skill order + whether `onboard` is offered), `featureRowActions` +
+  `FILE_OWNED_FEATURE_NOTE` (what a Features-card row may do, and why not), and
+  `fixTaskReasons` (why a report offers a fix task — see below). Kept out of the
+  components so `pnpm test` can cover it
+- `lib/update-ui.ts` (+ `lib/update-ui.test.ts`) — Everything the update UI says and when:
+  the banner's phase/copy builders, `shouldRecheck` (the re-check interval and the
+  come-back-to-the-window floor) and `versionSummary` (the Settings card's sentence for every
+  state, including the quiet ones the banner renders as nothing)
 - `lib/db/migrate.ts` — Schema migrations: applies `drizzle/`, adopts pre-migration databases,
   snapshots before changes, and refuses to run against a schema the code can't query. Driven
   by `runner/migrate.ts` (`pnpm db:migrate`), which `install.sh` and `control-center start` run

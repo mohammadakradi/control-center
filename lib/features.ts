@@ -12,9 +12,20 @@
  * The split with the API routes is the one `lib/backlog.ts` established: every rule, bound and
  * validator lives here where `pnpm test` can reach it, and the routes only translate HTTP.
  */
-import { and, asc, count, eq, inArray } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNotNull } from "drizzle-orm";
 import { db } from "./db";
-import { features, tasks, type Feature, type FeatureStatus, type Task } from "./db/schema";
+import {
+  backlogItems,
+  features,
+  tasks,
+  type Feature,
+  type FeatureStatus,
+  type Task,
+  type TaskStatus,
+} from "./db/schema";
+// `lib/ui.ts` is import-safe here: it pulls in nothing but types, which is also why the update
+// route already imports this same set from it.
+import { ACTIVE_STATUSES } from "./ui";
 import { newId } from "./util";
 
 /** Caps on API-supplied text, same reasoning as the backlog's: the DB has no opinion, and a
@@ -266,6 +277,27 @@ export function ensureRequestFeature(
   return createFeature(projectId, { name, sourceDir }) ?? bySourceDir();
 }
 
+/**
+ * How many backlog items sit under each of a project's features, keyed by feature id.
+ *
+ * Backlog items only — deliberately not tasks. A backlog item is documented as shared
+ * install-wide, so counting them discloses nothing new; a *task* is private to whoever ran it
+ * (`lib/task-access.ts`), and an unscoped count of those on a shared page would quietly reveal
+ * that someone else is working on this feature. The management card says "task history stays,
+ * ungrouped" without a number for exactly that reason.
+ */
+export function backlogCountsByFeature(projectId: string): Record<string, number> {
+  const rows = db
+    .select({ featureId: backlogItems.featureId, n: count() })
+    .from(backlogItems)
+    .where(and(eq(backlogItems.projectId, projectId), isNotNull(backlogItems.featureId)))
+    .groupBy(backlogItems.featureId)
+    .all();
+  const out: Record<string, number> = {};
+  for (const row of rows) if (row.featureId) out[row.featureId] = row.n;
+  return out;
+}
+
 export type FeatureEdit = {
   name?: string;
   status?: FeatureStatus;
@@ -278,6 +310,109 @@ export function updateFeature(featureId: string, edit: FeatureEdit): Feature {
   // `branch` is deliberately absent — see ensureRequestFeature.
   db.update(features).set(patch).where(eq(features.id, featureId)).run();
   return db.select().from(features).where(eq(features.id, featureId)).get()!;
+}
+
+/**
+ * What a delete did, or why it didn't happen. A result type rather than thrown errors, so the
+ * route can turn each refusal into its own status and sentence without re-deriving anything.
+ */
+export type DeleteFeatureResult =
+  | {
+      ok: true;
+      /** How much work was handed back to "no feature" — what the UI has to warn about. */
+      ungrouped: { tasks: number; items: number };
+      /** Named in the response because deleting the row does *not* delete this. */
+      branch: string;
+    }
+  /** Sync-derived: the next backlog load would re-create it from disk. */
+  | { ok: false; reason: "derived"; sourceDir: string }
+  /**
+   * A run is still in flight against this feature's branch.
+   *
+   * `count` is for this module's own specs and any future *authenticated* caller — it must not
+   * reach an unauthenticated response. It counts every user's active tasks (it has to, to decide
+   * whether to refuse), and a task is private to whoever ran it (`lib/task-access.ts`), so
+   * naming the number over the no-auth route would tell a stranger how much live work someone
+   * else has here. The route's 409 sentence is deliberately count-free; the security audit
+   * caught the first version leaking it.
+   */
+  | { ok: false; reason: "active-tasks"; count: number };
+
+/**
+ * Delete a feature, handing its tasks and backlog items back to "no feature".
+ *
+ * Deletion is the honest verb for "we don't need this group any more" — closing a feature out
+ * (`status: done`) keeps it on screen forever as a collapsed heading, which is right for
+ * finished work and wrong for a group created by mistake. Four things make it safe:
+ *
+ * - **Nothing is destroyed.** Both FKs are `set null` (and `foreign_keys` is ON, see
+ *   `lib/db/index.ts`), so tasks and backlog items survive the row that grouped them. Closing
+ *   out or deleting a feature must never delete the history of the work done under it.
+ * - **`mergeState` is cleared by hand, because the FK can't.** `ON DELETE SET NULL` only touches
+ *   `feature_id`, which would leave ungrouped tasks carrying `blocked`/`conflict` — breaking the
+ *   invariant `setTaskFeature` documents ("`mergeState` null ⇔ no feature") and leaving a chip
+ *   that promises a retry the merge sweep can never perform, since it joins through `featureId`.
+ * - **A sync-derived feature is refused, not deleted.** `ensureRequestFeature` re-derives one
+ *   per `.pm/tasks/<request>/` folder on the next backlog load, so deleting it would appear to
+ *   work and then silently undo itself. The same stance renaming one already gets.
+ * - **A feature with a live run is refused.** That run's merge-back targets this feature's
+ *   branch and reads `featureId` when it finishes (`mergeOnDone`); pulling the row out from
+ *   under it would silently drop the merge, leaving committed work on `task/<id>` with nothing
+ *   pointing at it. Wait for the run, or cancel it.
+ *
+ * It never touches git. The `feature/<slug>` ref and every commit on it stay exactly where they
+ * are — this module has never run git and doesn't start here (the runner owns that). The branch
+ * is returned so the caller can say so.
+ */
+export function deleteFeature(feature: Feature): DeleteFeatureResult {
+  if (feature.sourceDir) {
+    return { ok: false, reason: "derived", sourceDir: feature.sourceDir };
+  }
+
+  const active = db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.featureId, feature.id),
+        // A Set<string> because client components match raw status strings against it; the
+        // column is typed to the union.
+        inArray(tasks.status, [...ACTIVE_STATUSES] as TaskStatus[]),
+      ),
+    )
+    .all();
+  if (active.length) {
+    return { ok: false, reason: "active-tasks", count: active.length };
+  }
+
+  const grouped = db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(eq(tasks.featureId, feature.id))
+    .all();
+  const items = db
+    .select({ id: backlogItems.id })
+    .from(backlogItems)
+    .where(eq(backlogItems.featureId, feature.id))
+    .all();
+
+  // One transaction, so no reader can observe a row that is ungrouped but still carries a merge
+  // state (or the reverse). Both orders are individually safe — the sweep's inner join skips a
+  // null `featureId` and its filter skips a null `mergeState` — but "individually safe" is a
+  // property of today's queries, and this is cheap.
+  db.transaction((tx) => {
+    tx.update(tasks)
+      .set({ mergeState: null })
+      .where(eq(tasks.featureId, feature.id))
+      .run();
+    tx.delete(features).where(eq(features.id, feature.id)).run();
+  });
+
+  return {
+    ok: true,
+    ungrouped: { tasks: grouped.length, items: items.length },
+    branch: feature.branch,
+  };
 }
 
 /**
