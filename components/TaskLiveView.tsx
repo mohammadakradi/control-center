@@ -12,10 +12,11 @@ import {
   RotateCcw,
   Send,
   Square,
+  TriangleAlert,
   Wrench,
   X,
 } from "lucide-react";
-import { ACTIVE_STATUSES, STATUS_LABEL, reportHasFindings } from "@/lib/ui";
+import { ACTIVE_STATUSES, STATUS_LABEL, fixTaskReasons } from "@/lib/ui";
 import { materializeFiles } from "@/lib/attachments";
 import { Button } from "@/components/ui/button";
 import { AttachmentPicker, FileDropZone } from "@/components/AttachmentPicker";
@@ -830,29 +831,68 @@ function BubbleView({
     return (
       <p className="font-mono text-xs text-fg-faint">— {bubble.text}</p>
     );
-  if (bubble.kind === "report")
+  if (bubble.kind === "report") {
+    // One list drives both the callout and the button, so the offer can never appear without
+    // its reason (see `fixTaskReasons`). A bare "Create fix task" beside a report that never
+    // says what needs fixing is an unanswerable question.
+    const reasons = onConvert ? fixTaskReasons(bubble.text) : [];
     return (
       <div className="rounded-lg border border-line-strong bg-surface-2 p-4">
-        <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="mb-2 flex items-center gap-2">
           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-fg-subtle">
             <FileText className="size-3.5" /> Report
           </span>
-          {onConvert && reportHasFindings(bubble.text) && (
-            <Button
-              size="sm"
-              variant="accent"
-              onClick={() => onConvert(bubble.text)}
-              loading={converting}
-              icon={<Wrench className="size-3.5" />}
-              title="Create a new task that fixes the issues in this report"
-            >
-              {converting ? "Creating…" : "Create fix task"}
-            </Button>
-          )}
         </div>
         <Markdown onFileClick={onFileClick}>{bubble.text}</Markdown>
+
+        {reasons.length > 0 && (
+          // `warn`, not `danger`: this is unfinished work someone should decide about, not a
+          // failure. The button lives *inside* the callout — that adjacency is the fix, since
+          // the two were previously a whole report apart.
+          <div className="mt-4 rounded-lg border border-warn-line bg-warn-soft p-3 text-warn">
+            <div className="flex items-start gap-2">
+              <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium">This report flags follow-up work</p>
+                <p className="mt-0.5 text-xs">
+                  A fix task starts a fresh run to deal with it. Nothing here is required —
+                  if you&apos;ve read these and they&apos;re fine, ignore this.
+                </p>
+                <ul className="mt-2 space-y-1 text-xs">
+                  {reasons.map((r) => (
+                    <li key={r.label} className="min-w-0">
+                      <span className="font-medium">{r.label}</span>
+                      {" — "}
+                      {/* The report's own words. Quoted, not paraphrased: a summary of a
+                          finding is a second thing that can be wrong.
+                          `dir="ltr"` bounds any right-to-left run in the quote to this span, so
+                          it can't reorder the label or the surrounding sentence. `evidenceOf`
+                          already strips the bidi overrides that make that a real attack; this is
+                          the belt to that braces, and it costs nothing. */}
+                      <span dir="ltr" className="break-words italic">
+                        {r.evidence}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <Button
+                  size="sm"
+                  variant="accent"
+                  className="mt-3"
+                  onClick={() => onConvert?.(bubble.text)}
+                  loading={converting}
+                  icon={<Wrench className="size-3.5" />}
+                  title="Create a new task that works through the follow-ups listed above"
+                >
+                  {converting ? "Creating…" : "Create fix task"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
+  }
   if (bubble.kind === "decision")
     return (
       <div

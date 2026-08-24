@@ -8,15 +8,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   blockedCopy,
+  checkedAgo,
   failureCopy,
   isFreshRun,
   phaseForRun,
   phaseOnLoad,
+  RECHECK_MS,
   sentenceCase,
+  shouldRecheck,
   stalledCopy,
   startErrorCopy,
   taskCount,
   uptodateCopy,
+  versionSummary,
+  VISIBLE_RECHECK_MS,
   type UpdateRunView,
 } from "./update-ui";
 
@@ -236,6 +241,125 @@ test("stalledCopy only says quit-and-reopen when the server really went away", (
   assert.match(gone.body, /picks the update up on launch/);
 });
 
+/**
+ * The scheduling half of "a release should be visible ASAP". These specs exist because the
+ * banner previously fetched once on mount and never again — and it mounts in a persistent
+ * layout, so a window left open never re-checked at all.
+ */
+test("with no answer yet, the banner always asks", () => {
+  assert.equal(shouldRecheck({ lastCheckedAt: null, now: 0 }), true);
+  assert.equal(
+    shouldRecheck({ lastCheckedAt: null, now: 0, becameVisible: true }),
+    true,
+  );
+});
+
+test("an idle window re-checks on the interval, not before", () => {
+  const at = 1_000_000;
+  assert.equal(shouldRecheck({ lastCheckedAt: at, now: at }), false);
+  assert.equal(
+    shouldRecheck({ lastCheckedAt: at, now: at + RECHECK_MS - 1 }),
+    false,
+  );
+  assert.equal(shouldRecheck({ lastCheckedAt: at, now: at + RECHECK_MS }), true);
+});
+
+test("a window looked at again checks sooner than the full interval", () => {
+  const at = 1_000_000;
+  // The whole point: a window hidden for days shouldn't wait out an interval that already
+  // ticked by unseen.
+  assert.equal(
+    shouldRecheck({
+      lastCheckedAt: at,
+      now: at + VISIBLE_RECHECK_MS,
+      becameVisible: true,
+    }),
+    true,
+  );
+  assert.ok(VISIBLE_RECHECK_MS < RECHECK_MS, "…but it is genuinely sooner");
+});
+
+test("focus is floored, so flicking between windows can't become a request loop", () => {
+  const at = 1_000_000;
+  for (const delta of [0, 1, 1_000, VISIBLE_RECHECK_MS - 1]) {
+    assert.equal(
+      shouldRecheck({ lastCheckedAt: at, now: at + delta, becameVisible: true }),
+      false,
+      `refocusing after ${delta}ms must not fetch`,
+    );
+  }
+});
+
+test("a backwards clock holds rather than fetching on every tick", () => {
+  // Both stamps come from different clocks (the server's `checkedAt` and the browser's `now`),
+  // so a negative age is reachable without anything being wrong. Holding is the direction that
+  // can't burn the request budget.
+  assert.equal(
+    shouldRecheck({ lastCheckedAt: 1_000_000, now: 0, becameVisible: true }),
+    false,
+  );
+});
+
+/**
+ * The Settings card has to answer "am I current?" in every state, including the ones the banner
+ * renders as nothing. A state with no answer here reads as a broken check.
+ */
+test("versionSummary has an answer for every state", () => {
+  const base = { current: "0.9.0", latest: "0.9.0", updateAvailable: false, packaged: true };
+  const states = [
+    undefined,
+    "offline",
+    "rate-limited",
+    "publishing",
+    "no-releases",
+  ];
+  for (const unavailable of states) {
+    const s = versionSummary({ ...base, unavailable });
+    assert.ok(s.headline.length > 0, `${unavailable}: headline`);
+    assert.ok(s.body.length > 0, `${unavailable}: body`);
+    // Whatever the state, the version actually installed is the fact the user came for.
+    assert.match(`${s.headline} ${s.body}`, /0\.9\.0/, `${unavailable}: names the version`);
+  }
+});
+
+test("versionSummary leads with the new version when one is available", () => {
+  const s = versionSummary({
+    current: "0.9.0",
+    latest: "0.10.0",
+    updateAvailable: true,
+    packaged: true,
+  });
+  assert.match(s.headline, /0\.10\.0 is available/);
+  assert.equal(s.tone, "info");
+});
+
+test("versionSummary explains a mid-publish release rather than staying silent", () => {
+  // Someone who just read the release announcement and finds nothing offered would otherwise
+  // conclude the check is broken. This is the one "unavailable" worth spelling out.
+  const s = versionSummary({
+    current: "0.9.0",
+    latest: "0.10.0",
+    updateAvailable: false,
+    packaged: true,
+    unavailable: "publishing",
+  });
+  assert.match(s.headline, /0\.10\.0 is still publishing/);
+  assert.match(s.body, /couple of minutes/);
+  assert.notEqual(s.tone, "warn", "nothing is wrong — it's just not ready");
+});
+
+test("versionSummary points a checkout at git pull, not at the update button", () => {
+  const s = versionSummary({
+    current: "0.9.0",
+    latest: "0.10.0",
+    // A checkout can report an update as available; offering to install it would be a lie.
+    updateAvailable: true,
+    packaged: false,
+  });
+  assert.match(s.body, /git pull/);
+  assert.doesNotMatch(s.headline, /available/);
+});
+
 test("no copy builder puts a filesystem path inside a sentence", () => {
   // The path is rendered as a path — mono, truncating, with a title — beside the log
   // disclosure. Mid-sentence it's a wall of characters that pushes the real words off screen.
@@ -245,5 +369,38 @@ test("no copy builder puts a filesystem path inside a sentence", () => {
     blockedCopy(2),
   ]) {
     assert.doesNotMatch(body, /\//, body);
+  }
+});
+
+// ------------------------------------------------------ how old is the answer
+
+test("checkedAgo names every unit, and its boundaries", () => {
+  const s = 1000;
+  const at = 10_000_000;
+  // "just now" has to cover a whole "Check now" round trip, or a forced check served from the
+  // server's floor would read as stale the instant it came back.
+  assert.equal(checkedAgo(at, at), "just now");
+  assert.equal(checkedAgo(at, at + 44 * s), "just now");
+  assert.equal(checkedAgo(at, at + 45 * s), "1 minute ago", "singular, not '1 minutes'");
+  assert.equal(checkedAgo(at, at + 90 * s), "2 minutes ago");
+  assert.equal(checkedAgo(at, at + 59 * 60 * s), "59 minutes ago");
+  assert.equal(checkedAgo(at, at + 60 * 60 * s), "1 hour ago");
+  assert.equal(checkedAgo(at, at + 5 * 60 * 60 * s), "5 hours ago");
+  assert.equal(checkedAgo(at, at + 30 * 60 * 60 * s), "1 day ago");
+  assert.equal(checkedAgo(at, at + 3 * 24 * 60 * 60 * s), "3 days ago");
+});
+
+test("checkedAgo never says the answer came from the future", () => {
+  // `checkedAt` is the server's clock and `now` is the browser's, so a negative age is
+  // reachable with nothing wrong. "in 3 minutes" is never the useful thing to say.
+  assert.equal(checkedAgo(10_000_000, 9_000_000), "just now");
+});
+
+test("checkedAgo survives a stamp that isn't a real number", () => {
+  // It comes off a JSON response, so "always Date.now()" is a property of today's server, not
+  // of the type. NaN made every comparison false and rendered "NaN days ago".
+  for (const bad of [Number.NaN, Infinity, -Infinity]) {
+    assert.equal(checkedAgo(bad, 10_000_000), "just now", String(bad));
+    assert.equal(checkedAgo(10_000_000, bad), "just now", String(bad));
   }
 });

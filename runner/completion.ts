@@ -39,6 +39,24 @@ const MARKERS = /\[\[(?:DONE|GATE:[A-Z]+)\]\]/g;
 export const WAITING_RE =
   /\b(standing by|will resume|report(?:ing)? back|wait(?:ing|s)? (?:for|on)|i'?ll (?:resume|continue|wait)|continue once|once (?:they|it|the)\b[^.]*\b(?:report|finish|complete|return|back)|running in the background|in the background\b[^.]*\b(?:wait|report|verdict|result|finish)|before the (?:report|proposal) gate|dispatch(?:ed|ing)\b[^.]*\b(?:review|audit|sub-?agents?|sub-?tasks?))/i;
 
+/**
+ * Dispatched work the agent says is *still outstanding* — the shape `WAITING_RE` misses because
+ * the sentence never mentions waiting at all: "both review agents are still running", "the
+ * audit hasn't returned yet". Measured against a real transcript that ended exactly that way
+ * and was accepted as a finished report.
+ *
+ * It is deliberately much narrower than `WAITING_RE`: a named piece of dispatched work
+ * (reviewer / auditor / subagent) **and** an explicit statement that it hasn't finished. That
+ * tightness is the point — `WAITING_RE` matches "I'll wait for your approval to push" and
+ * "Waiting for your go-ahead", both of which are *finished* reports, so it can never be
+ * applied anywhere the answer seals a task. This one is checked against both sets: six
+ * in-flight phrasings match, and six finished-report phrasings (including "I ran the reviewer
+ * and the security auditor. Both came back clean" and "Tests are still running in CI, but the
+ * change is complete") do not.
+ */
+export const IN_FLIGHT_RE =
+  /\b(?:review(?:er)?s?|audit(?:or)?s?|sub-?agents?|sub-?tasks?)\b[^.\n]{0,60}?(?:\bstill\b[^.\n]{0,24}?\b(?:running|going|in flight|in progress|working)|\b(?:haven'?t|hasn'?t|have not|has not|not yet)\b[^.\n]{0,32}?\b(?:report|return|finish|complet|come back|landed))/i;
+
 /** Throat-clearing that can precede the real clause: "Okay, now let me…". */
 const PREAMBLE =
   "(?:(?:ok(?:ay)?|right|alright|good|great|perfect|hmm+|now|next|first|then|so|and|also|finally)\\b[\\s,.!:;—–-]*)*";
@@ -95,7 +113,8 @@ export function classifyTurnEnd(text: string): TurnEnd {
   if (!body) return { kind: "paused", reason: "no-text" };
   // "I'll pick this back up once the reviewers report" — a pause wherever it appears,
   // and worth its own nudge because the dispatched work is already finished by now.
-  if (WAITING_RE.test(body)) return { kind: "paused", reason: "waiting" };
+  if (WAITING_RE.test(body) || IN_FLIGHT_RE.test(body))
+    return { kind: "paused", reason: "waiting" };
   // A message that ends by asking the user something is a deliberate stop, not a pause —
   // nudging it would answer the question on the user's behalf. (Rule 8: agents may ask
   // when genuinely blocked; the user replies into the live task.)

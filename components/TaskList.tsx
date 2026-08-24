@@ -5,15 +5,15 @@ import type { tasks } from "@/lib/db/schema";
 import { FeatureGroup, MergeStateChip, type FeatureLite } from "./FeatureGroup";
 import { StatusBadge } from "./StatusBadge";
 import { UsageCost } from "./UsageDisplay";
-import { groupByFeature, taskDisplayTitle, timeAgo } from "@/lib/ui";
+import { groupByFeature, mergeChipProps, taskDisplayTitle, timeAgo } from "@/lib/ui";
 import { taskUsage } from "@/lib/usage-format";
 
 export type TaskRow = InferSelectModel<typeof tasks>;
 
 /**
  * The task row, defined once — every list of tasks in the app renders through this
- * (project detail via {@link TaskHistory}, the dashboard's recent activity, agent detail's
- * recent runs).
+ * (project detail via {@link FeatureManager}'s per-feature panels, the dashboard's recent
+ * activity, agent detail's recent runs).
  *
  * Rows are **title-first**: the generated `tasks.title` names the task, and the raw request
  * is only a fallback (see `taskDisplayTitle`). The dashboard and agent lists used to
@@ -108,7 +108,11 @@ export function TaskList({
                   and doesn't second-guess it. */}
               {showMergeState && (
                 <span className="sr-only shrink-0 text-xs sm:not-sr-only">
-                  <MergeStateChip task={t} />
+                  {/* Narrowed, never the whole row: this chip is a client component, so
+                      anything handed to it is serialized into the page's HTML. Passing `t`
+                      shipped `workdir`, `sessionId` and `requestText` for a row that renders
+                      six fields — see `mergeChipProps`. */}
+                  <MergeStateChip task={mergeChipProps(t)} />
                 </span>
               )}
               <StatusBadge status={t.status} />

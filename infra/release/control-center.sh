@@ -97,10 +97,54 @@ version_gt() {
   return 1
 }
 
-latest_release() {
-  curl -fsSL --max-time 10 -H 'Accept: application/vnd.github+json' \
-    "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null |
-    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+# The newest release, into LATEST_TAG, with LATEST_INSTALLABLE saying whether anything can be
+# installed from it yet.
+#
+# **Sets globals and prints nothing on purpose.** `x=$(f)` runs f in a subshell, so a global it
+# assigns there cannot reach the caller — the first version of this returned the tag on stdout
+# and every caller read a stale LATEST_INSTALLABLE.
+#
+# Why installability is a separate question from the tag: a release appears on the API the moment
+# it is published, but .github/workflows/release.yml triggers on `release: published` and uploads
+# the assets at the very end — after typecheck, lint, test, build and pack. For those minutes
+# `tag_name` names a version whose control-center-<v>.tar.gz does not exist, and apply_update
+# below 404s on the download and dies. Every release had that window.
+#
+# The tag is still reported when its assets are missing, because "is it newer" has to be answered
+# *first*: screening the release out here made an older assetless release (a fork, or a test
+# fixture) read as "still publishing" instead of "you're already up to date".
+LATEST_TAG=
+LATEST_INSTALLABLE=no
+fetch_latest_release() {
+  LATEST_TAG=
+  LATEST_INSTALLABLE=no
+  body=$(curl -fsSL --max-time 10 -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null) || return 0
+  LATEST_TAG=$(printf '%s' "$body" |
+    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  [ -n "$LATEST_TAG" ] || return 0
+  # Anchored on the **unescaped `"browser_download_url": "` key**, which is what confines the
+  # match to a real entry in `assets[]`. There is no `jq` here, so this greps the whole payload —
+  # and a payload carries a release *body*, which for our own releases is an auto-generated
+  # changelog of PR titles and for a fork is arbitrary text. Two weaker versions were both
+  # spoofed from that body by the security audit: the bare filename first, then the bare download
+  # URL. What makes the key form different is not specificity, it is **JSON escaping**: every
+  # quote inside a string field arrives as `\"`, so a body quoting this key-and-value can never
+  # produce the bare quotes this pattern needs. Verified against a forged payload.
+  #
+  # Both spacings are tried because the anchor now depends on GitHub's formatting (it pretty-
+  # prints `": "`); a compacted payload would otherwise refuse every update forever, which fails
+  # safe but silently. Fixed strings, never a regex — the tag comes from whatever repo CC_REPO
+  # names, and `grep -F` means a hostile fork's tag can't become a pattern. (Also never grep -P,
+  # which BSD grep answers with exit 2 — a failure an `if` reads as "no match".)
+  url="https://github.com/${REPO}/releases/download/${LATEST_TAG}/control-center-${LATEST_TAG#v}.tar.gz"
+  for sep in '": "' '":"'; do
+    if printf '%s' "$body" | grep -qF "\"browser_download_url${sep}${url}\""; then
+      LATEST_INSTALLABLE=yes
+      break
+    fi
+  done
+  return 0
 }
 
 # ── process control ─────────────────────────────────────────────────────────────────────
@@ -483,7 +527,29 @@ apply_update() {
   trap "rm -rf '$tmp'" EXIT INT TERM
 
   info "Downloading ${version}…"
-  curl -fsSL --max-time 300 -o "$tmp/$tarball" "$base/$tarball" || die "download failed: $base/$tarball"
+  # `|| rc=$?` rather than `|| die`: the *reason* decides the advice, and assigning keeps set -e
+  # out of it. `-w '%{http_code}'` still prints under `-f`, which is what separates "this release
+  # isn't finished uploading" (404) from "the server said no for some other reason" (403/5xx)
+  # from "there was no HTTP response at all" (DNS, timeout, TLS — no code, or 000).
+  rc=0
+  code=$(curl -fsSL --max-time 300 -o "$tmp/$tarball" -w '%{http_code}' "$base/$tarball") || rc=$?
+  if [ "$rc" != 0 ]; then
+    case "$code" in
+      # fetch_latest_release screens for a missing asset, so reaching here means the release
+      # landed in the gap between that check and this download.
+      404)
+        die "release $version is published but its assets aren't uploaded yet — try again in a few minutes."
+        ;;
+      # Don't tell someone to wait for an upload that already finished: a 403 (rate limit, or a
+      # private asset) or a 5xx is not a half-published release.
+      '' | 000)
+        die "download failed: $base/$tarball"
+        ;;
+      *)
+        die "download failed with HTTP $code: $base/$tarball"
+        ;;
+    esac
+  fi
   if curl -fsSL --max-time 30 -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" 2>/dev/null; then
     verify_checksum "$tmp/$tarball" "$tmp/SHA256SUMS"
   fi
@@ -554,7 +620,8 @@ update_run() {
   need_install
   UPDATE_FROM=$(installed_version)
   info "Checking for a newer release (current: $UPDATE_FROM)…"
-  latest=$(latest_release)
+  fetch_latest_release
+  latest=$LATEST_TAG
   [ -n "$latest" ] || die "couldn't reach GitHub Releases."
   UPDATE_TARGET=${latest#v}
   if ! version_gt "$latest" "$UPDATE_FROM"; then
@@ -563,6 +630,12 @@ update_run() {
     release_update_lock
     return 0
   fi
+  # Newer, but is there anything to download? Checked here rather than in fetch_latest_release so
+  # an *older* assetless release still reads as "already up to date" (see that function's note).
+  # `die` records the reason, so the app's banner tells the user to wait rather than showing them
+  # a failed update they can do nothing about.
+  [ "$LATEST_INSTALLABLE" = yes ] ||
+    die "release $UPDATE_TARGET is published but its assets aren't uploaded yet — try again in a few minutes."
   record_update running # now carrying the version being installed
   was_running=no
   running && was_running=yes
@@ -604,19 +677,42 @@ cmd_update() {
 check_and_update() {
   current=$(installed_version)
   info "Checking for updates (current: $current)…"
-  latest=$(latest_release)
+  fetch_latest_release
+  latest=$LATEST_TAG
   if [ -z "$latest" ]; then
     warn "Couldn't reach GitHub Releases — continuing on $current."
     return 0
   fi
   if version_gt "$latest" "$current"; then
+    # A release whose assets are still uploading is not an error and must not stop a launch:
+    # `start` is the path the Mac app takes every time it opens. The next check picks it up once
+    # the upload finishes, minutes later.
+    if [ "$LATEST_INSTALLABLE" != yes ]; then
+      info "Release ${latest#v} is still publishing its assets — continuing on $current."
+      return 0
+    fi
     # Refuse rather than start: another process is (or is about to be) mid-swap on app/, and
     # if the server was running when it began, that update restarts the server itself — the
     # Mac app window reconnects on its own.
     acquire_update_lock ||
       die "an update is already in progress (pid $(update_lock_owner_pid)) — it restarts the app itself when it finishes. Watch it with: tail -f $UPDATE_LOG_FILE"
-    apply_update "$latest"
-    release_update_lock
+    # **A failed update must never stop the app from starting.** `apply_update` ends in `die` on
+    # any problem, and `die` exits the script — so on this path a bad download meant the server
+    # simply never came up, which is a far worse outcome than being a version behind. The
+    # subshell contains that exit: the attempt ends, the lock is released, and the launch carries
+    # on with what is already installed. Reported by the security audit as a denial of service
+    # reachable by pointing CC_REPO at a fork, but it needs no attacker at all — a flaky network
+    # during `apply_update`'s download did it too.
+    #
+    # `update_run` (the `control-center update` path) deliberately keeps the fatal behaviour: a
+    # command whose whole job is to update should exit non-zero when it couldn't.
+    if ( apply_update "$latest" ); then
+      release_update_lock
+    else
+      release_update_lock
+      warn "The update to ${latest#v} didn't finish — starting $current instead."
+      warn "Details: $UPDATE_LOG_FILE  ·  retry with: control-center update"
+    fi
   else
     info "Already on the latest release ($current)."
   fi

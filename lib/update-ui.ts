@@ -53,6 +53,161 @@ export type BannerCopy = {
 export const NO_ANSWER_ERROR = "The server didn't answer.";
 
 /**
+ * How often an idle banner asks again, and how soon it may ask after coming back into view.
+ *
+ * The banner used to fetch `/api/updates` exactly **once**, on mount — and it mounts in
+ * `app/(app)/layout.tsx`, a persistent App Router layout that client-side navigation never
+ * remounts. So in the Mac app, a window left open for days never checked again, and several
+ * releases came and went with nothing on screen. That is the bug this pair of constants fixes.
+ *
+ * `RECHECK_MS` matches the server's own cache TTL: asking more often than that only ever gets
+ * the same memoized answer back, and the request that *would* reach GitHub is the one this is
+ * timed to catch.
+ */
+export const RECHECK_MS = 30 * 60 * 1000;
+/**
+ * A window that has been hidden for a while should check as soon as someone looks at it, rather
+ * than waiting out the rest of an interval that ticked by unseen. Floored so that flicking
+ * between windows, or a tab-switch storm, can't turn focus into a request loop — and the server
+ * has its own floor underneath this one either way.
+ */
+export const VISIBLE_RECHECK_MS = 2 * 60 * 1000;
+
+/**
+ * Should the banner ask again?
+ *
+ * `lastCheckedAt` is the server's `checkedAt`, not the time of our last *request*: what matters is
+ * how old the answer is, and a reply served from the server's cache carries the original stamp.
+ * `null` means we have no answer at all yet.
+ *
+ * A negative age (a clock that stepped back, or a server clock ahead of the browser's) reads as
+ * "recent" and holds, which is the direction that can't produce a request loop.
+ */
+export function shouldRecheck({
+  lastCheckedAt,
+  now,
+  becameVisible = false,
+}: {
+  lastCheckedAt: number | null;
+  now: number;
+  /** True when this is prompted by the window being looked at again, not by the interval. */
+  becameVisible?: boolean;
+}): boolean {
+  if (lastCheckedAt === null) return true;
+  const age = now - lastCheckedAt;
+  if (age < 0) return false;
+  return age >= (becameVisible ? VISIBLE_RECHECK_MS : RECHECK_MS);
+}
+
+/**
+ * "just now" / "6 minutes ago" — how old the answer on screen is.
+ *
+ * This lives here rather than in `VersionSettings` because it is the only thing that makes a
+ * *cached* reply to "Check now" readable as "yes, this really is current" instead of a button
+ * that did nothing — and because `pnpm test` cannot reach `components/`, so its rounding
+ * boundaries would otherwise ship unverified.
+ *
+ * A negative age (the server's clock ahead of the browser's) reads as "just now" rather than
+ * "in 3 minutes": both stamps come from different clocks, and a future time is never the useful
+ * thing to tell someone.
+ */
+export function checkedAgo(checkedAt: number, now: number): string {
+  // A non-finite stamp would make every comparison below false and render "NaN days ago".
+  // `checkedAt` comes off a JSON response, so "it's always Date.now()" is a property of today's
+  // server, not of the type.
+  if (!Number.isFinite(checkedAt) || !Number.isFinite(now)) return "just now";
+  const seconds = Math.max(0, Math.round((now - checkedAt) / 1000));
+  if (seconds < 45) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+/**
+ * What the Settings card says about where this install stands.
+ *
+ * Separate from the banner's copy because it answers a different question. The banner only ever
+ * appears when there is something to *do*; this card is opened by someone asking "am I current?",
+ * so it has to have an answer for every state — including the quiet ones the banner deliberately
+ * renders as nothing (offline, rate-limited, mid-publish, a git checkout).
+ */
+export type VersionSummary = {
+  headline: string;
+  body: string;
+  tone: "ok" | "info" | "warn" | "muted";
+};
+
+export function versionSummary({
+  current,
+  latest,
+  updateAvailable,
+  packaged,
+  unavailable,
+}: {
+  current: string;
+  latest: string | null;
+  updateAvailable: boolean;
+  packaged: boolean;
+  unavailable?: string;
+}): VersionSummary {
+  if (!packaged) {
+    return {
+      tone: "muted",
+      headline: `Running from a checkout (${current})`,
+      body: "Updates are applied with git pull, not from here — there's no release for the launcher to install.",
+    };
+  }
+  if (updateAvailable && latest) {
+    return {
+      tone: "info",
+      headline: `Version ${latest} is available`,
+      body: `You're on ${current}. The bar at the top of the window installs it.`,
+    };
+  }
+  switch (unavailable) {
+    case "offline":
+      return {
+        tone: "warn",
+        headline: "Couldn't reach GitHub",
+        body: `You're on ${current}. Nothing is wrong with the app — the release check just couldn't get an answer.`,
+      };
+    case "rate-limited":
+      return {
+        tone: "warn",
+        headline: "GitHub is rate-limiting the check",
+        body: `You're on ${current}. The unauthenticated limit is 60 requests an hour per address; this resets within the hour.`,
+      };
+    case "publishing":
+      // The one state worth explaining rather than hiding: a user who saw the release announced
+      // and finds nothing offered here would otherwise conclude the check is broken.
+      return {
+        tone: "info",
+        headline: latest
+          ? `Version ${latest} is still publishing`
+          : "A newer version is still publishing",
+        body: `You're on ${current}. Its install files are still uploading — this usually takes a couple of minutes, and it'll be offered as soon as they're there.`,
+      };
+    case "no-releases":
+      return {
+        tone: "muted",
+        headline: `Version ${current}`,
+        body: "No published releases were found to compare against.",
+      };
+    default:
+      return {
+        tone: "ok",
+        headline: `Version ${current} is up to date`,
+        body: latest
+          ? `${latest} is the newest release.`
+          : "This is the newest release.",
+      };
+  }
+}
+
+/**
  * Classify an update record while an attempt is being watched.
  *
  * `stale` (the attempt targeted a version that is already installed) is honoured for the failure

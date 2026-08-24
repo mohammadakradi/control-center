@@ -493,3 +493,155 @@ test("closing out a feature never deletes the work recorded under it", () => {
     null,
   );
 });
+
+// ------------------------------------------------------------ deleting one
+
+/** A task that has *finished*. `makeTask` leaves the column at its default, `queued`, which
+ *  counts as a live run — so a fixture built with it is refused by `deleteFeature`, correctly. */
+function makeDoneTask(id: string, projectId = "p1", featureId: string | null = null) {
+  makeTask(id, projectId, featureId);
+  db.update(schema.tasks).set({ status: "done" }).where(eq(schema.tasks.id, id)).run();
+}
+
+test("deleting a feature ungroups its work instead of destroying it", () => {
+  const feature = features.createFeature("p1", { name: "Retire me" })!;
+  makeDoneTask("t_del_a", "p1", feature.id);
+  makeDoneTask("t_del_b", "p1", feature.id);
+  db.insert(schema.backlogItems)
+    .values({ id: "bli_del", projectId: "p1", title: "Planned", featureId: feature.id })
+    .run();
+
+  const res = features.deleteFeature(feature);
+  assert.equal(res.ok, true);
+  assert.ok(res.ok && res.ungrouped.tasks === 2, "reports what it handed back");
+  assert.ok(res.ok && res.ungrouped.items === 1);
+  assert.ok(res.ok && res.branch === feature.branch, "names the branch it did NOT delete");
+
+  assert.equal(features.findFeature("p1", feature.id), null, "the row is gone");
+  // The whole point: closing out or deleting a grouping must never delete the work under it.
+  assert.equal(
+    db.select().from(schema.tasks).where(eq(schema.tasks.id, "t_del_a")).get()?.featureId,
+    null,
+  );
+  assert.equal(
+    db
+      .select()
+      .from(schema.backlogItems)
+      .where(eq(schema.backlogItems.id, "bli_del"))
+      .get()?.featureId,
+    null,
+    "the item survives, ungrouped",
+  );
+});
+
+test("deleting a feature clears mergeState, which the FK cannot do", () => {
+  // `ON DELETE SET NULL` only touches feature_id. Leaving "blocked" behind would break the
+  // invariant setTaskFeature documents ("mergeState null ⇔ no feature") and render a chip
+  // promising a retry the merge sweep can never perform — it joins through featureId.
+  const feature = features.createFeature("p1", { name: "Merge states" })!;
+  makeDoneTask("t_del_merge", "p1", feature.id);
+  db.update(schema.tasks)
+    .set({ mergeState: "blocked" })
+    .where(eq(schema.tasks.id, "t_del_merge"))
+    .run();
+
+  assert.equal(features.deleteFeature(feature).ok, true);
+  const row = db.select().from(schema.tasks).where(eq(schema.tasks.id, "t_del_merge")).get();
+  assert.equal(row?.featureId, null);
+  assert.equal(row?.mergeState, null, "an ungrouped row must never carry a merge state");
+});
+
+test("a sync-derived feature is refused rather than deleted", () => {
+  // ensureRequestFeature re-derives one per .pm/tasks/<request>/ folder on the next backlog
+  // load, so deleting it would appear to work and then silently undo itself.
+  const derived = features.ensureRequestFeature(
+    "p1",
+    ".pm/tasks/20260823-thing",
+    "Planned batch",
+  )!;
+  const res = features.deleteFeature(derived);
+  assert.equal(res.ok, false);
+  assert.ok(!res.ok && res.reason === "derived");
+  assert.ok(!res.ok && res.sourceDir === ".pm/tasks/20260823-thing", "names the folder to remove");
+  assert.ok(features.findFeature("p1", derived.id), "and it is still there");
+});
+
+test("a feature with a live run is refused, so no merge is silently dropped", () => {
+  // That run's merge-back reads featureId when it finishes (mergeOnDone) and targets this
+  // branch. Pulling the row out from under it would leave committed work on task/<id> with
+  // nothing pointing at it.
+  const feature = features.createFeature("p1", { name: "Busy" })!;
+  makeTask("t_del_live", "p1", feature.id);
+  db.update(schema.tasks)
+    .set({ status: "awaiting_report" }) // a gate counts as active — it's the commonest state here
+    .where(eq(schema.tasks.id, "t_del_live"))
+    .run();
+
+  const res = features.deleteFeature(feature);
+  assert.equal(res.ok, false);
+  assert.ok(!res.ok && res.reason === "active-tasks");
+  assert.ok(!res.ok && res.count === 1);
+  assert.ok(features.findFeature("p1", feature.id));
+
+  // Once the run lands, the same delete goes through.
+  db.update(schema.tasks)
+    .set({ status: "done" })
+    .where(eq(schema.tasks.id, "t_del_live"))
+    .run();
+  assert.equal(features.deleteFeature(feature).ok, true);
+});
+
+test("a finished or cancelled run never blocks a delete", () => {
+  const feature = features.createFeature("p1", { name: "Settled" })!;
+  for (const [id, status] of [
+    ["t_del_done", "done"],
+    ["t_del_failed", "failed"],
+    ["t_del_cancelled", "cancelled"],
+  ] as const) {
+    makeTask(id, "p1", feature.id);
+    db.update(schema.tasks).set({ status }).where(eq(schema.tasks.id, id)).run();
+  }
+  const res = features.deleteFeature(feature);
+  assert.equal(res.ok, true, "history is not a reason to keep the grouping");
+  assert.ok(res.ok && res.ungrouped.tasks === 3);
+});
+
+test("deleting a feature leaves another project's identically-named one alone", () => {
+  // The branch is only unique per project, so two projects can hold the same slug. Deleting by
+  // row (never by name or branch) is what keeps them independent.
+  // A name no other spec uses, so the branch really is the bare slug in both projects rather
+  // than a disambiguated `-2`/`-3` left over from an earlier test.
+  const mine = features.createFeature("p1", { name: "Parallel naming" })!;
+  const theirs = features.createFeature("p2", { name: "Parallel naming" })!;
+  assert.equal(mine.branch, theirs.branch, "same slug, different projects");
+
+  assert.equal(features.deleteFeature(mine).ok, true);
+  assert.ok(features.findFeature("p2", theirs.id), "p2's feature is untouched");
+});
+
+test("backlogCountsByFeature counts items per feature, and only this project's", () => {
+  const a = features.createFeature("p1", { name: "Counted A" })!;
+  const b = features.createFeature("p1", { name: "Counted B" })!;
+  const other = features.createFeature("p2", { name: "Counted elsewhere" })!;
+  let n = 0;
+  const item = (projectId: string, featureId: string | null) =>
+    db
+      .insert(schema.backlogItems)
+      .values({ id: `bli_count_${n++}`, projectId, title: "x", featureId })
+      .run();
+
+  item("p1", a.id);
+  item("p1", a.id);
+  item("p1", b.id);
+  item("p1", null); // ungrouped items must not land in anyone's bucket
+  item("p2", other.id);
+
+  const counts = features.backlogCountsByFeature("p1");
+  assert.equal(counts[a.id], 2);
+  assert.equal(counts[b.id], 1);
+  assert.equal(counts[other.id], undefined, "another project's feature is not counted here");
+  // A feature with no items is absent rather than 0 — the card reads `?? 0`, and an entry per
+  // feature would grow the payload for nothing.
+  const empty = features.createFeature("p1", { name: "No items" })!;
+  assert.equal(features.backlogCountsByFeature("p1")[empty.id], undefined);
+});

@@ -138,3 +138,33 @@ test("lastSentence reads through lists and multiple sentences", () => {
   assert.equal(lastSentence("single line"), "single line");
   assert.equal(lastSentence(""), "");
 });
+
+test("a turn that ends with its reviewers still running is a pause, not a report", () => {
+  // The transcript that prompted this: the report said "both review agents are still running"
+  // and was accepted as final, so the task was sealed Done while its subagents kept writing to
+  // the transcript. None of these mention waiting, which is why WAITING_RE let them through.
+  for (const text of [
+    "Implementation and verification are complete; both review agents are still running.",
+    "The reviewers haven't reported back yet.",
+    "Both subagents are still in flight.",
+    "The security audit is still in progress.",
+    "Dispatched the reviewer and the security auditor; the audit hasn't returned.",
+    "My two sub-agents are still working through the diff.",
+  ]) {
+    assert.deepEqual(classifyTurnEnd(text), { kind: "paused", reason: "waiting" }, text);
+  }
+});
+
+test("a finished report is not demoted by mentioning reviews or things still running", () => {
+  // The other half, and the reason IN_FLIGHT_RE is narrow: nudging a *finished* report puts the
+  // run in a loop. Note the first two already match the older, looser WAITING_RE — which is
+  // exactly why that pattern must never be consulted anywhere the answer seals a task.
+  for (const text of [
+    "The review found two blocking issues; both are now fixed and re-reviewed clean.",
+    "I ran the reviewer and the security auditor. Both came back clean, and I committed.",
+    "Tests are still running in CI, but the change is complete and verified locally.",
+    "Reviewed everything: no outstanding issues. Committed on feat/x with 650 tests passing.",
+  ]) {
+    assert.deepEqual(classifyTurnEnd(text), { kind: "final" }, text);
+  }
+});

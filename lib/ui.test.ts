@@ -15,11 +15,18 @@ import {
   featureGroupDefaultOpen,
   featureMergeSummary,
   featureOptions,
+  featureRowActions,
+  featureRowDefaultOpen,
+  featureWorkRows,
+  FILE_OWNED_FEATURE_NOTE,
+  fixTaskReasons,
   groupByFeature,
   hasMergeSummary,
   isOpenBacklogStatus,
+  ACTIVE_STATUSES,
   MERGE_STATE_LABEL,
   MERGE_STATE_TITLE,
+  mergeChipProps,
   mergeChipView,
   mergeStateTone,
   orderSkills,
@@ -27,7 +34,7 @@ import {
   taskChangesView,
   taskDisplayTitle,
 } from "./ui";
-import type { BacklogStatus, TaskMergeState } from "./db/schema";
+import type { BacklogStatus, FeatureStatus, TaskMergeState } from "./db/schema";
 
 /** Every backlog status, kept exhaustive by the compiler: a status added to the schema
  *  without a case here fails typecheck rather than quietly going untested. */
@@ -492,4 +499,314 @@ test("featureOptions always yields the no-feature entry, so callers can gate on 
     ]).length,
     1,
   );
+});
+
+// -------------------------------------------------- managing feature groups
+
+test("featureRowActions: a hand-made feature can be renamed and deleted", () => {
+  const a = featureRowActions({ status: "active", sourceDir: null });
+  assert.equal(a.canRename, true);
+  assert.equal(a.canDelete, true);
+  assert.equal(a.sourceDir, null, "no folder owns it, so the row has nothing to point at");
+  assert.equal(a.canClose, true);
+  assert.equal(a.canReopen, false, "it isn't closed");
+});
+
+test("featureRowActions: a pm-derived feature withholds rename and delete", () => {
+  // Both would appear to work and then undo themselves — the next backlog load re-reads
+  // index.md for the name and re-derives the row itself. The server refuses both too; this is
+  // what keeps a click from becoming a 409 the user can't act on.
+  const a = featureRowActions({ status: "active", sourceDir: ".pm/tasks/20260823-thing" });
+  assert.equal(a.canRename, false);
+  assert.equal(a.canDelete, false);
+  assert.equal(a.sourceDir, ".pm/tasks/20260823-thing", "the row points at its own folder");
+});
+
+test("the file-owned explanation names the action it withholds and the one it doesn't", () => {
+  // Said once per card, so it has to carry the whole rule on its own — including that closing
+  // out still works, which is the action a user is most likely to actually want.
+  assert.match(FILE_OWNED_FEATURE_NOTE, /renamed or deleted/);
+  assert.match(FILE_OWNED_FEATURE_NOTE, /index\.md/);
+  assert.match(FILE_OWNED_FEATURE_NOTE, /[Cc]losing/);
+});
+
+test("featureRowActions: status is nobody's file, so closing is always offered", () => {
+  // The one edit a derived feature does accept: no file records whether work finished.
+  for (const sourceDir of [null, ".pm/tasks/x"]) {
+    assert.equal(featureRowActions({ status: "active", sourceDir }).canClose, true);
+    assert.equal(featureRowActions({ status: "done", sourceDir }).canReopen, true);
+    assert.equal(featureRowActions({ status: "cancelled", sourceDir }).canReopen, true);
+  }
+});
+
+test("featureRowActions: close and reopen are never both offered", () => {
+  for (const status of ["active", "done", "cancelled"] as const) {
+    const a = featureRowActions({ status, sourceDir: null });
+    assert.notEqual(a.canClose, a.canReopen, `${status} must offer exactly one`);
+  }
+});
+
+test("featureRowActions: an empty sourceDir counts as hand-made, not as a folder", () => {
+  // Defensive: "" is falsy but not null, and a row carrying it would otherwise be locked out
+  // of rename and delete while pointing the user at a folder called "/".
+  const a = featureRowActions({ status: "active", sourceDir: "" });
+  assert.equal(a.canDelete, true);
+  assert.equal(a.canRename, true);
+  assert.equal(a.sourceDir, null);
+});
+
+// ------------------------------------------------- why a report offers a fix task
+
+test("a clean report offers no fix task, so no button can appear", () => {
+  for (const report of [
+    "Committed on feat/x. Build, lint and tests all pass. Nothing blocking.",
+    "Audit complete: no outstanding issues, no secrets, no regressions.",
+    "## Verdict\nLGTM — all clear.",
+  ]) {
+    assert.deepEqual(fixTaskReasons(report), [], report);
+  }
+});
+
+test("a real finding is named, and quoted in its own words", () => {
+  const reasons = fixTaskReasons(
+    "Done and committed.\n\n## Blocking\n- [High] the token is logged in plain text\n",
+  );
+  assert.equal(reasons.length, 2, "the heading and the graded line are different signals");
+  assert.deepEqual(
+    reasons.map((r) => r.label).sort(),
+    ["Findings section", "Severity callout"],
+  );
+  // The evidence has to be the report's own sentence — a paraphrase is a second thing that
+  // can be wrong, and the point of the callout is that the user can judge it themselves.
+  const severity = reasons.find((r) => r.label === "Severity callout");
+  assert.equal(severity?.evidence, "[High] the token is logged in plain text");
+});
+
+test("an all-clear line doesn't light up the word it happens to contain", () => {
+  // "no outstanding issues" contains `issues`, which the old whole-blob heuristic matched as a
+  // findings section. Judged per line, it is what it says it is.
+  assert.deepEqual(fixTaskReasons("Reviewed everything: no outstanding issues."), []);
+  // …but an explicitly graded line still counts, even alongside reassuring words.
+  const graded = fixTaskReasons("[Medium] looks good overall, but the count leaks.");
+  assert.equal(graded.length, 1);
+  assert.equal(graded[0].label, "Severity callout");
+});
+
+test("an unfinished checklist item is a reason on its own", () => {
+  const reasons = fixTaskReasons("Progress:\n- [x] wired the route\n- [ ] add the migration\n");
+  assert.equal(reasons.length, 1);
+  assert.equal(reasons[0].label, "Unfinished item");
+  assert.equal(reasons[0].evidence, "add the migration", "the box markup is stripped");
+});
+
+test("each kind is reported once, and the list is capped", () => {
+  // An audit can list twenty findings; twenty near-identical callout rows would be a second
+  // copy of the report where the job was to explain one button.
+  const many = Array.from({ length: 30 }, (_, i) => `- [High] finding ${i}`).join("\n");
+  const reasons = fixTaskReasons(many);
+  assert.equal(reasons.length, 1, "one row per kind, not per occurrence");
+  assert.ok(fixTaskReasons(many).length <= 4);
+});
+
+test("evidence is trimmed of markdown and cut by code point", () => {
+  const long = `- **${"🚀".repeat(300)}**`;
+  const [reason] = fixTaskReasons(`## Findings\n${long}\n`);
+  assert.equal(reason.label, "Findings section");
+  // Cut with [...str], not slice: a UTF-16 cut splits a surrogate pair into U+FFFD.
+  const evidence = fixTaskReasons(`- [ ] ${"🚀".repeat(300)}`)[0].evidence;
+  assert.ok([...evidence].length <= 160);
+  assert.doesNotMatch(evidence, /�/, "no half-eaten emoji");
+});
+
+test("a report that only describes bugs it already FIXED still explains itself", () => {
+  // The false positive that started this: my own report's "Bugs found beyond the reported
+  // symptoms" heading (about bugs it had just fixed) got a bare, unexplained button. The
+  // heuristic still fires — prose is prose — but it can no longer fire *silently*: the reason
+  // is named and quoted, so the user can see it's about finished work and ignore it.
+  const reasons = fixTaskReasons(
+    "## Bugs found beyond the reported symptoms\nThe release workflow published the tag before uploading the tarball; that's now fixed.",
+  );
+  assert.equal(reasons.length, 1);
+  assert.equal(reasons[0].label, "Findings section");
+  assert.match(reasons[0].evidence, /Bugs found beyond the reported symptoms/);
+});
+
+/** Written as escapes, not literals — these bytes don't survive a copy-paste or a heredoc. */
+const BIDI = [
+  "\u202a", // LEFT-TO-RIGHT EMBEDDING
+  "\u202b", // RIGHT-TO-LEFT EMBEDDING
+  "\u202c", // POP DIRECTIONAL FORMATTING
+  "\u202d", // LEFT-TO-RIGHT OVERRIDE
+  "\u202e", // RIGHT-TO-LEFT OVERRIDE
+  "\u2066", // LEFT-TO-RIGHT ISOLATE
+  "\u2069", // POP DIRECTIONAL ISOLATE
+  "\u200e", // LEFT-TO-RIGHT MARK
+  "\u200f", // RIGHT-TO-LEFT MARK
+  "\u200b", // ZERO WIDTH SPACE
+  "\ufeff", // BOM
+];
+
+test("evidence can't smuggle bidi overrides into a callout meant to be trusted", () => {
+  // Trojan Source, aimed at the one place designed to be believed. Report text is agent-authored
+  // and steerable by a file or page that agent read; React escapes *markup*, not Unicode, so an
+  // override survives and makes the quote display as something other than what it says. The
+  // security audit reproduced this against the first version of `evidenceOf`.
+  const sneaky = `- Recommend you check ${"\u202e"}gnihtemos${"\u202c"} before shipping`;
+  const [reason] = fixTaskReasons(sneaky);
+  assert.equal(reason.label, "Recommendation");
+  for (const ch of BIDI) {
+    assert.ok(
+      !reason.evidence.includes(ch),
+      `still carries U+${ch.codePointAt(0)!.toString(16).toUpperCase()}`,
+    );
+  }
+  // …and the visible words survive: stripping must not eat the sentence it was protecting.
+  assert.match(reason.evidence, /Recommend you check/);
+  assert.match(reason.evidence, /before shipping/);
+});
+
+test("real whitespace becomes a space; a zero-width character just goes", () => {
+  // The distinction the two passes exist for. A TAB is genuine whitespace, so deleting it
+  // outright would turn "add<TAB>the" into "addthe" — it becomes a space instead. A BEL or a
+  // ZERO WIDTH SPACE separates nothing, so removing it is right even though it closes the gap:
+  // it was never a word boundary, and leaving it in is what lets a name be disguised.
+  assert.equal(fixTaskReasons("- [ ] add\tthe migration")[0].evidence, "add the migration");
+  assert.equal(fixTaskReasons("- [ ] add the mig\u200bration")[0].evidence, "add the migration");
+  assert.equal(fixTaskReasons("- [ ] add the mig\u0007ration")[0].evidence, "add the migration");
+  // A NO-BREAK SPACE is whitespace `\\s` matches but that must not survive as itself.
+  assert.equal(fixTaskReasons("- [ ] add\u00a0the migration")[0].evidence, "add the migration");
+});
+
+test("a C0 control can't forge a second line inside one quote", () => {
+  // A bare \r renders as a line break in some contexts, which would let one finding present
+  // itself as two. Lines are split on \r\n and \n, so a lone \r reaches `evidenceOf`.
+  const [reason] = fixTaskReasons("## Findings\r  nothing here ");
+  assert.doesNotMatch(reason.evidence, /[\r ]/);
+});
+
+// ------------------------------------------- features with their work (merged card)
+
+const feat = (id: string, status: FeatureStatus = "active") => ({ id, name: id, status });
+const task = (id: string, featureId: string | null, status = "done") => ({ id, featureId, status });
+
+test("every feature gets a row, even one nothing has run against yet", () => {
+  // The whole reason this isn't `groupByFeature`: the card manages features, so a feature with
+  // no runs is a real row. Measured on this install, two projects had 24 and 12 features with
+  // *zero* linked tasks — "only features with work" would have shown an empty card.
+  const rows = featureWorkRows(
+    [feat("f1"), feat("f2"), feat("f3")],
+    [task("t1", "f2")],
+    (t) => t.featureId,
+  );
+  assert.deepEqual(
+    rows.map((r) => [r.feature?.id ?? null, r.tasks.length]),
+    [["f1", 0], ["f2", 1], ["f3", 0]],
+  );
+});
+
+test("the caller's feature order is preserved, so rows don't move under a click", () => {
+  const rows = featureWorkRows([feat("z"), feat("a"), feat("m")], [], (t: never) => t);
+  assert.deepEqual(rows.map((r) => r.feature?.id), ["z", "a", "m"]);
+});
+
+test("ungrouped work goes last, and only when there is some", () => {
+  const none = featureWorkRows([feat("f1")], [task("t1", "f1")], (t) => t.featureId);
+  assert.equal(none.length, 1, "no empty 'No feature' row");
+  assert.equal(none.at(-1)!.feature?.id, "f1");
+
+  const some = featureWorkRows([feat("f1")], [task("t1", null)], (t) => t.featureId);
+  assert.equal(some.length, 2);
+  assert.equal(some.at(-1)!.feature, null, "the remainder is last");
+  assert.deepEqual(some.at(-1)!.tasks.map((t) => t.id), ["t1"]);
+  assert.deepEqual(some[0].tasks, [], "…and the feature keeps its own empty row");
+});
+
+test("a task naming a feature that isn't there falls into the remainder, never away", () => {
+  // `feature_id` is ON DELETE SET NULL, so a task can briefly outlive the feature it named.
+  // Dropping it would make work vanish from a list because its grouping did.
+  const rows = featureWorkRows(
+    [feat("f1")],
+    [task("t1", "gone"), task("t2", "f1"), task("t3", null)],
+    (t) => t.featureId,
+  );
+  assert.deepEqual(rows.map((r) => r.feature?.id ?? null), ["f1", null]);
+  assert.deepEqual(rows.at(-1)!.tasks.map((t) => t.id), ["t1", "t3"]);
+});
+
+test("featureWorkRows doesn't mutate what it was handed", () => {
+  const features = [feat("f1")];
+  const tasks = [task("t1", "f1")];
+  featureWorkRows(features, tasks, (t) => t.featureId);
+  assert.equal(features.length, 1);
+  assert.equal(tasks.length, 1);
+});
+
+test("a row with nothing in it never starts open", () => {
+  // Two dozen chevrons that expand into nothing is exactly what this rule exists to prevent,
+  // and it is why this can't just be `featureGroupDefaultOpen`.
+  for (const status of ["active", "done", "cancelled"] as FeatureStatus[]) {
+    assert.equal(featureRowDefaultOpen({ feature: feat("f", status), tasks: [] }), false, status);
+  }
+  assert.equal(featureRowDefaultOpen({ feature: null, tasks: [] }), false);
+});
+
+test("a row with work reproduces the old open/closed defaults", () => {
+  const done = [task("t1", "f", "done")];
+  assert.equal(featureRowDefaultOpen({ feature: feat("f", "active"), tasks: done }), true);
+  // A closed feature's runs are history that would push live work below the fold.
+  assert.equal(featureRowDefaultOpen({ feature: feat("f", "done"), tasks: done }), false);
+  assert.equal(featureRowDefaultOpen({ feature: feat("f", "cancelled"), tasks: done }), false);
+  // Ungrouped work is work like any other.
+  assert.equal(featureRowDefaultOpen({ feature: null, tasks: done }), true);
+});
+
+test("a live run opens its row whatever the feature's own status says", () => {
+  // The one thing worth unfolding a closed feature for.
+  for (const status of [...ACTIVE_STATUSES]) {
+    assert.equal(
+      featureRowDefaultOpen({
+        feature: feat("f", "cancelled"),
+        tasks: [task("t1", "f", "done"), task("t2", "f", status)],
+      }),
+      true,
+      status,
+    );
+  }
+});
+
+test("mergeChipProps hands a client component exactly three fields, and no more", () => {
+  // Width-pinned on purpose. `MergeChipInput` is structural, so a whole TaskRow type-checks —
+  // and passing one shipped workdir/sessionId/requestText into the page's HTML for a row that
+  // renders six fields (measured: 3 of 3 canaries in the served HTML, 0 of 3 after this).
+  // Asserting the key set means a column added to `tasks` can't widen the boundary unnoticed.
+  const fatRow = {
+    mergeState: "merged" as TaskMergeState,
+    status: "done",
+    parallel: true,
+    // Everything below must NOT survive.
+    id: "task_1",
+    workdir: "/secret/worktree",
+    sessionId: "sess_secret",
+    requestText: "the whole prose request",
+    error: "a stack trace",
+  };
+  const narrow = mergeChipProps(fatRow);
+  assert.deepEqual(Object.keys(narrow).sort(), ["mergeState", "parallel", "status"]);
+  assert.deepEqual(narrow, { mergeState: "merged", status: "done", parallel: true });
+  for (const leaked of ["workdir", "sessionId", "requestText", "error", "id"]) {
+    assert.ok(!(leaked in narrow), `${leaked} crossed the boundary`);
+  }
+});
+
+test("mergeChipProps normalises a missing parallel flag rather than dropping the key", () => {
+  // `undefined` is not serializable in an RSC payload the way `null` is, and the key set above
+  // is asserted exactly — so absent has to become null, not vanish.
+  const narrow = mergeChipProps({ mergeState: null, status: "queued" });
+  assert.deepEqual(narrow, { mergeState: null, status: "queued", parallel: null });
+});
+
+test("a narrowed row still produces the same chip the fat row did", () => {
+  // The narrowing must not change what the user sees — that would trade a leak for a bug.
+  const row = { mergeState: "conflict" as TaskMergeState, status: "done", parallel: true };
+  assert.deepEqual(mergeChipView(mergeChipProps(row)), mergeChipView(row));
 });
