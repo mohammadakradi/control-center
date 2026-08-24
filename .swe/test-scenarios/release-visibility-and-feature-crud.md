@@ -102,9 +102,37 @@ died on a 404 from `curl`. Every release had this window.
    uploading — this usually takes a couple of minutes." A minute or two later it becomes a
    normal offer. Nothing ever fails.
 
-## 4. Managing feature groups (the new Features card)
-1. Open a project's detail page. There is a new **Features** card between Source control and
-   Task history.
+## 4. One card: features, each expanding to its own tasks
+
+The project page used to carry a *Features* card and a separate *Task history* card. It is now
+one card, because a feature **is** several tasks.
+
+1. Open a project that has features. **Expect exactly one card titled "Features"**, and **no
+   "Task history" card anywhere on the page**.
+2. The header reads `N features · M tasks`, where M is **your own** runs (tasks are private to
+   whoever ran them; a feature is shared).
+3. A feature that has runs shows a **chevron** and a `N tasks` count. Click the name — it
+   expands to those runs, each with its `/ns:command`, cost, age and **status badge**, plus a
+   merge-state chip where one is honest.
+4. A feature with no runs has **no chevron** and reads `No tasks yet`. Hover it: the tooltip
+   names the two ways to link work to it (pick it in the composer, or run one of its backlog
+   items). This is the common row on a pm-planned project — check it doesn't offer a dead
+   chevron that opens an empty box.
+5. Scroll to the end of the list. **Expect a final "No feature" row** with a chevron and a task
+   count, holding every run that belongs to no feature. It must be **last**, and must not appear
+   at all when every run is grouped.
+6. Defaults on load: a feature with runs starts **open** if it's active, **collapsed** if it's
+   closed out (that's history, and it would push live work below the fold), and **open
+   regardless** if any run in it is still live. Empty features start closed.
+7. Toggle a few rows, then cause a refresh (rename a feature, or close one out). **Expect your
+   toggles to survive** the refresh, and rows you didn't touch to follow the defaults above.
+   Reload the page fully: toggles are **not** remembered (deliberate — a remembered collapse is
+   a filter, not a fold).
+8. On a project with **no features at all**, expect the plain flat run list, exactly as before —
+   no "No feature" heading wrapping everything.
+
+## 5. Managing feature groups (add, rename, close out, delete)
+1. Open a project's detail page. The **Features** card is the last card, below Source control.
    - **Expected (project with `.pm/tasks/`):** one row per planned request folder — name,
      `feature/<slug>` branch in mono, an item count, and the `.pm/tasks/<folder>/` it came
      from. Each row offers only **Close out** (no pencil, no trash). One paragraph under the
@@ -121,7 +149,7 @@ died on a 404 from `curl`. Every release had this window.
      and moving it would orphan the work on it.
 4. **Close out and reopen.** Press **Close out**.
    - **Expected:** a "Done" chip appears and the button becomes **Reopen**. Check the project's
-     Task history and the Backlog page: this feature's group heading is now **collapsed** by
+     the Backlog page: this feature's group heading is now **collapsed** by
      default (closed features are history), while active ones stay open. Press **Reopen** and
      it goes back.
 5. **A closed feature is not offered for new work.** With it closed, open the composer's
@@ -142,7 +170,7 @@ died on a 404 from `curl`. Every release had this window.
      the next backlog load would re-derive the row and the delete would silently undo itself.
      Reload the page: it is still there.
 
-## 5. Deleting a feature never deletes the work
+## 6. Deleting a feature never deletes the work
 1. **Set up something to lose.** On the feature from 4.2, add a backlog item under it (Backlog
    → Add item → pick the feature). Note the item's title.
 2. Press the **trash** icon on that row.
@@ -160,12 +188,12 @@ died on a 404 from `curl`. Every release had this window.
    - **Expected:** **no** deletion. The dialog closes and a red message appears **on that row**:
      "1 task is still running on this feature. Its branch is where their work gets merged, so
      wait for it to finish or cancel it first." Let the task finish, then delete again — it
-     works, and the finished task remains in Task history with no feature heading.
+     works, and the finished task moves into the card's final "No feature" row.
 5. **A finished or cancelled run does not block it.** Delete a feature that has only
    done/failed/cancelled tasks on it.
    - **Expected:** it deletes. History is not a reason to keep a grouping alive.
 
-## 6. A report explains its own "Create fix task" button
+## 7. A report explains its own "Create fix task" button
 
 The report card used to show that button with nothing saying why, and it fired on reports
 describing bugs that were already fixed.
@@ -189,7 +217,7 @@ Two specific things that should NOT happen:
   "issues" is in an all-clear sentence, and it's judged per line).
 - A report with twenty findings must not produce twenty rows — one per *kind*, capped at four.
 
-## 7. A task must not look finished while it is still working
+## 8. A task must not look finished while it is still working
 
 This is only **partly** fixed, and the scenario is written to show both halves.
 
@@ -210,7 +238,7 @@ Counter-check that must stay working: a report that merely *mentions* reviews or
 must still be accepted as final — "I ran the reviewer and the security auditor. Both came back
 clean", "Tests are still running in CI, but the change is complete and verified locally".
 
-## 8. A quoted finding can't lie about what it says
+## 9. A quoted finding can't lie about what it says
 
 1. Find (or plant) a task whose report contains a line with a Unicode RIGHT-TO-LEFT OVERRIDE —
    e.g. a `[High] …` finding with `U+202E` mid-sentence.
@@ -221,7 +249,7 @@ clean", "Tests are still running in CI, but the change is complete and verified 
    `bli_81e3ed7c`.)
 3. **Expect no zero-width or bidi characters at all** in the callout text.
 
-## 9. A failed update never stops the app from starting
+## 10. A failed update never stops the app from starting
 
 1. Simulate an update that can't complete — easiest is to point `CC_REPO` at a repo whose newest
    release has no tarball asset, or to be offline mid-download.
@@ -233,7 +261,20 @@ clean", "Tests are still running in CI, but the change is complete and verified 
 5. Now run `control-center update` against the same failure. **Expect exit code 1** and no
    "starting Y instead" — a command whose job is to update must report that it couldn't.
 
-## 10. Regressions to rule out
+## 11. A task row leaks nothing it doesn't render
+
+The merged card renders task rows on the server precisely so whole task rows don't reach the
+browser. This checks the boundary held.
+
+1. Open a project whose features have runs, and **View Source** (not DevTools' Elements panel —
+   that shows the hydrated DOM; you want the served HTML).
+2. Search the source for a value a row never displays: a task's `workdir` path, its `sessionId`,
+   or a distinctive phrase from its raw `requestText`.
+3. **Expect zero matches.** A row shows six fields; nothing else belongs in the payload.
+4. Sanity-check that the search is meaningful by finding something a row *does* show — the task
+   title, or a merge chip's "Merged"/"Merge conflict" label. Those must be present.
+
+## 12. Regressions to rule out
 1. Reload the project page, the Backlog page and `/tasks`.
    - **Expected:** feature grouping, branch chips, merge-state chips and the collapse
      behaviour are all exactly as before. A project with no features shows flat lists with no

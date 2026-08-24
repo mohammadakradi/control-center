@@ -201,6 +201,29 @@ export type MergeChipInput = {
   parallel?: boolean | null;
 };
 
+/**
+ * The three fields a merge chip needs, and **nothing else** — narrowed on purpose.
+ *
+ * `MergeStateChip` is a client component, so whatever a server-rendered list hands it is
+ * serialized into the RSC payload and shipped to the browser. `MergeChipInput` is structural, so
+ * passing a whole `TaskRow` type-checks — and `TaskList` did exactly that, which put `workdir`,
+ * `sessionId`, `requestText` and `error` in the page's HTML for a row that renders six fields.
+ * Measured, not theorised: canary values planted in those columns came back in the served HTML
+ * (3 of 3), and 0 of 3 once the row went through this function. Found by the correctness review
+ * as the same class as the `taskPanels` fix one level up, one level down.
+ *
+ * A function rather than a comment because the object it returns can be *pinned by width*: the
+ * spec asserts its exact key set, so a field added to `tasks` can never widen what crosses the
+ * boundary without a test going red. Same stance as `listBacklog`'s `linkedTask` projection.
+ */
+export function mergeChipProps(task: MergeChipInput): MergeChipInput {
+  return {
+    mergeState: task.mergeState,
+    status: task.status,
+    parallel: task.parallel ?? null,
+  };
+}
+
 export type MergeChipView = {
   state: TaskMergeState;
   label: string;
@@ -455,6 +478,81 @@ export function groupByFeature<Row, F extends { id: string }>(
   const groups = [...grouped.values()];
   if (ungrouped.length > 0) groups.push({ feature: null, rows: ungrouped });
   return groups;
+}
+
+/** One feature and the work recorded under it. `feature: null` is the ungrouped remainder. */
+export type FeatureWorkRow<F, T> = { feature: F | null; tasks: T[] };
+
+/**
+ * The key the ungrouped bucket is filed under in the per-row maps the Features card takes.
+ *
+ * Shared rather than spelled twice, because the server builds those maps and the client reads
+ * them — two copies of a magic string is how they drift. It cannot collide with a real feature
+ * id: those are minted by `newId("f")` as `f_<8 hex>`.
+ */
+export const UNGROUPED_KEY = "__ungrouped";
+
+/**
+ * The project's features, each with its own tasks — the shape behind the merged Features card.
+ *
+ * **Why this exists next to `groupByFeature` rather than reusing it.** That function groups a
+ * list of *rows* and only ever emits a group for a feature something is filed under, which is
+ * right for the backlog and `/tasks`: a heading with nothing beneath it would be noise there.
+ * Here the features **are** the list — the card manages them, so one has to appear whether or
+ * not any task points at it, and a feature with no runs yet is a real and common state. On this
+ * install every one of two projects' 24 and 12 features had zero linked tasks, so "only features
+ * with work" would have rendered an empty card over a pile of ungrouped runs.
+ *
+ * Order is the caller's (`listFeatures` is oldest-first, i.e. creation order), because this list
+ * is also the management list and rows must not move under a click. The ungrouped bucket is last
+ * and only appears when it holds something.
+ *
+ * A task whose `featureId` doesn't resolve lands in that bucket rather than vanishing — the FK is
+ * `set null`, so a row can briefly outlive the feature it named, and work must never disappear
+ * from a list because its grouping did. Same rule as `groupByFeature`.
+ */
+export function featureWorkRows<F extends { id: string }, T>(
+  features: readonly F[],
+  tasks: readonly T[],
+  featureIdOf: (task: T) => string | null | undefined,
+): FeatureWorkRow<F, T>[] {
+  const rows = features.map((feature) => ({ feature, tasks: [] as T[] }));
+  const byId = new Map(rows.map((r) => [r.feature.id, r]));
+  const ungrouped: T[] = [];
+
+  for (const task of tasks) {
+    const id = featureIdOf(task);
+    const row = id ? byId.get(id) : undefined;
+    if (row) row.tasks.push(task);
+    else ungrouped.push(task);
+  }
+
+  const out: FeatureWorkRow<F, T>[] = rows;
+  if (ungrouped.length > 0) out.push({ feature: null, tasks: ungrouped });
+  return out;
+}
+
+/**
+ * Should a merged-card row start expanded?
+ *
+ * Deliberately **not** `featureGroupDefaultOpen`, which answers the same question for the backlog
+ * and `/tasks` and would be wrong here in both directions. There, every group has rows by
+ * construction, so "active → open" is safe. Here the card lists *every* feature, and this install
+ * has projects with 24 of them and no linked tasks at all — so "active → open" would render two
+ * dozen chevrons that expand into nothing.
+ *
+ * So: nothing to show, nothing to open. Beyond that the old defaults are reproduced rather than
+ * re-invented — an active feature's work is what you came to see, a closed one's is history that
+ * would push live work below the fold, and the ungrouped remainder is work like any other. A live
+ * run overrides all of it: a task in flight is the one thing worth opening a folded row for.
+ */
+export function featureRowDefaultOpen(row: {
+  feature: { status: FeatureStatus } | null;
+  tasks: readonly { status: string }[];
+}): boolean {
+  if (row.tasks.length === 0) return false;
+  if (row.tasks.some((t) => ACTIVE_STATUSES.has(t.status))) return true;
+  return row.feature === null || row.feature.status === "active";
 }
 
 /** Stored model label → display name. "sonnet"/"opus" are legacy labels from

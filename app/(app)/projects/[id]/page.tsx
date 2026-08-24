@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
@@ -17,22 +18,21 @@ import { backlogItemCount } from "@/lib/backlog";
 import { parallelOffer } from "@/lib/dispatch";
 import { backlogCountsByFeature, listFeatures } from "@/lib/features";
 import { FeatureManager } from "@/components/FeatureManager";
+import { TaskList } from "@/components/TaskList";
 import { syncAgents } from "@/lib/discovery/agents";
 import { isAgentOnboarded, refreshProject } from "@/lib/discovery/projects";
 import { gitBranchInfo, gitChanges } from "@/lib/git";
 import { resolveMembers } from "@/lib/workspace";
 import { AgentContributors } from "@/components/AgentContributors";
 import { AtAGlance } from "@/components/AtAGlance";
-import type { FeatureLite } from "@/components/FeatureGroup";
 import { SourceControl } from "@/components/SourceControl";
-import { TaskHistory } from "@/components/TaskHistory";
 import { NewTaskForm } from "@/components/NewTaskForm";
 import { ProjectName } from "@/components/ProjectName";
 import { ProjectActions } from "@/components/ProjectActions";
 import { TokenNudge } from "@/components/TokenNudge";
 import { CardSection, Chip } from "@/components/ui-cards";
 import { buttonClasses } from "@/components/ui/button";
-import { ACTIVE_STATUSES } from "@/lib/ui";
+import { featureRowDefaultOpen, featureWorkRows, ACTIVE_STATUSES, UNGROUPED_KEY } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -109,12 +109,49 @@ export default async function ProjectDetail({
   // nothing about whose task is holding the checkout.
   const offerParallel = parallelOffer(project);
 
-  // The project's features, for grouping the history below and for the composer's picker. A
-  // plain read — deriving features from `.pm/tasks/` is the backlog load's job, so this page
-  // sees whatever the last backlog load derived and never does that filesystem walk itself.
+  // The project's features — the spine of the card below, and the composer's picker. A plain
+  // read: deriving features from `.pm/tasks/` is the backlog load's job, so this page sees
+  // whatever the last backlog load derived and never does that filesystem walk itself.
+  //
+  // No id→feature map any more. The merged card is driven by this list *plus* the task rows
+  // (`featureWorkRows`), rather than by resolving each task's `featureId` through a lookup —
+  // which is also what lets a feature nothing has run against still get a row.
   const featureList = listFeatures(project.id);
-  const featureById: Record<string, FeatureLite> = {};
-  for (const f of featureList) featureById[f.id] = f;
+
+  // Every feature with its own runs, plus the ungrouped remainder — and then three flat maps
+  // for the card below, keyed by feature id (or `UNGROUPED_KEY`).
+  //
+  // **The task lists are rendered here rather than in the card, and that is a privacy decision,
+  // not a style one.** `FeatureManager` is a client component, so handing it `TaskRow[]` would
+  // serialize *whole rows* across the RSC boundary into the browser — `workdir`, `sessionId`,
+  // `requestText`, `error` and all — for a list that renders six fields. The security audit
+  // measured exactly that after the first cut of this merge, finding `TaskList`'s code in the
+  // client chunks. Passing the already-rendered element instead sends the rendered output and
+  // nothing else, which is the standard "client island in a server tree" composition and keeps
+  // this page's minimization consistent with `parallelOffer`'s (only a boolean crosses).
+  //
+  // `openByDefault` is computed here for the same reason: deciding it in the client would mean
+  // shipping every task's status to do it.
+  const workRows = featureWorkRows(featureList, history, (t) => t.featureId);
+  const taskCounts: Record<string, number> = {};
+  const taskPanels: Record<string, ReactNode> = {};
+  const openByDefault: Record<string, boolean> = {};
+  for (const row of workRows) {
+    const key = row.feature?.id ?? UNGROUPED_KEY;
+    taskCounts[key] = row.tasks.length;
+    openByDefault[key] = featureRowDefaultOpen(row);
+    if (row.tasks.length > 0) {
+      taskPanels[key] = (
+        <TaskList
+          history={row.tasks}
+          namespaceById={namespaceById}
+          // Inside a feature the feature branch is the subject; the ungrouped remainder has no
+          // branch, so a merge chip there would be describing nothing.
+          showMergeState={row.feature !== null}
+        />
+      );
+    }
+  }
   // Backlog items per feature, for the management card's counts and its delete confirmation.
   // Items only — a task is private to whoever ran it, so an unscoped count of those on this
   // shared page would disclose that someone else is working on the feature.
@@ -232,20 +269,22 @@ export default async function ProjectDetail({
           changes={changes}
         />
 
-        {/* Managing the groupings themselves, above the history that renders them: features
-            were readable everywhere and editable nowhere. */}
+        {/* One card, not two. A feature *is* several tasks, so splitting "the groupings" from
+            "the runs" made the reader join them up by eye — and the separate history card
+            re-derived the same grouping a second time. Now each feature expands to its own
+            runs, and the ungrouped remainder is the last row.
+
+            The panels are rendered **here**, on the server, and handed down as elements. See
+            `taskPanels` above for why that matters. */}
         <FeatureManager
           projectId={project.id}
           projectName={project.name}
           features={featureList}
           itemCounts={featureItemCounts}
-          className="lg:col-span-2"
-        />
-
-        <TaskHistory
-          history={history}
-          namespaceById={namespaceById}
-          featureById={featureById}
+          taskCounts={taskCounts}
+          taskPanels={taskPanels}
+          openByDefault={openByDefault}
+          totalTasks={history.length}
           className="lg:col-span-2"
         />
       </div>

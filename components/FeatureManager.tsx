@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
   Check,
+  ChevronDown,
+  ChevronRight,
   FolderTree,
   GitBranch,
   Pencil,
@@ -17,7 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Chip, EmptyState } from "@/components/ui-cards";
 import { CardSection } from "@/components/ui-cards";
-import { featureRowActions, FILE_OWNED_FEATURE_NOTE } from "@/lib/ui";
+import { featureRowActions, FILE_OWNED_FEATURE_NOTE, UNGROUPED_KEY } from "@/lib/ui";
 import type { FeatureStatus } from "@/lib/db/schema";
 
 /** Mirrors `MAX_FEATURE_NAME_LENGTH` in `lib/features.ts`. The server still enforces it; this
@@ -58,11 +60,65 @@ const STATUS_LABEL: Record<FeatureStatus, string> = {
  *   flight against the feature's branch — is a server-side 409 that depends on task rows this
  *   page can't see, so the error has to land where the click was.
  */
+/**
+ * The trailing "No feature" row: runs that belong to no feature.
+ *
+ * Its own component because it shares only the disclosure with a feature row — there is nothing
+ * to rename, close out or delete — and inlining it put a second, near-duplicate branch inside a
+ * map that is already long.
+ *
+ * The count sits **outside** the button, matching the feature rows and `FeatureGroup`'s
+ * documented rule: folding it in bloats the accessible name for no gain (the first cut had it
+ * inside, which the correctness review flagged as inconsistent with its own siblings).
+ */
+function UngroupedRow({
+  count,
+  panel,
+  panelId,
+  open,
+  onToggle,
+}: {
+  count: number;
+  panel: ReactNode;
+  panelId: string;
+  open: boolean;
+  onToggle: (next: boolean) => void;
+}) {
+  return (
+    <li className="py-3 first:pt-0 last:pb-0">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <button
+          type="button"
+          onClick={() => onToggle(!open)}
+          aria-expanded={open}
+          aria-controls={panelId}
+          className="flex min-w-0 items-center gap-1.5 rounded text-left text-sm font-medium text-fg-muted hover:text-fg-strong"
+        >
+          {open ? (
+            <ChevronDown className="size-4 shrink-0" aria-hidden="true" />
+          ) : (
+            <ChevronRight className="size-4 shrink-0" aria-hidden="true" />
+          )}
+          <span className="min-w-0">No feature</span>
+        </button>
+        <span className="text-xs text-fg-faint">
+          {`${count} task${count === 1 ? "" : "s"}`}
+        </span>
+      </div>
+      <div id={panelId}>{open && <div className="mt-2 pl-5.5">{panel}</div>}</div>
+    </li>
+  );
+}
+
 export function FeatureManager({
   projectId,
   projectName,
   features,
   itemCounts,
+  taskCounts,
+  taskPanels,
+  openByDefault,
+  totalTasks,
   className = "",
 }: {
   projectId: string;
@@ -70,9 +126,33 @@ export function FeatureManager({
   features: ManagedFeature[];
   /** Backlog items per feature id. Items only, never tasks — see `backlogCountsByFeature`. */
   itemCounts: Record<string, number>;
+  /**
+   * Runs per feature id (and `UNGROUPED_KEY`), **already scoped to the caller** by the page
+   * (`ownedBy`). A task is private to whoever ran it while a feature is shared, so this number
+   * is the reader's own runs and never the project's — which is also why
+   * `backlogCountsByFeature` is a server aggregate while this is handed down.
+   */
+  taskCounts: Record<string, number>;
+  /**
+   * Each row's task list, **rendered on the server** and handed over as an element.
+   *
+   * Deliberately not `TaskRow[]`. This is a client component, so props cross the RSC boundary
+   * into the browser — handing it rows would ship every field of every task (`workdir`,
+   * `sessionId`, `requestText`, `error`) for a list that renders six of them. The security
+   * audit measured that happening in the first cut of this card. An already-rendered element
+   * carries its output and nothing else. A key with no entry has no runs, and its row gets no
+   * disclosure at all.
+   */
+  taskPanels: Record<string, ReactNode>;
+  /** Whether each row starts expanded — decided server-side by `featureRowDefaultOpen`, since
+   *  deciding it here would mean shipping every task's status to do it. */
+  openByDefault: Record<string, boolean>;
+  /** The card header's total. Same owner scoping as `taskCounts`. */
+  totalTasks: number;
   className?: string;
 }) {
   const router = useRouter();
+  const panelIdPrefix = useId();
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
   /** Which row is being renamed, and to what. */
@@ -86,6 +166,17 @@ export function FeatureManager({
   const [busyAdd, setBusyAdd] = useState(false);
   /** Errors are per-row: a 409 about one feature must not appear against another. */
   const [rowError, setRowError] = useState<{ id: string; message: string } | null>(null);
+  /**
+   * Rows the reader has toggled by hand — **overrides only**, not the whole open/closed state.
+   *
+   * Every write here calls `router.refresh()`, and a feature's default can legitimately change
+   * between renders (a run finishes, a feature is closed out). Holding the full state would
+   * freeze rows at whatever they were when the component first mounted; holding only the
+   * deliberate toggles lets everything the reader hasn't touched keep answering
+   * `featureRowDefaultOpen`. Not persisted, for the same reason `FeatureGroup` isn't: a
+   * remembered collapse is a filter, not a fold.
+   */
+  const [openOverride, setOpenOverride] = useState<Record<string, boolean>>({});
   const [addError, setAddError] = useState<string | null>(null);
 
   /** One place for the two write shapes, so the error handling can't drift between them. */
@@ -172,30 +263,53 @@ export function FeatureManager({
       title="Features"
       className={className}
       right={
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => {
-            setAdding(true);
-            setAddError(null);
-          }}
-          icon={<Plus className="size-3.5" aria-hidden="true" />}
-        >
-          Add feature
-        </Button>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-fg-faint">
+            {`${features.length} feature${features.length === 1 ? "" : "s"} · ${totalTasks} task${totalTasks === 1 ? "" : "s"}`}
+          </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              setAdding(true);
+              setAddError(null);
+            }}
+            icon={<Plus className="size-3.5" aria-hidden="true" />}
+          >
+            Add feature
+          </Button>
+        </div>
       }
     >
       {features.length === 0 ? (
-        <EmptyState
-          icon={<FolderTree className="size-6" />}
-          title="No features yet"
-          hint="A feature groups several tasks and backlog items onto one branch. Planned work gets one automatically; add one here to group work by hand."
-        />
+        // Nothing to group by, so nothing is grouped: the runs render as the flat list they
+        // always were. A single "No feature" heading over everything would add a level of
+        // hierarchy that conveys nothing — the same reason `groupByFeature` answers null.
+        taskPanels[UNGROUPED_KEY] ? (
+          <>{taskPanels[UNGROUPED_KEY]}</>
+        ) : (
+          // Nothing at all: no features *and* no runs. The two-card layout said both ("No
+          // features yet" and "No tasks yet."); merging them must not silently answer only half
+          // the question, so this names both and what to do about either (review finding).
+          <EmptyState
+            icon={<FolderTree className="size-6" />}
+            title="No features or tasks yet"
+            hint="A feature groups several tasks and backlog items onto one branch. Planned work gets one automatically; add one here to group work by hand. Runs you dispatch above will show up under their feature, or under “No feature” if you don’t pick one."
+          />
+        )
       ) : (
         <ul className="divide-y divide-line">
           {features.map((f) => {
             const actions = featureRowActions(f);
             const items = itemCounts[f.id] ?? 0;
+            const runs = taskCounts[f.id] ?? 0;
+            const panel = taskPanels[f.id];
+            // No runs means no panel: a chevron that expands into nothing is worse than no
+            // chevron, and on this install two projects had 24 and 12 features in exactly that
+            // state, so this is the common row rather than the edge case.
+            const expandable = Boolean(panel);
+            const open = expandable && (openOverride[f.id] ?? openByDefault[f.id] ?? false);
+            const panelId = `${panelIdPrefix}-${f.id}`;
             const busy = busyId === f.id;
             // `busyId` is a single lock for the whole list, and `patch`/`remove` refuse while it
             // is held. So every row's controls have to be disabled while *any* row is working —
@@ -249,8 +363,33 @@ export function FeatureManager({
                 ) : (
                   <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-fg-strong">{f.name}</p>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                      {/* The name is the toggle; the chips below stay outside it. Same rule as
+                          `FeatureGroup`: the branch chip is a string you copy into `git
+                          checkout`, and folding it into the button would make it unselectable
+                          without also toggling the row. */}
+                      {expandable ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setOpenOverride((o) => ({ ...o, [f.id]: !open }))
+                          }
+                          aria-expanded={open}
+                          aria-controls={panelId}
+                          className="flex min-w-0 items-start gap-1.5 rounded text-left text-sm font-medium text-fg-strong hover:text-info"
+                        >
+                          {open ? (
+                            <ChevronDown className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                          ) : (
+                            <ChevronRight className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                          )}
+                          <span className="min-w-0">{f.name}</span>
+                        </button>
+                      ) : (
+                        // Indented to line up with the rows that do have a chevron, so the
+                        // names form one column rather than a ragged edge.
+                        <p className="pl-5.5 text-sm font-medium text-fg-strong">{f.name}</p>
+                      )}
+                      <div className="mt-1 flex flex-wrap items-center gap-2 pl-5.5 text-xs">
                         {/* `break-all` and no truncation: this is the string you type into
                             `git checkout`, so a hidden suffix is useless — same rule as
                             FeatureGroup's chip. */}
@@ -260,6 +399,24 @@ export function FeatureManager({
                         </span>
                         {f.status !== "active" && (
                           <Chip>{STATUS_LABEL[f.status]}</Chip>
+                        )}
+                        {/* Runs first: this row's whole point is now the work under it. The
+                            count is the reader's own runs — a task is private to whoever ran
+                            it, so it can't be the project's total. */}
+                        {runs > 0 ? (
+                          <span className="text-fg-muted">
+                            {`${runs} task${runs === 1 ? "" : "s"}`}
+                          </span>
+                        ) : (
+                          // The common state on a pm-planned project: the feature groups
+                          // planned work, and nothing has been dispatched against it yet.
+                          // Saying so beats an empty panel, and names the two ways to fix it.
+                          <span
+                            className="text-fg-faint"
+                            title="Pick this feature in the composer above, or run one of its backlog items, and the run will be grouped here."
+                          >
+                            No tasks yet
+                          </span>
                         )}
                         {items > 0 && (
                           <span className="text-fg-faint">
@@ -345,9 +502,31 @@ export function FeatureManager({
                     {rowError.message}
                   </p>
                 )}
+
+                {/* Always rendered so `aria-controls` never dangles at a missing element. The
+                    merge chip is on because inside a feature the feature branch is the
+                    subject — the same call `GroupedTaskList` makes. */}
+                {/* Hidden while this row is being renamed: the form is the row's subject for
+                    that moment, and its run list underneath is noise. The wrapper still renders
+                    so `aria-controls` never dangles. */}
+                <div id={panelId}>
+                  {open && !isEditing && <div className="mt-2 pl-5.5">{panel}</div>}
+                </div>
               </li>
             );
           })}
+
+          {/* The ungrouped remainder, last: runs that belong to no feature. It has work but
+              nothing to manage, so it is a disclosure and nothing else. */}
+          {taskPanels[UNGROUPED_KEY] && <UngroupedRow
+            count={taskCounts[UNGROUPED_KEY] ?? 0}
+            panel={taskPanels[UNGROUPED_KEY]}
+            panelId={`${panelIdPrefix}-${UNGROUPED_KEY}`}
+            open={openOverride[UNGROUPED_KEY] ?? openByDefault[UNGROUPED_KEY] ?? false}
+            onToggle={(next) =>
+              setOpenOverride((o) => ({ ...o, [UNGROUPED_KEY]: next }))
+            }
+          />}
         </ul>
       )}
 

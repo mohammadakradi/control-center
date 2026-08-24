@@ -16,13 +16,17 @@ import {
   featureMergeSummary,
   featureOptions,
   featureRowActions,
+  featureRowDefaultOpen,
+  featureWorkRows,
   FILE_OWNED_FEATURE_NOTE,
   fixTaskReasons,
   groupByFeature,
   hasMergeSummary,
   isOpenBacklogStatus,
+  ACTIVE_STATUSES,
   MERGE_STATE_LABEL,
   MERGE_STATE_TITLE,
+  mergeChipProps,
   mergeChipView,
   mergeStateTone,
   orderSkills,
@@ -30,7 +34,7 @@ import {
   taskChangesView,
   taskDisplayTitle,
 } from "./ui";
-import type { BacklogStatus, TaskMergeState } from "./db/schema";
+import type { BacklogStatus, FeatureStatus, TaskMergeState } from "./db/schema";
 
 /** Every backlog status, kept exhaustive by the compiler: a status added to the schema
  *  without a case here fails typecheck rather than quietly going untested. */
@@ -678,4 +682,131 @@ test("a C0 control can't forge a second line inside one quote", () => {
   // itself as two. Lines are split on \r\n and \n, so a lone \r reaches `evidenceOf`.
   const [reason] = fixTaskReasons("## Findings\r  nothing here ");
   assert.doesNotMatch(reason.evidence, /[\r ]/);
+});
+
+// ------------------------------------------- features with their work (merged card)
+
+const feat = (id: string, status: FeatureStatus = "active") => ({ id, name: id, status });
+const task = (id: string, featureId: string | null, status = "done") => ({ id, featureId, status });
+
+test("every feature gets a row, even one nothing has run against yet", () => {
+  // The whole reason this isn't `groupByFeature`: the card manages features, so a feature with
+  // no runs is a real row. Measured on this install, two projects had 24 and 12 features with
+  // *zero* linked tasks — "only features with work" would have shown an empty card.
+  const rows = featureWorkRows(
+    [feat("f1"), feat("f2"), feat("f3")],
+    [task("t1", "f2")],
+    (t) => t.featureId,
+  );
+  assert.deepEqual(
+    rows.map((r) => [r.feature?.id ?? null, r.tasks.length]),
+    [["f1", 0], ["f2", 1], ["f3", 0]],
+  );
+});
+
+test("the caller's feature order is preserved, so rows don't move under a click", () => {
+  const rows = featureWorkRows([feat("z"), feat("a"), feat("m")], [], (t: never) => t);
+  assert.deepEqual(rows.map((r) => r.feature?.id), ["z", "a", "m"]);
+});
+
+test("ungrouped work goes last, and only when there is some", () => {
+  const none = featureWorkRows([feat("f1")], [task("t1", "f1")], (t) => t.featureId);
+  assert.equal(none.length, 1, "no empty 'No feature' row");
+  assert.equal(none.at(-1)!.feature?.id, "f1");
+
+  const some = featureWorkRows([feat("f1")], [task("t1", null)], (t) => t.featureId);
+  assert.equal(some.length, 2);
+  assert.equal(some.at(-1)!.feature, null, "the remainder is last");
+  assert.deepEqual(some.at(-1)!.tasks.map((t) => t.id), ["t1"]);
+  assert.deepEqual(some[0].tasks, [], "…and the feature keeps its own empty row");
+});
+
+test("a task naming a feature that isn't there falls into the remainder, never away", () => {
+  // `feature_id` is ON DELETE SET NULL, so a task can briefly outlive the feature it named.
+  // Dropping it would make work vanish from a list because its grouping did.
+  const rows = featureWorkRows(
+    [feat("f1")],
+    [task("t1", "gone"), task("t2", "f1"), task("t3", null)],
+    (t) => t.featureId,
+  );
+  assert.deepEqual(rows.map((r) => r.feature?.id ?? null), ["f1", null]);
+  assert.deepEqual(rows.at(-1)!.tasks.map((t) => t.id), ["t1", "t3"]);
+});
+
+test("featureWorkRows doesn't mutate what it was handed", () => {
+  const features = [feat("f1")];
+  const tasks = [task("t1", "f1")];
+  featureWorkRows(features, tasks, (t) => t.featureId);
+  assert.equal(features.length, 1);
+  assert.equal(tasks.length, 1);
+});
+
+test("a row with nothing in it never starts open", () => {
+  // Two dozen chevrons that expand into nothing is exactly what this rule exists to prevent,
+  // and it is why this can't just be `featureGroupDefaultOpen`.
+  for (const status of ["active", "done", "cancelled"] as FeatureStatus[]) {
+    assert.equal(featureRowDefaultOpen({ feature: feat("f", status), tasks: [] }), false, status);
+  }
+  assert.equal(featureRowDefaultOpen({ feature: null, tasks: [] }), false);
+});
+
+test("a row with work reproduces the old open/closed defaults", () => {
+  const done = [task("t1", "f", "done")];
+  assert.equal(featureRowDefaultOpen({ feature: feat("f", "active"), tasks: done }), true);
+  // A closed feature's runs are history that would push live work below the fold.
+  assert.equal(featureRowDefaultOpen({ feature: feat("f", "done"), tasks: done }), false);
+  assert.equal(featureRowDefaultOpen({ feature: feat("f", "cancelled"), tasks: done }), false);
+  // Ungrouped work is work like any other.
+  assert.equal(featureRowDefaultOpen({ feature: null, tasks: done }), true);
+});
+
+test("a live run opens its row whatever the feature's own status says", () => {
+  // The one thing worth unfolding a closed feature for.
+  for (const status of [...ACTIVE_STATUSES]) {
+    assert.equal(
+      featureRowDefaultOpen({
+        feature: feat("f", "cancelled"),
+        tasks: [task("t1", "f", "done"), task("t2", "f", status)],
+      }),
+      true,
+      status,
+    );
+  }
+});
+
+test("mergeChipProps hands a client component exactly three fields, and no more", () => {
+  // Width-pinned on purpose. `MergeChipInput` is structural, so a whole TaskRow type-checks —
+  // and passing one shipped workdir/sessionId/requestText into the page's HTML for a row that
+  // renders six fields (measured: 3 of 3 canaries in the served HTML, 0 of 3 after this).
+  // Asserting the key set means a column added to `tasks` can't widen the boundary unnoticed.
+  const fatRow = {
+    mergeState: "merged" as TaskMergeState,
+    status: "done",
+    parallel: true,
+    // Everything below must NOT survive.
+    id: "task_1",
+    workdir: "/secret/worktree",
+    sessionId: "sess_secret",
+    requestText: "the whole prose request",
+    error: "a stack trace",
+  };
+  const narrow = mergeChipProps(fatRow);
+  assert.deepEqual(Object.keys(narrow).sort(), ["mergeState", "parallel", "status"]);
+  assert.deepEqual(narrow, { mergeState: "merged", status: "done", parallel: true });
+  for (const leaked of ["workdir", "sessionId", "requestText", "error", "id"]) {
+    assert.ok(!(leaked in narrow), `${leaked} crossed the boundary`);
+  }
+});
+
+test("mergeChipProps normalises a missing parallel flag rather than dropping the key", () => {
+  // `undefined` is not serializable in an RSC payload the way `null` is, and the key set above
+  // is asserted exactly — so absent has to become null, not vanish.
+  const narrow = mergeChipProps({ mergeState: null, status: "queued" });
+  assert.deepEqual(narrow, { mergeState: null, status: "queued", parallel: null });
+});
+
+test("a narrowed row still produces the same chip the fat row did", () => {
+  // The narrowing must not change what the user sees — that would trade a leak for a bug.
+  const row = { mergeState: "conflict" as TaskMergeState, status: "done", parallel: true };
+  assert.deepEqual(mergeChipView(mergeChipProps(row)), mergeChipView(row));
 });

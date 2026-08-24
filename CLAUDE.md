@@ -388,10 +388,65 @@ is that half; `deleteFeature` in `lib/features.ts` is the only new rule, and `DE
   the rule is said once, and only when a derived row is actually on screen.
 
 ### Following one feature in the UI
-Three surfaces group work by feature — `/backlog`, project detail's Task history and `/tasks`
-(project → feature) — so one feature's development can be read on its own. `components/
-FeatureGroup.tsx` is the single heading; the grouping and merge-state rules are pure functions in
-`lib/ui.ts` with specs, because `pnpm test` cannot reach `components/`.
+Three surfaces group work by feature — `/backlog`, project detail's **Features** card and
+`/tasks` (project → feature) — so one feature's development can be read on its own. `components/
+FeatureGroup.tsx` is the single heading on the first and last of those; the grouping and
+merge-state rules are pure functions in `lib/ui.ts` with specs, because `pnpm test` cannot reach
+`components/`.
+
+**Project detail is one card, not two.** It used to carry a *Features* card and a separate *Task
+history* card, and that split made the reader join the two up by eye — a feature **is** several
+tasks, so "the groupings" and "the runs" were never independent things. `FeatureManager` now owns
+both: every feature is a row that expands to its own runs, and `components/TaskHistory.tsx` is
+gone (it had no other consumer). `GroupedTaskList` stays, because `/tasks` still groups a
+cross-project list that way.
+- **`featureWorkRows` (`lib/ui.ts`), not `groupByFeature`, drives that card**, and the difference
+  is the point. `groupByFeature` only emits a group for a feature something is filed under, which
+  is right where a heading with nothing under it would be noise. Here the features *are* the
+  list — the card manages them — so a feature with no runs still needs a row. Measured on this
+  install before building it: two projects had **24 and 12 features with zero linked tasks**
+  (features group *backlog items*; a task only gets a `featureId` from the composer's picker or
+  from running a linked item), so "only features with work" would have rendered an empty card
+  above a pile of ungrouped runs.
+- **A row with no runs gets no chevron.** It reads `No tasks yet` with a title naming the two ways
+  to change that. A disclosure that expands into nothing is worse than no disclosure, and on the
+  numbers above it is the *common* row rather than an edge case.
+- **`featureRowDefaultOpen` is deliberately not `featureGroupDefaultOpen`.** That one answers the
+  same question for the backlog and `/tasks`, where every group has rows by construction, so
+  "active → open" is safe there and would open two dozen empty rows here. The rule: nothing to
+  show, nothing to open; otherwise the old defaults are reproduced (active open, closed folded as
+  history, ungrouped open) and **a live run overrides all of it** — a task in flight is the one
+  thing worth unfolding a closed feature for.
+- **The card holds toggle *overrides*, not the whole open/closed state.** Every write calls
+  `router.refresh()` and a row's default can legitimately change between renders (a run ends, a
+  feature is closed out), so storing the full state would freeze rows at mount. Not persisted, for
+  the same reason `FeatureGroup` isn't: a remembered collapse is a filter, not a fold.
+- **The per-row task count is the reader's own runs.** It comes from the page's already
+  `ownedBy`-scoped history, because a task is private to whoever ran it while a feature is shared
+  — the same reason `backlogCountsByFeature` is a server aggregate. Same data the old Task
+  history card showed; only the arrangement changed.
+- **The task lists are rendered on the *server* and handed down as elements, and that is a
+  privacy decision.** `FeatureManager` is a client component, so a `TaskRow[]` prop would
+  serialize whole rows across the RSC boundary into the browser — `workdir`, `sessionId`,
+  `requestText`, `error` and all — for a list that renders six fields. The first cut of this
+  merge did exactly that, and the security audit found `TaskList`'s code in the client chunks.
+  The page now builds `taskPanels` (feature id → rendered `<TaskList>`), `taskCounts` and
+  `openByDefault`, so what crosses is rendered output plus two numbers and a boolean. Verified by
+  A/B: reinstating the client-side import puts `TaskList`'s empty-state literal back into
+  `.next/static/chunks` (1 file), removing it takes it to 0. `openByDefault` is computed server
+  side for the same reason — deciding it in the client would mean shipping every task's status.
+  This is the "client island in a server tree" composition, and it keeps the page consistent with
+  `parallelOffer`, where only a boolean crosses.
+- **`mergeChipProps` closes the same hole one level down, and it was a live leak.** Moving the
+  task list server-side doesn't help if a *row* then hands a whole `TaskRow` to a client
+  component — and `TaskList` did: `<MergeStateChip task={t} />`. `MergeChipInput` is structural,
+  so a fat row type-checks. Measured with canary values planted in the columns: `workdir`,
+  `sessionId` and `requestText` all came back in the served HTML (3/3) for a row that renders six
+  fields, and 0/3 once the row went through `mergeChipProps`. It is a **function, not a comment**,
+  because the object it returns can be pinned *by width* — `lib/ui.test.ts` asserts its exact key
+  set, so a column added to `tasks` can't widen what crosses the boundary without a spec going
+  red. Same stance as `listBacklog`'s `linkedTask` projection. `BacklogItemRow`'s call site was
+  already safe: it passes that narrow projection, not a row.
 - **`groupByFeature` returns `null` when no row has a feature, and that null is the contract.**
   Every caller then renders the flat list it always rendered, so an install that has never used a
   feature is byte-identical to before — grouping everything under one "No feature" heading would
@@ -1564,7 +1619,10 @@ in `components/TaskLiveView.tsx` renders it.
   under every host's `CardSection`; active features start open, closed ones collapsed) and
   `MergeStateChip` (one row's merge state, wording decided by `mergeChipView` in `lib/ui.ts`).
   Shared by the backlog, project detail and `/tasks`; see "Following one feature in the UI"
-- `components/FeatureManager.tsx` — The **Features** card on project detail: add, rename, close
+- `components/FeatureManager.tsx` — The **Features** card on project detail, which is now that
+  page's whole work view: every feature is a row that **expands to its own tasks** (rendered
+  through the shared `TaskList`), with the ungrouped runs as a last "No feature" row. Also add,
+  rename, close
   out / reopen, and delete a grouping (delete behind a confirmation that names what survives).
   Row-level rules come from `featureRowActions` (`lib/ui.ts`); see "Managing feature groups"
 - `components/VersionSettings.tsx` — Settings → **Version**: which release this install is on,

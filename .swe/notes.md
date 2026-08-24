@@ -2599,3 +2599,146 @@ scrolled, so I cannot say which one it was — the honest position is that the s
 intermittent failure at roughly 1-in-13 that I could not localise, most likely in the
 process-concurrency lock specs, which predate this task. Not a blocker for this change; worth
 capturing the name next time it appears (`pnpm test 2>&1 | tee` and keep the file).
+
+### 2026-08-24 — features and tasks were never two things; the page now says so
+
+User feedback on the shipped card: *"features and tasks are not splitted. actually each feature
+will be done by several task. so there is no need to have two separated sections for them."*
+Correct, and the split was mine — I added a Features card **above** an existing Task history card
+that already grouped by feature, so the page derived the same grouping twice and left the reader
+to join them by eye. One card now: every feature is a row that expands to its own runs.
+`components/TaskHistory.tsx` is deleted (it had no other consumer); `GroupedTaskList` stays for
+`/tasks`, which groups a cross-project list.
+
+**The measurement that shaped the design, taken before writing any of it.** On this install:
+
+| project | features | backlog items linked | tasks linked |
+|---|---|---|---|
+| Award Maven | 24 | 43 | **0** |
+| (second) | 12 | 39 | **0** |
+
+Features group *backlog items*; a task only gets a `featureId` from the composer's picker or from
+running a linked item. So "one row per feature that has tasks" — which is what `groupByFeature`
+gives you — would have rendered an **empty card above 44 ungrouped runs**. Three consequences:
+- **`featureWorkRows` is a new function rather than a reuse.** `groupByFeature` only emits a group
+  for a feature something is filed under, which is right for the backlog and `/tasks` where a
+  heading over nothing is noise. Here the features *are* the list, so a feature with no runs is a
+  real row. Both keep the same two invariants (ungrouped last and only when non-empty; an
+  unresolvable `featureId` falls into it rather than vanishing).
+- **A row with no runs gets no chevron**, and says `No tasks yet` with a tooltip naming the two
+  ways to change that. Given the table above this is the *common* row, so a chevron opening an
+  empty box would have been the dominant experience.
+- **`featureRowDefaultOpen` is deliberately not `featureGroupDefaultOpen`.** The old rule
+  ("active → open") is safe only where every group has rows by construction; here it would have
+  opened two dozen empty rows. New rule: nothing to show, nothing to open — otherwise reproduce the
+  old defaults, with a **live run overriding everything**.
+
+**Toggle state is overrides-only, and that is a bug I avoided rather than fixed.** Every write in
+this card calls `router.refresh()`, and a row's default legitimately changes between renders (a run
+ends, a feature is closed out). Holding the full open/closed map would have frozen rows at mount;
+holding only deliberate toggles lets untouched rows keep answering the default. Not persisted, same
+reasoning as `FeatureGroup`.
+
+**Verified in a browser against the real project, not just by unit test**, by temporarily
+re-homing 7 tasks to `user_local` and linking 4 of them to the first-rendered feature (originals
+saved to a file first, restored afterwards, and the baseline re-asserted: 0 linked, 0 owned by
+`user_local`, 44 tasks, 24 features). Confirmed: the header count, a chevron + `4 tasks` + real
+task rows with Done badges under the feature, 23 rows reading `No tasks yet` with no chevron, the
+`No feature` bucket last with its 3 runs, the pm-derived note once at the foot, and **no second
+card on the page**. The signed-out view correctly shows `0 tasks` — tasks are owner-scoped and the
+local workspace owns none of them, which is also why the per-row count is documented as *the
+reader's own* runs.
+
+Also swept two live docs that named the deleted component: `TaskList`'s own doc comment and the
+`TaskHistory` row in `.fe/design-system.md` (struck through with the reason). Left `.fe/notes.md`,
+`.fe/test-scenarios/` and `.pm/tasks/` alone on purpose — those are dated records of what happened
+at the time, and editing them would falsify history rather than update a catalog.
+
+**Round-two review of the merge: PASS on correctness, and one real regression I had introduced.**
+
+The correctness reviewer found no blocking issues and verified the new `lib/ui.ts` specs by
+*mutation* — breaking each invariant in turn and confirming the matching spec went red, with no
+vacuous ones. It also disclosed that a chained `git` command of its own had reverted `lib/ui.ts`
+and that it had reconstructed the file; I verified that independently before trusting it (one of
+each symbol, `git diff` showing +66 and **zero** deletions, 682 specs green). The only thing
+actually lost was a pre-emptive move of `ACTIVE_STATUSES` above its first use — and since the
+reviewer had separately confirmed there is no temporal-dead-zone hazard (the reference is inside a
+function body, evaluated long after module init, exactly as five other call sites do it), I left
+the move out rather than churn the diff for a non-issue.
+
+**The security audit's finding is the one that mattered, and it was mine.** Making `FeatureManager`
+— a client component — import and render `TaskList` meant every `TaskRow` crossed the RSC boundary
+into the browser: `workdir`, `sessionId`, `requestText`, `error`, for a list that renders six
+fields. The auditor didn't assert it, it measured it, finding `TaskList`'s code in the compiled
+client chunks. Owner scoping meant no *other* user's rows leaked, which is why it was non-blocking
+— but it needlessly widened what a same-origin XSS or a bad browser extension could scrape, and it
+contradicted this page's own minimization elsewhere (`parallelOffer` ships one boolean precisely so
+nothing about whose task holds the checkout crosses).
+
+Fixed by inverting the composition: the **page** now renders each feature's `<TaskList>` and hands
+`FeatureManager` a `taskPanels` map of elements, plus `taskCounts` and `openByDefault`. Rendered
+output crosses, not source rows. `openByDefault` moved server-side for the same reason — computing
+it in the client would have required shipping every task's status to do it.
+
+**Proved by A/B rather than asserted**, after a first attempt at a detector failed honestly: the
+`page_client-reference-manifest.js` does *not* list `TaskList`, but that manifest only records
+`"use client"` boundaries, so it cannot see a plain module inlined into the client bundle — it was
+the wrong instrument and would have "confirmed" the fix either way. Grepping the chunks for a
+literal unique to `TaskList` (`"No tasks yet."`) with the client import reinstated gives **1** file;
+with the fix, **0**. The three remaining files carrying task-row markers are pre-existing client
+components (`Toaster`, `ActivityBadge`, `TaskLiveView`).
+
+Also took the reviewer's two cosmetic notes: the ungrouped row's count moved outside its button
+(matching the feature rows and `FeatureGroup`'s documented rule, and it became its own
+`UngroupedRow` component rather than a second near-duplicate branch in a long map), and a row's
+task panel is now hidden while that row is being renamed. Re-verified in a browser after the
+refactor — byte-identical rendering, which is the point: the composition change is invisible to the
+user. Dev DB re-homing repeated and restored, baseline re-asserted (0 linked, 0 `user_local`, 44
+tasks, 24 features).
+
+### 2026-08-24 — the merge review, and a leak found one level below the one I'd just fixed
+
+Both agents returned **PASS with no blocking findings** on the merged Features card. Four
+non-blocking items; two were worth acting on and two were not, and the split is the interesting
+part.
+
+**Acted on — `MergeStateChip` was still taking a whole `TaskRow`.** The correctness reviewer
+spotted this as "the same class as the `taskPanels` refactor, one level down", and it was live.
+`MergeChipInput` is `{mergeState, status, parallel?}`, but it is *structural*, so
+`<MergeStateChip task={t} />` type-checked with a full row — and `MergeStateChip` is a client
+component, so every column went into the page's HTML. Measured rather than assumed: canaries
+planted in `workdir`, `session_id` and `request_text` on a scratch task came back in the served
+HTML **3 of 3**, and **0 of 3** after routing the row through the new `mergeChipProps`. The chip
+and the row still render identically (asserted: `mergeChipView(mergeChipProps(row))` deep-equals
+`mergeChipView(row)`).
+
+The shape matters more than the fix. A comment saying "don't pass the whole row" would have been
+one edit away from untrue, so this is a **function whose return value is width-pinned by a spec**:
+`Object.keys(...).sort()` must equal exactly `["mergeState","parallel","status"]`. A column added
+to `tasks` therefore cannot widen the RSC boundary without a test going red. `parallel` is
+normalised to `null` rather than left `undefined`, because the key set is asserted exactly and
+absent would drop the key. `BacklogItemRow`'s call site needed nothing — it already passes
+`listBacklog`'s narrow `linkedTask` projection, which is the same idea arrived at independently.
+
+**Acted on — the doubly-empty card.** With no features *and* no runs, the merged card answered
+only half the question ("No features yet"), where the two-card layout had said both. Merging two
+surfaces must not quietly drop one of their empty states; the copy now names both and what to do
+about either.
+
+**Deliberately not acted on:**
+- `featureRowDefaultOpen` diverging from `featureGroupDefaultOpen` — the live-run override means a
+  closed-out feature with a running task shows expanded here and collapsed on `/backlog` and
+  `/tasks`. That is the intended asymmetry (this card lists *every* feature, including the 24 empty
+  ones this install actually has; those pages only ever list features with rows), and it is
+  documented in both places. Flagged to the user rather than "fixed" into consistency, because
+  making them agree would either open two dozen empty rows here or hide a live run there.
+- `featureWorkRows`'s `byId` dedupe on duplicate feature ids — unreachable, `features.id` is a
+  primary key. Left as is rather than adding a guard for a state the schema forbids.
+
+**Process notes.** The working tree changed *under* both reviewers mid-run (they said so, and
+re-read after hashes stabilised) because the `taskPanels` privacy refactor landed while they were
+reading — worth avoiding next time by freezing the tree before dispatching. Also: the dev
+container had exited between sessions, which silently reverted an earlier scratch mutation of real
+rows; the lesson taken was to stop mutating real data for visual checks at all and build a
+**throwaway project** instead, since `tasks.project_id` is `ON DELETE cascade` and one delete
+takes the whole fixture with it. Verified zero residue both times.
