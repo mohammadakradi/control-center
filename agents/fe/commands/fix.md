@@ -27,7 +27,8 @@ In short:
    the `design-reviewer` and the `frontend-auditor` for any real or untrusted-content change,
    `design-reviewer` alone for a small contained visual fix. Resolve all blocking findings and
    re-review until clean.
-5. **Report & test scenario** 🚦 — nutshell of what was broken and now works, plus a manual
-   test scenario written to `.fe/test-scenarios/<slug>.md` and linked. **Stop for approval.**
+5. **Report** 🚦 — nutshell of what was broken and now works. A test scenario at
+   `.fe/test-scenarios/<slug>.md` only if there is something to look at (rule 14); otherwise
+   say so in one line. **Stop for approval.**
 6. **Commit** — only after approval, on a feature branch (a hook blocks the default branch).
    Pushing/PR is `/fe:ship`.

@@ -134,11 +134,26 @@ every **blocking** finding from either and re-review until both are clean. This 
 enforcement point for rules 4 and 12 — a behavior change with no test, or an unaddressed
 high/critical security issue, is blocking.
 
-## 14. Deliver a nutshell + a test scenario
-Finish every feature/fix with (a) a **plain-language result in a nutshell** and (b) a
-**manual test scenario** written to `.swe/test-scenarios/<slug>.md` and linked in your
-report, so the user can follow it to exercise the change and learn its behavior. (Setup
-commands like onboarding are exempt.)
+## 14. Deliver a nutshell — and a test scenario when there is something to try
+Finish every feature/fix with a **plain-language result in a nutshell**. That part is not
+optional.
+
+A **manual test scenario** (`.swe/test-scenarios/<slug>.md`, linked in your report) is for
+when the user has something they can actually go and *do* — a new or changed behavior they'd
+benefit from walking through. Write one when:
+- the change adds or alters a user-facing flow, command, or output they'll interact with;
+- it changes setup, migration, or deployment steps someone has to follow;
+- verifying it needs a sequence a person wouldn't guess (specific state, ordering, timing).
+
+**Skip it, and say so in one line, when there is nothing to walk through** — an internal
+refactor with no behavior change, a bug fix already covered by the regression test you wrote,
+a dependency bump, a docs or comment change, a perf fix with no visible difference. Writing
+"open the app, confirm nothing changed" is not a test scenario; it is noise that makes the
+real ones easier to ignore. (Setup commands like onboarding are exempt outright.)
+
+When you do write one it should be genuinely useful — the automated tests already prove
+correctness, so this exists to *teach the behavior*. Prefer one good scenario over one per
+task.
 
 ## 15. Long-horizon work runs on an epic
 Goals that span multiple tasks/sessions get a persistent plan at `.swe/epics/<slug>.md`

@@ -29,8 +29,9 @@ In short:
    `frontend-auditor` (security, correctness, performance) for any real UI change,
    `design-reviewer` alone for a small safe one. Resolve all blocking findings, re-review
    until clean.
-5. **Report & test scenario** 🚦 — nutshell of what the user will see change (and what was
-   reused vs. added), plus a manual test scenario written to `.fe/test-scenarios/<slug>.md`
-   (incl. responsive + dark-mode + a11y checks) and linked. **Stop for approval.**
+5. **Report** 🚦 — nutshell of what the user will see change (and what was reused vs. added).
+   Add a manual test scenario at `.fe/test-scenarios/<slug>.md` (responsive + dark-mode + a11y
+   checks) **only if there is something to look at** (rule 14); otherwise say in one line why
+   not. **Stop for approval.**
 6. **Commit** — only after approval, on a feature branch (a hook blocks the default branch);
    update the epic if this task belongs to one. Pushing/PR is `/fe:ship`.

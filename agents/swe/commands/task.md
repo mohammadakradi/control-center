@@ -25,7 +25,8 @@ In short:
    the `reviewer` (correctness + tests) and the `security-auditor` (tooled security) for any
    real or security-sensitive change, `reviewer` alone for a small safe one, neither for a
    no-behavior diff. Resolve all blocking findings and re-review until clean.
-5. **Report & test scenario** 🚦 — give a nutshell of what changed and write a manual test
-   scenario to `.swe/test-scenarios/<slug>.md`, linking it. **Stop for the user's approval.**
+5. **Report** 🚦 — give a nutshell of what changed. Add a manual test scenario at
+   `.swe/test-scenarios/<slug>.md` **only if there is something to walk through** (rule 14);
+   otherwise say in one line why not. **Stop for the user's approval.**
 6. **Commit** — only after approval, on a feature branch (a hook blocks the default branch);
    update the epic if this task belongs to one. Pushing/PR is `/swe:ship`.

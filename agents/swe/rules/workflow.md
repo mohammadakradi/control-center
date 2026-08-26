@@ -115,12 +115,14 @@ Two deliverables, then stop for approval:
 1. **Result in a nutshell** — 2–4 plain-language sentences on what changed from the user's
    point of view (the flows affected, not the code). Mention which files/repos were touched
    and the test/review outcome (e.g. "8 tests pass, reviewer clean").
-2. **Test scenario for the user.** Write a step-by-step manual test scenario to
+2. **Test scenario — when there is something to walk through** (rule 14). If the change gives
+   the user something to actually go and do, write a step-by-step manual scenario to
    `.swe/test-scenarios/<short-slug>.md` using
-   `${CLAUDE_PLUGIN_ROOT}/rules/test-scenario-template.md`, so the user can follow it to
-   exercise and get familiar with the new behavior. Include preconditions/setup, numbered
+   `${CLAUDE_PLUGIN_ROOT}/rules/test-scenario-template.md`: preconditions/setup, numbered
    steps with the expected result at each key step, and at least one edge/failure case.
-   **Link the file in your report** (e.g. `Test scenario: .swe/test-scenarios/<slug>.md`).
+   **Link it in your report** (e.g. `Test scenario: .swe/test-scenarios/<slug>.md`).
+   If there is nothing to walk through — an internal refactor, a fix the regression test
+   already covers, a dependency bump — **skip it and say so in one line.**
 
 3. **Anything you found and are not fixing.** Out-of-scope work goes into the project backlog
    via `add_backlog_item` (one item per piece of work) rather than living in this report,
@@ -138,9 +140,10 @@ Only **after the user approves**, commit:
 - If on the default branch (`main`/`master`), create a feature branch first — never commit
   directly to the default branch. (A safety hook also blocks this mechanically.)
 - Use the project's existing commit-message style. Include the test-scenario file in the
-  commit.
+  commit if you wrote one.
 - If this task belongs to an epic, **update `.swe/epics/<slug>.md`**: check off the task,
-  append to the Log (branch + test-scenario link), and mark the epic `done` if complete.
+  append to the Log (branch, plus the test-scenario link if there is one), and mark the epic
+  `done` if complete.
 
 Pushing and opening a PR are **not** part of this workflow — those happen only via the
 explicit `/swe:ship` command.

@@ -126,12 +126,14 @@ Two deliverables, then stop for approval:
    (the views/flows affected, not the code). Mention which files were touched, which
    components/tokens were reused vs. added, and the test/review outcome (e.g. "reuses the
    existing `Button`/`Card`; no new colors; design-reviewer + auditor clean").
-2. **Test scenario for the user.** Write a step-by-step manual test scenario to
+2. **Test scenario — when there is something to look at** (rule 14). If the change gives the
+   user something to go and see or click, write a step-by-step manual scenario to
    `.fe/test-scenarios/<short-slug>.md` using
-   `${CLAUDE_PLUGIN_ROOT}/rules/test-scenario-template.md`. Include the views to open, the
-   happy path, **responsive checks** (mobile + desktop), **dark mode** if applicable, and at
-   least one **accessibility check** (keyboard nav / focus / contrast). **Link the file** in
-   your report.
+   `${CLAUDE_PLUGIN_ROOT}/rules/test-scenario-template.md`: the views to open, the happy path,
+   **responsive checks** (mobile + desktop), **dark mode** if applicable, and at least one
+   **accessibility check** (keyboard nav / focus / contrast). **Link the file** in your report.
+   If the change renders identically — a component extraction, a token rename, a lint fix —
+   **skip it and say so in one line.**
 
 3. **Anything you found and are not fixing.** Out-of-scope findings (a component that should
    be extracted, a page still on raw palette shades, an a11y gap elsewhere) go into the
@@ -149,10 +151,11 @@ Only **after the user approves**, commit:
 
 - If on the default branch (`main`/`master`), create a feature branch first — never commit
   directly to the default branch. (A safety hook also blocks this mechanically.)
-- Use the project's existing commit-message style. Include the test-scenario file and any
-  `.fe/design-system.md` update in the commit.
+- Use the project's existing commit-message style. Include the test-scenario file (if you
+  wrote one) and any `.fe/design-system.md` update in the commit.
 - If this task belongs to an epic, **update `.fe/epics/<slug>.md`**: check off the task,
-  append to the Log (branch + test-scenario link), and mark the epic `done` if complete.
+  append to the Log (branch, plus the test-scenario link if there is one), and mark the epic
+  `done` if complete.
 
 Pushing and opening a PR are **not** part of this workflow — those happen only via the
 explicit `/fe:ship` command.

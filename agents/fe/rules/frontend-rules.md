@@ -190,12 +190,25 @@ They are independent and decorrelated from you. Resolve every **blocking** findi
 either and re-review until both are clean. A hardcoded value bypassing the theme, a
 duplicated component, or an accessibility regression is blocking.
 
-## 14. Deliver a nutshell + a test scenario
-Finish every feature/fix with (a) a **plain-language result in a nutshell** (what the user
-will see change), and (b) a **manual test scenario** written to
-`.fe/test-scenarios/<slug>.md` and linked in your report — including the visual,
-responsive, and accessibility checks the user should run. (Setup commands like onboarding
-are exempt.)
+## 14. Deliver a nutshell — and a test scenario when there is something to look at
+Finish every feature/fix with a **plain-language result in a nutshell** (what the user will see
+change). That part is not optional.
+
+A **manual test scenario** (`.fe/test-scenarios/<slug>.md`, linked in your report) is for when
+the user has something they can actually go and *look at or use*. Write one when:
+- the change adds or alters a view, flow, or interaction they'll click through;
+- it changes responsive behavior, dark mode, or anything a person has to *see* to confirm;
+- it affects keyboard/screen-reader behavior worth walking once.
+
+Include the views to open, the happy path, responsive checks (mobile + desktop), dark mode if
+applicable, and at least one accessibility check.
+
+**Skip it, and say so in one line, when there is nothing to look at** — a component extraction
+that renders identically, a token rename with no visual change, a lint or docs fix, a
+dependency bump. "Open the app and confirm nothing moved" is not a test scenario; it is noise
+that makes the real ones easier to ignore. (Setup commands like onboarding are exempt outright.)
+
+Prefer one genuinely useful scenario over one per task.
 
 ## 15. Project-wide consistency is a first-class goal
 Beyond the task in front of you, you are the guardian of visual consistency. Use `/fe:audit`

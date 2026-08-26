@@ -157,3 +157,41 @@ user settings ever appear to be ignored inside a task, look here first.
 
 Screenshot and image reads aside, do not "optimize" the two review subagents onto a cheaper
 model: adversarial judgment is what they are for, and it is the wrong place to save $20.
+
+## Round 3: document volume, and what repo weight actually is
+
+Two things people assume about the generated docs, both measured and both wrong in the same
+direction — they are cheaper than they look, and they are not what makes the repo big.
+
+**Writing documents costs ~$6.50 of $2,813 — 0.2% of spend.** Document generation is not a
+token problem and optimizing it saves nothing measurable. What matters is whether a document
+is ever *read*, since that is the recurring cost:
+
+| Document | Writes | Reads | Ratio |
+|---|---|---|---|
+| `.pm/tasks/` specs | 214 | 272 | 1.27 — load-bearing, the backlog dispatches from them |
+| `.swe/epics/` | 7 | 7 | 1.00 — working as designed |
+| test-scenarios | 211 | 75 | **0.36** — two thirds never opened again |
+
+Test scenarios are written for a *person*, so a low agent read-back ratio is expected rather
+than damning — but the user confirmed they rarely read them, so Phase 5 / rule 14 now writes
+one **only when the change gives someone something to go and do**, with a one-line "skipped,
+nothing to walk through" otherwise. The existing 50 files were left in place.
+
+**Do not gitignore the journal.** It was proposed as a way to keep the repo small. It saves no
+tokens at all — cost is incurred when a file is read into context, not when it is in git, and
+an auto-injected `CLAUDE.md` costs exactly the same gitignored. It also *raises* token usage on
+any fresh clone or second machine, because the agent re-learns every gotcha and re-investigates
+settled decisions. And `file-reads-and-git.md` records two knowingly-open CRITICAL holes; that
+knowledge has to travel with the repo.
+
+**The repo weight was three images, not the docs.** Of 11.7 MB tracked, agent docs were 1.0 MB
+(8.6%) while `public/{swe,fe,pm}-agent.png` were **5.25 MB (45%)** — 1254×1254 photos rendered
+at a maximum of 80px (`components/AgentAvatar.tsx`). Resized to 240px (3× the largest render):
+**11.7 MB → 6.7 MB tracked (−43%)** and the release tarball **7.97 MB → 2.94 MB (−63%)**, which
+is ~5× what deleting every generated document would have reclaimed. Originals remain in git
+history if a larger source is ever needed.
+
+Note the limit of that fix: it shrinks the working tree, future clones and the tarball, but the
+old 5 MB blobs stay in `.git` history forever. Rewriting history to reclaim them was **not**
+done and is not worth it — `.git` is only 24 MB.

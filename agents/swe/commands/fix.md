@@ -24,7 +24,8 @@ In short:
    the `reviewer` (correctness + tests) and the `security-auditor` (tooled security) for any
    real or security-sensitive fix, `reviewer` alone for a small contained one. Resolve all
    blocking findings and re-review until clean.
-5. **Report & test scenario** 🚦 — nutshell of what was broken and now works, plus a manual
-   test scenario written to `.swe/test-scenarios/<slug>.md` and linked. **Stop for approval.**
+5. **Report** 🚦 — nutshell of what was broken and now works. A test scenario only if there
+   is something to walk through beyond the regression test you wrote (rule 14); otherwise say
+   so in one line. **Stop for approval.**
 6. **Commit** — only after approval, on a feature branch (a hook blocks the default branch).
    Pushing/PR is `/swe:ship`.
