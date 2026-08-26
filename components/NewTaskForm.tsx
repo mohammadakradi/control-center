@@ -49,11 +49,13 @@ const MODELS = [
   { value: "sonnet-5", label: "Sonnet 5" },
 ];
 
-/** What "Auto" routes to, per agent (mirrors runner/model-router.ts). */
+/** What "Auto" routes to, per agent (mirrors runner/model-router.ts). Auto never picks
+ *  Fable 5 — at double Opus 5's price that is a choice to make deliberately, so it is
+ *  offered in the picker above and never escalated to on a triage guess. */
 function autoHint(namespace?: string): string {
   if (namespace === "pm")
-    return "Auto picks Fable 5 for very complex planning, otherwise Sonnet 5.";
-  return "Auto picks Fable 5 for very complex tasks, Opus 5 for complex work, and Sonnet 5 for simple changes.";
+    return "Auto picks Opus 5 for very complex planning, otherwise Sonnet 5. Pick Fable 5 yourself if you want it.";
+  return "Auto picks Opus 5 for complex work and Sonnet 5 for simple changes. Pick Fable 5 yourself if you want it.";
 }
 
 // Per-namespace presentation for the agent cards. Falls back gracefully for

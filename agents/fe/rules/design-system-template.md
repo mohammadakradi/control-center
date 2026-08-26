@@ -8,6 +8,11 @@ Fill every field from the **actual values** in the repo's token/theme source and
 directories (exact hex/tokens, real file paths). Omit a section only if it genuinely doesn't
 apply. Keep it accurate and current — a stale inventory causes drift.
 
+**Budget: 25 KB** (frontend rule 7). This file is read at the start of most tasks, so it is a
+**reference, not an essay**: tables of tokens and components with one line each. The reasoning
+behind a choice belongs in the journal (`.fe/notes/`), not here. Over budget means consolidate
+or move detail out — never append.
+
 ---
 
 ```markdown

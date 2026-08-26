@@ -176,7 +176,7 @@ before(async () => {
   // A task pointing at a project row that doesn't exist — what the LEFT join in `searchAll`
   // exists for. It takes a pragma to build: a freshly migrated database DOES enforce the foreign
   // key (`SQLITE_CONSTRAINT_FOREIGNKEY`, found by trying), so this state is only reachable where
-  // enforcement lapsed — which is exactly the condition .swe/notes.md records for the real
+  // enforcement lapsed — which is exactly the condition .swe/notes/gotchas-1.md records for the real
   // database, and why the join isn't an inner one.
   const raw = db.$client as unknown as { pragma(s: string): unknown };
   raw.pragma("foreign_keys = OFF");
@@ -404,7 +404,7 @@ test("backlog items tie-break most-recently-updated first", () => {
 
 test("a task whose project row is gone still comes back, with a null project name", () => {
   // The join is LEFT on purpose: `tasks.project_id` is NOT NULL with a cascade FK on paper, but
-  // FK enforcement in the real database is unreliable (.swe/notes.md), and a matched task must
+  // FK enforcement in the real database is unreliable (.swe/notes/gotchas-1.md), and a matched task must
   // not silently vanish from search because its project row went missing.
   const hit = find("orphan task").tasks.items.find((t) => t.id === "t9");
   assert.ok(hit, "an orphaned task is still findable");

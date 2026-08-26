@@ -173,7 +173,7 @@ export function updateRunPaths(env: UpdateEnv = process.env): {
  * the contained path during the window passes both checks, because rename moves the only name
  * rather than adding a second one, so `nlink` stays 1. Note the shape — a hard-link test does
  * not cover it. Closing it needs the parent directory held as a descriptor (`openat`/`O_PATH`),
- * which Node doesn't expose; `.swe/notes.md` records the same residual for `readBytesInside`.
+ * which Node doesn't expose; `.swe/notes/file-reads-and-git.md` records the same residual for `readBytesInside`.
  *
  * `tail` reads the last `maxBytes` instead of refusing an oversized file: an update log is a
  * `next build` transcript, and its end is the interesting part.

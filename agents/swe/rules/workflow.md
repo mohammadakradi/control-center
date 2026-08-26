@@ -22,8 +22,11 @@ into an epic up front via `/swe:plan`.
 ## Phase 1 — Investigate
 Understand the request before planning anything.
 
-- **Read `.swe/notes.md` first** — the project's decision & gotcha journal. It tells you
-  about settled decisions, environment quirks, and traps so you don't re-learn them. (If it
+- **Read the `.swe/notes.md` index first** — the project's decision & gotcha journal. It
+  tells you about settled decisions, environment quirks, and traps so you don't re-learn
+  them. It is an **index** (rule 10): read it, then open only the `.swe/notes/<topic>.md`
+  files this request actually touches, or `grep -ril '<term>' .swe/notes/` to find a note by
+  keyword. Don't read the whole journal — it is the largest avoidable cost in a run. (If it
   doesn't exist yet, onboarding should have created it; create it if missing.)
 - **Query the code graph first** (rule 17): if `graphify-out/graph.json` exists, use
   `graphify query/explain/path/affected` to locate the code and understand its relationships
@@ -74,9 +77,8 @@ reason about complexity and flag any regression risk. If anything fails, fix and
 Then **update `.swe/notes.md`** with new gotchas and the rationale for choices made here;
 correct any note this change made stale.
 
-## Phase 4 — Independent review (required, blocking)
-Before reporting, get **two independent, decorrelated lenses** that are not you — dispatch
-both (they can run together):
+## Phase 4 — Independent review (blocking, scaled to the diff)
+Before reporting, get independent lenses that are not you. There are two:
 
 - **`reviewer` subagent** — adversarial **correctness + test-coverage** review. A changed
   behavior with no real test is blocking.
@@ -84,9 +86,28 @@ both (they can run together):
   scanners** (dependency audit, secret scan, semgrep if present) per `rules/security.md`.
   Pinned to a different model so it doesn't share the author's blind spots.
 
-**Resolve every blocking finding** from either (re-enter Phase 3 as needed), then re-review
-until both return no blocking findings. Address or consciously note non-blocking ones. You
-may not advance to the report gate while any blocking finding is open.
+**Scale the review to the change, and decide from the actual diff** (`git diff --stat`), not
+from how the request was worded. A subagent is a fresh context that re-loads the project's
+docs from scratch, so an unconditional pair on a two-line change costs more than the change:
+
+- **Both** — the default for any real behavior change. Mandatory, whatever the size, when the
+  diff touches auth, sessions, input handling, secrets/tokens, file/DB/network access,
+  permissions, deserialization, crypto, or process spawning; adds or bumps a dependency; or
+  changes a migration. Also both once the diff exceeds ~150 changed lines or ~6 files.
+- **`reviewer` alone** — a small, self-contained behavior change (under ~150 lines, no file
+  from the mandatory list above). Say in your report that you skipped the security lens and
+  why.
+- **Neither** — only when the diff changes no behavior at all: comments, docs, copy strings,
+  formatting, a renamed local. Run the test and lint suites and say you skipped review.
+
+When in doubt, dispatch both — the cost of a missed security finding dwarfs the cost of a
+subagent. Never skip a lens to save time on a change you are unsure about.
+
+**Resolve every blocking finding** from whichever lenses ran (re-enter Phase 3 as needed),
+then re-review until they return no blocking findings. Address or consciously note
+non-blocking ones. You may not advance to the report gate while any blocking finding is open.
+**Re-review the fix, not the whole diff again** — dispatch the follow-up scoped to what you
+changed in response.
 
 ## Phase 5 — Report & test scenario  🚦 GATE 2 (report)
 Two deliverables, then stop for approval:

@@ -1359,7 +1359,7 @@ test("known-live: a repo-planted credential.helper still runs on push (not fixed
     assert.match(
       resolved,
       /touch/,
-      "credential.helper is now filtered — good; update this spec and .swe/notes.md",
+      "credential.helper is now filtered — good; update this spec and .swe/notes/file-reads-and-git.md",
     );
     assert.equal(
       existsSync(marker),
@@ -1404,7 +1404,7 @@ test("a path ending in whitespace keeps it", () => {
  * investigating: a tracked path hard-linked to a 137-line file outside the repo is reported as
  * `+137 −1`.
  *
- * **That is knowingly not fixed** (2026-08-18; see `.swe/notes.md`). Every sound fix requires us
+ * **That is knowingly not fixed** (2026-08-18; see `.swe/notes/file-reads-and-git.md`). Every sound fix requires us
  * to do the reading ourselves, and added/deleted are *diff* quantities rather than line counts,
  * so it costs either a `git show` subprocess per changed file — on a page that renders on every
  * project view, once per workspace member — or a hand-rolled line-diff whose numbers would
@@ -1420,7 +1420,7 @@ test("a path ending in whitespace keeps it", () => {
  *
  * The `+137 −1` assertion below is a characterisation of the accepted leak, not a requirement.
  * If you are here because you closed it: good — update this spec, don't delete it, and move the
- * note in `.swe/notes.md` from "residual" to "fixed".
+ * note in `.swe/notes/file-reads-and-git.md` from "residual" to "fixed".
  */
 test("the change summary reports counts, never file content", () => {
   const leakBase = realpathSync(mkdtempSync(join(tmpdir(), "platform-git-sum-")));

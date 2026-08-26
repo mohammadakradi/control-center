@@ -6,7 +6,7 @@
  * **Why this isn't in the component.** Diffing needs the *previous* snapshot, and
  * `useSyncExternalStore` only ever hands you the current one. Keeping the previous in
  * component state would mean writing it from an effect — `setState` inside `useEffect` is a
- * hard error in this build (`.fe/notes.md`) — and doing the diff during render would be a side
+ * hard error in this build (`.fe/notes/environment.md`) — and doing the diff during render would be a side
  * effect in render. So the previous snapshot lives here, in module scope, next to the store it
  * mirrors. `Toaster` only mounts this and reads the queue.
  *

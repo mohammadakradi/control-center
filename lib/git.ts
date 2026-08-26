@@ -128,7 +128,7 @@ const NO_CUSTOM_DIFF_DRIVERS = ["--no-ext-diff", "--no-textconv"];
  * `core.sshCommand`. A sound fix has to decide which helpers are trusted and re-inject them, which
  * is a change to how this app authenticates (compose wiring, native installs, docs) rather than a
  * flag — and inspecting `.git/config` first and refusing is check-then-use, the pattern this file
- * has already rejected twice. Tracked in the backlog; see `.swe/notes.md`.
+ * has already rejected twice. Tracked in the backlog; see `.swe/notes/file-reads-and-git.md`.
  *
  * Also unchanged and pre-existing: `filter.<driver>.clean` (no `-c` key exists — the driver name
  * is attacker-chosen), and a `.git` *file* redirecting the whole repo past `isGit`.
@@ -196,7 +196,7 @@ export function gitEnv(): NodeJS.ProcessEnv {
  *
  * Pinning them in the two shared helpers rather than per call site is deliberate: the flags that
  * were added per-call before this (`--no-ext-diff`, `--submodule=short`) each had to be added
- * again to the next command someone wrote, and the audit history in `.swe/notes.md` is largely a
+ * again to the next command someone wrote, and the audit history in `.swe/notes/log-git-hardening-1.md` is largely a
  * list of times one was missed.
  */
 // `resolve(cwd)` rather than `cwd`: `--work-tree` must be absolute to mean anything. It is
@@ -254,7 +254,7 @@ export function repoOpts(cwd: string): string[] {
  * failed request: `git()` already answers "" for a failure, so the page degrades to zero counts.
  *
  * That is a bound on the damage, **not** a fix for the execution itself — see the note in
- * `.swe/notes.md` and the filed backlog item; no flag closes it, because `.git/info/attributes` is
+ * `.swe/notes/file-reads-and-git.md` and the filed backlog item; no flag closes it, because `.git/info/attributes` is
  * untracked, agent-writable, and unaffected by `--attr-source` (which this git is too old for
  * anyway). Verified the mechanism works: a `sleep 30` clean filter is killed at the timeout with
  * `ETIMEDOUT`/`SIGTERM` rather than blocking.

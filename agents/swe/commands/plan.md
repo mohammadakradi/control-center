@@ -10,7 +10,8 @@ Follow `${CLAUDE_PLUGIN_ROOT}/rules/epics.md` and the engineering rules. This co
 
 ## Steps
 
-1. **Ground yourself.** Read this project's `CLAUDE.md` and `.swe/notes.md`. If there's no
+1. **Ground yourself.** `CLAUDE.md` is already in your context — don't read it. Read the
+   `.swe/notes.md` index and only the topic files this goal touches. If there's no
    `CLAUDE.md`, run the `onboard` skill first. Investigate enough of the codebase to plan
    realistically (use the `explorer` subagent for big repos).
 2. **Decompose** the goal into **milestones**, each broken into **small, independently

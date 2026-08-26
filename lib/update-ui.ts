@@ -20,7 +20,7 @@
  * - **the copy itself**, built as whole template strings. Two reasons for that: singular/plural
  *   ("1 task is" vs "3 tasks are") is a real correctness bug in a sentence a user reads at the
  *   moment they're being told to make a decision, and interleaving `{expr}` with prose in JSX
- *   silently drops the space between them (see `.fe/notes.md` — it shipped once as
+ *   silently drops the space between them (see `.fe/notes/environment.md` — it shipped once as
  *   "90 taskspredates").
  *
  * The type is imported **type-only** on purpose: `lib/update-run.ts` reaches for `node:fs`, and

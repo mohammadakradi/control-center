@@ -6,12 +6,16 @@ argument-hint: <the request / feature / problem to plan>
 Plan this request into implementation tasks: **$ARGUMENTS**
 
 Follow the **planning workflow** in `${CLAUDE_PLUGIN_ROOT}/rules/workflow.md` and the
-project-manager rules in `${CLAUDE_PLUGIN_ROOT}/rules/pm-rules.md`. You **plan only — you do
+project-manager rules in `${CLAUDE_PLUGIN_ROOT}/rules/pm-rules.md`. **Read each of those
+at most once**, at the start — they don't change mid-request, and a re-read is a second
+full copy in the transcript, re-sent on every later call (rule 11). You **plan only — you
+do
 not write product code or touch git.**
 
 In short:
 
-1. **Investigate & validate the request** — read `CLAUDE.md` and `.pm/notes.md`; ensure the
+1. **Investigate & validate the request** — read the `.pm/notes.md` index and only the topic
+   files this touches (`CLAUDE.md` is already in your context — don't read it); ensure the
    graphify code graph exists (run `${CLAUDE_PLUGIN_ROOT}/scripts/ensure-graphify.sh .` if
    missing) and **query it** (`graphify query/explain/path/affected`). Then **master the
    request before solutioning** per `${CLAUDE_PLUGIN_ROOT}/rules/request-validation.md`: with

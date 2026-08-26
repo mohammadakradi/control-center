@@ -15,7 +15,8 @@ Understand the project, then **master the request itself before solutioning** �
 it, test it against the code (full procedure in
 `${CLAUDE_PLUGIN_ROOT}/rules/request-validation.md`).
 
-- **Read context:** `CLAUDE.md` and `.pm/notes.md` (if present).
+- **Read context:** the `.pm/notes.md` index, then only the `.pm/notes/<topic>.md` files this
+  request touches (if present). `CLAUDE.md` is already in your context — never read it.
 - **Ensure the code graph:** if `graphify-out/graph.json` is missing, run
   `bash ${CLAUDE_PLUGIN_ROOT}/scripts/ensure-graphify.sh .` (fail-soft). Then **query the
   graph** (`graphify query/explain/path/affected`, `GRAPH_REPORT.md`) — cheaper and more
@@ -48,7 +49,7 @@ it, test it against the code (full procedure in
   **propose no tasks**.
 
 Then **STOP and wait for the user.**
-- Approved to build → record the decision in `.pm/notes.md`, go to Phase 3.
+- Approved to build → record the decision in the right `.pm/notes/<topic>.md`, go to Phase 3.
 - "Already works / skip it" → record the assessment (Phase 3 writes `index.md` only), report.
 - The user corrects you or insists despite a risk → revise and re-present, or proceed having
   flagged the risk. Don't write task files until they approve.

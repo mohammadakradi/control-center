@@ -61,7 +61,7 @@ to `.gitignore`. It is **fail-soft**: if it can't install or build, it prints th
 simply fall back to normal search. Note in your report whether the graph is available.
 
 Afterwards, **query it with a PATH prefix** (`$HOME/.local/bin` isn't on PATH and an `export`
-doesn't survive between Bash calls — see rule 18):
+doesn't survive between Bash calls — see rule 19):
 
 ```bash
 PATH="$PATH:$HOME/.local/bin" graphify query "…"
@@ -95,27 +95,33 @@ Note for the user: the permission mode is read at session start, so it takes eff
 multi-repo workspace, write this into each member repo **and** the workspace root.
 
 ### 7. Initialize the decision & gotcha journal
-If `.swe/notes.md` doesn't exist, create it as an empty journal the agent will read before
-each task and update after each decision/change (see engineering rule 10):
+If `.swe/notes.md` doesn't exist, create it as an **index** (engineering rule 10). The notes
+themselves live in `.swe/notes/<topic>.md`; the index is read at the start of every request,
+so it stays under 8 KB and holds pointers only:
 
 ```markdown
-# Project Notes & Decisions
+# Project Notes & Decisions — index
 
-A running journal kept by the swe-agent: reusable lessons not obvious from the code —
-environment gotchas, surprising behaviors, and the rationale behind decisions. Read before
-acting; updated after each decision or change. Keep entries short and accurate.
+A journal kept by the swe-agent: reusable lessons not obvious from the code — environment
+gotchas, surprising behaviors, and the rationale behind decisions.
 
-## Decisions
-<!-- YYYY-MM-DD — what was decided — why -->
+Notes live in `.swe/notes/<topic>.md`. Read this index, then open only the topics your
+request touches — or `grep -ril '<term>' .swe/notes/` to find one by keyword. Never read the
+whole journal.
 
-## Gotchas
-<!-- non-obvious facts: env setup, surprising behavior, traps to avoid -->
+| Topic | Covers |
+|---|---|
+| [environment](notes/environment.md) | setup, build/test quirks, versions, services |
+| [decisions](notes/decisions.md) | what was decided and why, newest first |
 ```
 
-Seed it with anything notable you already learned during onboarding (e.g. "tests need a
-running Postgres", "build only works on Node 24"). In a workspace, put `.swe/notes.md` at
-the workspace root for system-level notes and one in each member repo for repo-specific
-ones.
+Create `.swe/notes/environment.md` and `.swe/notes/decisions.md` alongside it, and seed them
+with anything notable you learned during onboarding (e.g. "tests need a running Postgres",
+"build only works on Node 24"). Add topics as the project needs them; each file's budget is
+30 KB, and a topic that outgrows it gets split rather than left to grow.
+
+In a workspace, put the journal at the workspace root for system-level notes and one in each
+member repo for repo-specific ones.
 
 ### 8. Report
 Summarize for the user: detected stack, the build/test/run commands, baseline status

@@ -44,7 +44,7 @@ export function ActivityBadge({ className = "" }: { className?: string }) {
   /**
    * Close on navigation, by **resetting** state during render — React's documented "adjust
    * state when something changes" pattern, which is not `setState` in an effect (a hard error
-   * in this build; see `.fe/notes.md`).
+   * in this build; see `.fe/notes/environment.md`).
    *
    * The first version derived `open` from `openedAt.path === pathname` instead. That closed
    * the popover on the way out but never cleared it, so coming *back* to the page it was

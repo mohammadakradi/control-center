@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 type Bucket = { count: number; resetAt: number };
 
 // In-memory fixed-window limiter. Fine for this app: single instance, no external
-// cache/infra layer (see .swe/notes.md). Resets on process restart — acceptable for
+// cache/infra layer (see .swe/notes/decisions-1.md). Resets on process restart — acceptable for
 // throttling brute-force/DoS attempts against local auth endpoints.
 const buckets = new Map<string, Bucket>();
 

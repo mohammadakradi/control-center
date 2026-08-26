@@ -38,9 +38,27 @@ confirmed the changes (workflow Gate 2). When you do touch git:
 - Use the project's existing commit-message style.
 - Pushing and opening PRs are separate and explicit — only via `/swe:ship`.
 
-## 7. Keep CLAUDE.md current
+## 7. Keep CLAUDE.md current — and inside a 20 KB budget
 When a task changes architecture, build/test commands, or conventions, update the
 relevant `CLAUDE.md` section as part of the same task. Treat stale docs as a bug.
+
+**`CLAUDE.md` has a hard budget of 20 KB, and exceeding it is also a bug.** This file is
+auto-loaded into every session on the project, so it sits in the prompt of *every* model call
+that every future task makes — at 150 KB it is ~38k tokens re-sent thousands of times per
+task. It is the most expensive file in the repo, and nothing warns you when it grows.
+
+Check it with `wc -c CLAUDE.md` before you finish. If your edit would push it over budget,
+you are over budget and must **consolidate, not append**:
+- Merge duplicated explanations, and cut the story of *how* a decision was reached down to
+  the decision plus one line of why.
+- Move long-form detail into `.swe/notes/<topic>.md` (rule 10) and leave a one-line pointer.
+- Delete what is now false, or what a reader could re-derive from the code it describes.
+
+**Never open `CLAUDE.md` with the Read tool.** It is already in your context verbatim before
+your first turn. Reading it adds a second full copy to the transcript, which is then re-sent
+on every remaining call of the session, and tells you nothing you did not already have. Edit
+it freely — just never read it back. The same applies to any file the harness tells you it
+has already loaded.
 
 ## 8. Ask only when genuinely blocked
 Resolve ambiguity yourself with sensible defaults and note the choice. Ask the user only
@@ -67,15 +85,32 @@ say in your report that you've recommended pm investigate it. The pm agent runs 
 investigation and breaks it into implementable specs, which come back into the same backlog.
 That is the escalation path — use it rather than either guessing or staying silent.
 
-## 10. Keep a decision & gotcha journal (`.swe/notes.md`)
-The project carries a running journal at `.swe/notes.md` — reusable lessons that aren't
-obvious from the code: environment gotchas, surprising behaviors, and the rationale behind
-decisions.
-- **Read it before acting** — at the start of every request, so you don't re-learn the
-  hard way or re-litigate a settled decision.
-- **Update it after every decision or change** — record new gotchas you hit, decisions you
-  made and why, and **correct or remove** any existing note that's now stale. Keep entries
-  short and accurate; this file is a tool, not a diary — don't let it bloat.
+## 10. Keep a decision & gotcha journal — as an index, not one long file
+The project carries a running journal of reusable lessons that aren't obvious from the code:
+environment gotchas, surprising behaviors, and the rationale behind decisions. It is stored
+as **an index plus topic files**, because a single journal grows without bound and gets read
+in full at the start of every request:
+
+- **`.swe/notes.md` is an index, budget 8 KB.** One line per topic — the topic, what it
+  covers, and the path to its file. Nothing else lives here.
+- **`.swe/notes/<topic>.md` holds the actual notes, budget 30 KB each.** Split a topic that
+  outgrows its budget rather than letting it run.
+
+**Reading it — cheaply, not wholesale.** At the start of a request, read the 8 KB index, then
+open **only** the topic files the request actually touches. To find a note without knowing its
+topic, `grep -ril '<term>' .swe/notes/` and read the hit. Never read the whole `.swe/notes/`
+directory "for context": a 233 KB journal is ~58k tokens that then ride in the prompt of every
+remaining call in the session, and you will have read almost none of it for a reason.
+
+**Updating it after every decision or change.** Record gotchas you hit and decisions you made
+and why, in the topic file where they belong (create one, and add its index line, if no topic
+fits). **Correct or remove** any note that is now stale — a wrong note is worse than none.
+Check budgets with `wc -c .swe/notes.md .swe/notes/*.md` before you finish; over budget means
+consolidate or split, never append. This is a tool, not a diary.
+
+*Migrating an existing flat `.swe/notes.md`:* if you find one over budget, split it into topic
+files as part of the task that noticed, and leave the index behind. Don't rewrite the notes
+while you move them.
 
 ## 11. Plan and decompose every request
 No request is too small to plan. Break the work into an ordered **checklist** of small,
@@ -130,7 +165,7 @@ The project carries a **code knowledge graph** at `graphify-out/graph.json` (bui
 where something is defined, what depends on it, how a change ripples, how components/services
 connect — **query the graph first** instead of reading or grepping broadly. It's faster and
 burns far fewer tokens.
-Invoke it with the PATH prefix described in rule 18 — `PATH="$PATH:$HOME/.local/bin" graphify …`:
+Invoke it with the PATH prefix described in rule 19 — `PATH="$PATH:$HOME/.local/bin" graphify …`:
 - `graphify query "<question>"` — traverse the graph for a question (token-budgeted).
 - `graphify explain "<node>"` — a node and its immediate neighbors.
 - `graphify path "<A>" "<B>"` — how two things connect.
@@ -144,7 +179,35 @@ files or symbols, refresh with `graphify update .` (no LLM) — treat a stale gr
 docs (rule 7). If `graphify-out/` doesn't exist, run
 `bash ${CLAUDE_PLUGIN_ROOT}/scripts/ensure-graphify.sh .` to build it (fail-soft).
 
-## 18. A missing tool is a thing you install, not a dead end
+## 18. Read narrowly, and never read the same thing twice
+Everything you read stays in the conversation for the rest of the run and is re-sent to the
+model on **every subsequent call**. A 2,000-line file you opened once to check one function is
+not a one-off cost — it is paid again on every turn that follows. Measured on this agent's own
+history, tool results were 25M tokens, two thirds of it `Read`, and 67% of those reads pulled
+whole files.
+
+So read like it costs something, because it does:
+
+- **Locate first, then read the part.** `grep -n` (or the code graph, rule 17) to find the
+  line, then read a bounded range around it — not the file, then a scan with your eyes.
+  Reading a whole file is right when you are about to change most of it, or it is genuinely
+  small; it is the wrong default for "is this function what I think it is".
+- **Never re-read what you already have.** If a file is already in the conversation, it is
+  still there — scroll, don't re-read. Re-read only after *you* changed the file, or something
+  else did. (The same run has re-read one unchanged file five times.)
+- **Prefer the narrow tool.** `grep` for "does this symbol exist / where is it used" beats
+  reading candidates. Ask for the specific thing rather than a directory dump.
+- **Big generated artifacts** — lock files, bundles, minified output, long logs — get grepped,
+  never read. Pipe a long command through `head`/`tail`/`grep` rather than letting thousands of
+  lines land in the transcript.
+- **A subagent is the tool for a wide sweep.** When something genuinely needs many files read,
+  dispatch the `explorer` (rule 13's lenses aside) so the reading happens in *its* context and
+  only the conclusion comes back to yours.
+
+This is not a reason to under-investigate. Read whatever you actually need to be correct — the
+rule is to read the *right* slice on purpose, not to read less than the work requires.
+
+## 19. A missing tool is a thing you install, not a dead end
 When a CLI you need isn't on the machine, **install it into user space and carry on** — don't
 silently downgrade to a worse method and don't ask the user to install it for you.
 

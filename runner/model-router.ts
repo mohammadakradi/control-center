@@ -26,14 +26,26 @@ const LEGACY: Record<string, ModelLabel> = {
   opus: "opus-4.8",
 };
 
-/** Complexity tiers, mapped to models per agent.
- *  - pm: Fable 5 only for very complex planning; Sonnet 5 for everything else.
- *  - swe/fe (default): Fable 5 for very complex builds, Opus 5 for complex work,
- *    Sonnet 5 for simple changes. Sonnet 4.6 / Opus 4.8 are never auto-selected. */
+/**
+ * Complexity tiers, mapped to models per agent.
+ *  - pm: Opus 5 for very complex planning; Sonnet 5 for everything else.
+ *  - swe/fe (default): Opus 5 for complex and very complex work, Sonnet 5 for simple
+ *    changes. Sonnet 4.6 / Opus 4.8 are never auto-selected.
+ *
+ * **Fable 5 is deliberately not auto-selected**, though it stays fully available when a user
+ * picks it. It is $10/$50 per Mtok against Opus 5's $5/$25 — double the price on a tier
+ * chosen by a *triage guess* about a request nobody has read yet. Measured on this install:
+ * 17 auto-routed Fable runs cost $389, averaging $23 each, with no evidence the escalation
+ * was needed. Paying twice as much is a decision worth making on purpose, so it moved to the
+ * model picker. `CC_ENABLE_FABLE_TIER=1` restores the old auto-escalation.
+ */
 type Tier = "very-complex" | "complex" | "simple";
+const FABLE_TIER_ENABLED = process.env.CC_ENABLE_FABLE_TIER === "1";
+/** Top of the auto-routed ladder — Fable 5 only when an operator asked for it. */
+const TOP: ModelLabel = FABLE_TIER_ENABLED ? "fable-5" : "opus-5";
 const TIERS: Record<string, Record<Tier, ModelLabel>> = {
-  pm: { "very-complex": "fable-5", complex: "sonnet-5", simple: "sonnet-5" },
-  default: { "very-complex": "fable-5", complex: "opus-5", simple: "sonnet-5" },
+  pm: { "very-complex": TOP, complex: "sonnet-5", simple: "sonnet-5" },
+  default: { "very-complex": TOP, complex: "opus-5", simple: "sonnet-5" },
 };
 
 // Cheapest/fastest model — used for tiny side calls (naming a task) where quality
