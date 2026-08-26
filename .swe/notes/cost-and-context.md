@@ -195,3 +195,52 @@ history if a larger source is ever needed.
 Note the limit of that fix: it shrinks the working tree, future clones and the tarball, but the
 old 5 MB blobs stay in `.git` history forever. Rewriting history to reclaim them was **not**
 done and is not worth it — `.git` is only 24 MB.
+
+## Round 4: effort as a user control, and the per-agent model policy
+
+Two user-facing controls, both aimed at the same thing.
+
+**Effort** (`tasks.effort`, the SDK's `Options.effort`) is now selectable next to Model:
+`auto` or `low|medium|high|xhigh`. Nothing was setting it before, so every run inherited Claude
+Code's `xhigh` default — `/swe:ship` reasoned as hard as an architecture change.
+
+Two decisions inside `resolveEffort` worth not undoing:
+- **It does not run its own triage call.** A second classifier round-trip to choose effort
+  would cost more than the setting saves, so `auto` reuses the tier the *model* triage already
+  paid for (it parses `chosen.reason`). One classification, two decisions. If the model reason
+  format changes, `resolveEffort`'s tier detection changes with it — they are coupled on
+  purpose, and `runner/model-router.test.ts` pins the strings.
+- **The command outranks the request.** A wordy `/swe:ship` must not talk itself into deep
+  reasoning, so `MECHANICAL` commands are `low` before the tier is even consulted.
+- **`max` is not offered.** It is a real SDK level; this control exists to reduce spend, and
+  `max` is the one direction that raises it.
+
+Be honest about where the saving comes from: thinking is only 4% of output tokens here, so
+lower effort does not save money by thinking less. It saves it because the agent makes fewer,
+more consolidated tool calls — a shorter transcript — and transcript re-transmission is 60% of
+the bill.
+
+**The per-agent model policy** (`agent_model_policies`, Settings → Agent models) replaces the
+`CC_ENABLE_FABLE_TIER` env flag from round 2. One decision should have one mechanism, and an
+env var could not express "Fable for pm but not swe".
+
+Design points that are load-bearing:
+- **Keyed by namespace, not `agents.id`.** An agent re-discovered from a different marketplace
+  or path gets a new `agents` row; a policy keyed on that id would silently reset to defaults
+  on a re-install, quietly re-enabling a model someone had switched off.
+- **A missing row means the defaults, not "all allowed"** — otherwise a fresh install
+  auto-routes onto the most expensive model before anyone opens Settings.
+- **Enforced twice, deliberately.** `lib/dispatch.ts` refuses an explicit denied pick *before
+  the row exists* (a filtered dropdown alone is decoration any API caller can bypass), and the
+  router clamps its own selection **down** the ladder. Clamping rather than refusing is what
+  lets a task created before a policy change still be continued.
+- **A broken policy fails cheap.** The column is plain JSON, so an import or hand-edit can
+  produce `[]` or garbage; `allowedModelsFor` then falls back to the *cheapest* model, never
+  the dearest, and the API refuses to save an empty list in the first place.
+
+Two traps hit while building this, both already documented elsewhere and both still caught me:
+- **A new route directory 404s until the dev server restarts** — `/api/settings/agent-models`
+  returned the HTML shell until a container restart (`.swe/notes/build-and-environment.md`).
+- **`setState` in a `useEffect` is a hard lint error here.** Keeping the model picker valid when
+  the agent changes had to be *derived* at render, not synced in an effect
+  (`.fe/notes/environment.md`). Deriving is the better shape anyway — no second source of truth.

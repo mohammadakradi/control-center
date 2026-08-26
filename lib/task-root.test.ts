@@ -68,6 +68,8 @@ const task = (over: Partial<Task> = {}): Task => ({
   status: "done",
   model: "auto",
   modelReason: null,
+  effort: "auto",
+  effortReason: null,
   attachments: [],
   sessionId: null,
   branch: null,

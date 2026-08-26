@@ -72,6 +72,28 @@ match). Creating an account starts a private workspace instead of unlocking the 
   `~/.control-center/.env` and the vault. Separate macOS accounts get separate installs and are
   genuinely isolated; two people sharing one login are not.
 
+## Model and effort selection
+Two controls on every dispatch, both stored on the task and both resolved by
+`runner/model-router.ts`:
+- **Model** — `auto` or a concrete label. `auto` triages the request into
+  simple/complex/very-complex and maps it through the agent's tier table.
+- **Effort** — `auto` or `low|medium|high|xhigh` (the SDK's `Options.effort`). `auto` reuses
+  the tier the model triage already classified, so it costs no extra round-trip; mechanical
+  commands (`ship`/`review`/`security`/`onboard`/`workspace`/`audit`) drop to `low`. Claude
+  Code's own default is `xhigh`, which is why every run used to reason as hard as the hardest
+  task. `max` exists in the SDK and is deliberately not offered — this control is for
+  spending less.
+
+**`agent_model_policies` gates both** (Settings → Agent models, `lib/agent-policy.ts`).
+Install-wide, keyed by namespace, and **Fable 5 is denied for every agent by default** — it is
+2× Opus 5's price. A missing row means the defaults, never "everything allowed", so a fresh
+install cannot auto-route onto the dearest model. Enforcement is in two places on purpose:
+`lib/dispatch.ts` **refuses** an explicitly denied pick (a filtered dropdown alone would be
+decoration any API caller could bypass), and the router **clamps** its own choice down the
+ladder, so `auto` can never select a denied model and a task being continued after a policy
+change degrades instead of failing. `lib/models.ts` owns the vocabulary — never add a second
+copy of the model list.
+
 ## Where the detail lives (`.swe/notes/`)
 This file is an **orientation map under a 20 KB budget** (engineering rule 7): it is auto-loaded
 into every session, so every kilobyte is re-sent on every model call. The long-form reasoning —
@@ -111,6 +133,7 @@ Full annotated map, with the reasoning attached to each entry:
   `task-access.ts` (the only thing separating owners), `dispatch.ts` (creating + starting a
   task, and `parallelOffer`), `features.ts`, `backlog.ts`, `safe-read.ts`, `git.ts`,
   `task-root.ts`, `search.ts`, `secrets.ts`, `config.ts` (incl. the per-task run caps),
+  `models.ts` + `agent-policy.ts` (the model/effort vocabulary and the per-agent policy),
   `ui.ts` + `update-ui.ts` (DOM-free UI logic, kept out of `components/` so `pnpm test` can
   reach it), `db/` (Drizzle + SQLite, `db/migrate.ts`)
 - `runner/` — the Hono task-execution server, separate from Next.js and loopback-only.

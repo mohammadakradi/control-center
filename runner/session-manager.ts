@@ -27,7 +27,12 @@ import {
   type GateDecision,
   type GateKind,
 } from "./platform-mcp";
-import { generateTitle, resolveModel, type ModelChoice } from "./model-router";
+import {
+  generateTitle,
+  resolveEffort,
+  resolveModel,
+  type ModelChoice,
+} from "./model-router";
 import { buildTaskEnv, sensitiveEnvValues, type TaskEnv } from "./user-env";
 import {
   ensureFeatureBranch,
@@ -779,19 +784,36 @@ function runTask(
         choice,
         env,
       );
+      // Effort reuses the tier the model triage already classified (see resolveEffort), so
+      // this costs no extra round-trip. On resume `task.effort` is already concrete.
+      const effort = resolveEffort(task.command, task.effort || "auto", chosen.reason);
       db.update(tasks)
-        .set({ model: chosen.label, modelReason: chosen.reason })
+        .set({
+          model: chosen.label,
+          modelReason: chosen.reason,
+          effort: effort.level,
+          effortReason: effort.reason,
+        })
         .where(eq(tasks.id, taskId))
         .run();
-      record(handle, "model", { model: chosen.label, reason: chosen.reason });
+      record(handle, "model", {
+        model: chosen.label,
+        reason: chosen.reason,
+        effort: effort.level,
+        effortReason: effort.reason,
+      });
       record(handle, "log", {
-        message: `🧠 Model: ${chosen.label} — ${chosen.reason}`,
+        message: `🧠 Model: ${chosen.label} — ${chosen.reason} · effort ${effort.level} (${effort.reason})`,
       });
 
       const q = query({
         prompt: channel.gen(),
         options: {
           model: chosen.id,
+          // How hard the agent reasons, and how much it does per turn. Lower effort produces
+          // fewer, more consolidated tool calls — a shorter transcript, which is where the
+          // cost actually is (lib/models.ts).
+          effort: effort.level,
           // Runaway guards. The SDK ends the query with `error_max_turns` /
           // `error_max_budget_usd`, which the stream loop below already turns into a failed
           // task carrying the reason. Spread conditionally so "no cap" omits the key rather

@@ -549,3 +549,67 @@ test("a featureId naming nothing at all is refused the same way", async () => {
   assert.equal(outcome.ok, false);
   if (!outcome.ok) assert.equal(outcome.status, 400);
 });
+
+test("dispatch refuses a model the agent's policy denies", async () => {
+  // The whole point of the setting: "not allowed" must mean refused, not merely absent from
+  // the dropdown. An API caller (or a stale tab) must not be able to step around it.
+  // Fable 5 is denied by default, so no policy row is needed to exercise this.
+  const before = db.select().from(schema.tasks).all().length;
+  const outcome = await dispatch.createAndStartTask({
+    projectId: "p1",
+    agentId: "swe@swe-agent-local",
+    command: "review",
+    userId: "user_local",
+    model: "fable-5",
+  });
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.equal(outcome.status, 400);
+  assert.match(outcome.error, /not allowed for the swe agent/);
+  // Refused *before* the row exists — a rejected dispatch must not leave debris behind.
+  // Relative to the rows earlier tests in this file already created, not an absolute count.
+  assert.equal(db.select().from(schema.tasks).all().length, before);
+});
+
+test("allowing the model for that agent lets the same dispatch through the policy gate", async () => {
+  const { setAllowedModels } = await import("./agent-policy");
+  setAllowedModels("swe", ["sonnet-5", "opus-5", "fable-5"]);
+  const before = db.select().from(schema.tasks).all().length;
+  const outcome = await dispatch.createAndStartTask({
+    projectId: "p1",
+    agentId: "swe@swe-agent-local",
+    command: "review",
+    userId: "user_local",
+    model: "fable-5",
+  });
+  // The runner is pointed at a dead port, so this still fails — but on *starting* the task,
+  // with a row created, not on the policy. That distinction is the assertion.
+  if (!outcome.ok) assert.doesNotMatch(outcome.error, /not allowed/);
+  const rows = db.select().from(schema.tasks).all();
+  assert.equal(rows.length, before + 1, "the row should exist — it got past the policy gate");
+  assert.equal(rows.at(-1)!.model, "fable-5");
+  // Reset so ordering between tests can't leak the permissive policy.
+  setAllowedModels("swe", ["sonnet-5", "opus-5"]);
+});
+
+test("effort is stored as chosen, and an unknown level falls back to routing", async () => {
+  const { setAllowedModels } = await import("./agent-policy");
+  setAllowedModels("swe", ["sonnet-5", "opus-5"]);
+  for (const [given, expected] of [
+    ["low", "low"],
+    ["xhigh", "xhigh"],
+    ["max", "auto"], // a real SDK level this product does not offer
+    ["turbo", "auto"],
+    [undefined, "auto"],
+  ] as const) {
+    await dispatch.createAndStartTask({
+      projectId: "p1",
+      agentId: "swe@swe-agent-local",
+      command: "review",
+      userId: "user_local",
+      effort: given,
+    });
+    const row = db.select().from(schema.tasks).all().at(-1)!;
+    assert.equal(row.effort, expected, `effort ${given} should store as ${expected}`);
+  }
+});
