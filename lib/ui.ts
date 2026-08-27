@@ -567,6 +567,14 @@ export const MODEL_DISPLAY: Record<string, string> = {
   opus: "Opus 4.8",
 };
 
+/** Stored effort level → display name. Ordered cheapest-first where it matters. */
+export const EFFORT_DISPLAY: Record<string, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+};
+
 export const ACTIVE_STATUSES = new Set([
   "queued",
   "running",

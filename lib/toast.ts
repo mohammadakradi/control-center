@@ -6,7 +6,7 @@
  * task lifecycle events are detected by diffing successive polls of the shared active-tasks
  * store (`lib/task-toasts.ts`), which happens outside any render. Diffing during render would
  * be a side effect in render, and doing it in an effect would need `setState` in an effect —
- * a hard error in this build (see `.fe/notes.md`). So the watcher calls `toast()` and the
+ * a hard error in this build (see `.fe/notes/environment.md`). So the watcher calls `toast()` and the
  * component only ever *reads*.
  *
  * Everything here is pure bookkeeping over an array: no timers, no `document`, no `fetch`, so

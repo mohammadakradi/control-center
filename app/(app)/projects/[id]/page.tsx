@@ -27,6 +27,7 @@ import { AgentContributors } from "@/components/AgentContributors";
 import { AtAGlance } from "@/components/AtAGlance";
 import { SourceControl } from "@/components/SourceControl";
 import { NewTaskForm } from "@/components/NewTaskForm";
+import { allowedModels } from "@/lib/agent-policy";
 import { ProjectName } from "@/components/ProjectName";
 import { ProjectActions } from "@/components/ProjectActions";
 import { TokenNudge } from "@/components/TokenNudge";
@@ -81,6 +82,13 @@ export default async function ProjectDetail({
   const onboardedByAgent: Record<string, boolean> = {};
   for (const a of agents)
     onboardedByAgent[a.id] = isAgentOnboarded(project.path, a.namespace);
+
+  // Which models each agent may run on (Settings → Agent models), so the picker offers only
+  // what the dispatcher would accept. Read here rather than fetched client-side for the same
+  // reason as the feature list: this page is already doing a server pass.
+  const modelPolicy = Object.fromEntries(
+    [...new Set(agents.map((a) => a.namespace))].map((ns) => [ns, allowedModels(ns)]),
+  );
 
   const isWs = project.isWorkspace;
   const members = isWs ? resolveMembers(project) : [];
@@ -247,6 +255,7 @@ export default async function ProjectDetail({
             onboardedByAgent={onboardedByAgent}
             parallelOffer={offerParallel}
             features={featureList}
+            modelPolicy={modelPolicy}
           />
         </CardSection>
 

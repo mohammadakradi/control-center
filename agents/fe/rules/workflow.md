@@ -18,9 +18,13 @@ design-system migrations) are decomposed into an epic up front via `/fe:plan`.
 ## Phase 1 — Investigate
 Understand the request before planning anything.
 
-- **Read `.fe/notes.md` and `.fe/design-system.md` first** — the decision journal and the
-  canonical token/component inventory. They tell you which colors, spacing, typography, and
-  reusable components already exist so you don't reinvent or drift.
+- **Read `.fe/design-system.md` and the `.fe/notes.md` index first** — the canonical
+  token/component inventory and the decision journal. They tell you which colors, spacing,
+  typography, and reusable components already exist so you don't reinvent or drift. The
+  journal is an **index** (rule 10): read it, then open only the `.fe/notes/<topic>.md` files
+  this request touches, or `grep -ril '<term>' .fe/notes/` to find one by keyword. Don't read
+  the whole journal — it is the largest avoidable cost in a run. `CLAUDE.md` is already in
+  your context; never read it.
 - **Query the code graph first** (rule 17): if `graphify-out/graph.json` exists, use
   `graphify query/explain/path/affected` to locate components and understand relationships
   (who imports what, where a token/style is used) before reading or grepping broadly — it's
@@ -82,9 +86,8 @@ it and flag risk. If anything fails, fix and re-run. Then **update `.fe/notes.md
 gotchas/decisions and **update `.fe/design-system.md`** if you added or changed any token or
 shared component.
 
-## Phase 4 — Independent review (required, blocking)
-Before reporting, get **two independent, decorrelated lenses** that are not you — dispatch
-both (they can run together):
+## Phase 4 — Independent review (blocking, scaled to the diff)
+Before reporting, get independent lenses that are not you. There are two:
 
 - **`design-reviewer` subagent** — adversarial review of **design-system fidelity, reuse/
   duplication, accessibility, responsiveness, and UI correctness**. Hardcoded values bypassing
@@ -93,9 +96,28 @@ both (they can run together):
   `dangerouslySetInnerHTML`/`v-html`, secrets shipped to the client), **correctness** of
   logic/state, and **performance** (bundle, render), running the actual tooling where present.
 
-**Resolve every blocking finding** from either (re-enter Phase 3 as needed), then re-review
-until both return no blocking findings. Address or consciously note non-blocking ones. You
-may not advance to the report gate while any blocking finding is open.
+**Scale the review to the change, and decide from the actual diff** (`git diff --stat`), not
+from how the request was worded. A subagent is a fresh context that re-loads the project's
+docs from scratch, so an unconditional pair on a two-line change costs more than the change:
+
+- **Both** — the default for any real UI change. Mandatory, whatever the size, when the diff
+  renders user- or network-supplied content, touches `dangerouslySetInnerHTML`/`v-html`,
+  auth/session or client-side secrets, file upload, or URL/redirect handling; introduces a new
+  token, color, or shared component; adds or bumps a dependency. Also both once the diff
+  exceeds ~150 changed lines or ~6 files.
+- **`design-reviewer` alone** — a small, self-contained visual change (under ~150 lines) that
+  renders no untrusted content and touches nothing on the list above. Say in your report that
+  you skipped the audit lens and why.
+- **Neither** — only when the diff changes no rendered behavior at all: comments, docs,
+  formatting, a renamed local. Run the build and lint suites and say you skipped review.
+
+When in doubt, dispatch both — a missed XSS costs far more than a subagent. Never skip a lens
+on a change you are unsure about.
+
+**Resolve every blocking finding** from whichever lenses ran (re-enter Phase 3 as needed),
+then re-review until they return no blocking findings. Address or consciously note
+non-blocking ones. You may not advance to the report gate while any blocking finding is open.
+**Re-review the fix, not the whole diff again** — scope the follow-up to what you changed.
 
 ## Phase 5 — Report & test scenario  🚦 GATE 2 (report)
 Two deliverables, then stop for approval:
@@ -104,12 +126,14 @@ Two deliverables, then stop for approval:
    (the views/flows affected, not the code). Mention which files were touched, which
    components/tokens were reused vs. added, and the test/review outcome (e.g. "reuses the
    existing `Button`/`Card`; no new colors; design-reviewer + auditor clean").
-2. **Test scenario for the user.** Write a step-by-step manual test scenario to
+2. **Test scenario — when there is something to look at** (rule 14). If the change gives the
+   user something to go and see or click, write a step-by-step manual scenario to
    `.fe/test-scenarios/<short-slug>.md` using
-   `${CLAUDE_PLUGIN_ROOT}/rules/test-scenario-template.md`. Include the views to open, the
-   happy path, **responsive checks** (mobile + desktop), **dark mode** if applicable, and at
-   least one **accessibility check** (keyboard nav / focus / contrast). **Link the file** in
-   your report.
+   `${CLAUDE_PLUGIN_ROOT}/rules/test-scenario-template.md`: the views to open, the happy path,
+   **responsive checks** (mobile + desktop), **dark mode** if applicable, and at least one
+   **accessibility check** (keyboard nav / focus / contrast). **Link the file** in your report.
+   If the change renders identically — a component extraction, a token rename, a lint fix —
+   **skip it and say so in one line.**
 
 3. **Anything you found and are not fixing.** Out-of-scope findings (a component that should
    be extracted, a page still on raw palette shades, an a11y gap elsewhere) go into the
@@ -127,10 +151,11 @@ Only **after the user approves**, commit:
 
 - If on the default branch (`main`/`master`), create a feature branch first — never commit
   directly to the default branch. (A safety hook also blocks this mechanically.)
-- Use the project's existing commit-message style. Include the test-scenario file and any
-  `.fe/design-system.md` update in the commit.
+- Use the project's existing commit-message style. Include the test-scenario file (if you
+  wrote one) and any `.fe/design-system.md` update in the commit.
 - If this task belongs to an epic, **update `.fe/epics/<slug>.md`**: check off the task,
-  append to the Log (branch + test-scenario link), and mark the epic `done` if complete.
+  append to the Log (branch, plus the test-scenario link if there is one), and mark the epic
+  `done` if complete.
 
 Pushing and opening a PR are **not** part of this workflow — those happen only via the
 explicit `/fe:ship` command.

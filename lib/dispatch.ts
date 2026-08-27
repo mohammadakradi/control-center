@@ -22,23 +22,19 @@ import { daemonStartTask } from "./daemon-client";
 import { findFeature } from "./features";
 import { canRunTasks, secretsConfigured } from "./secrets";
 import { newId } from "./util";
+import { modelAllowed } from "./agent-policy";
+import { normalizeEffortChoice, normalizeModelChoice } from "./models";
 
-/** "sonnet"/"opus"/"sonnet-4.6" are legacy aliases — the router maps them to the current
- *  equivalents (Sonnet 4.6 is retired → Sonnet 5). */
-const ALLOWED_MODELS = new Set([
-  "auto",
-  "fable-5",
-  "opus-5",
-  "sonnet-5",
-  "opus-4.8",
-  "sonnet",
-  "opus",
-  "sonnet-4.6",
-]);
-
-/** Anything unrecognised falls back to routing, rather than being handed to the SDK. */
+/** Anything unrecognised falls back to routing, rather than being handed to the SDK.
+ *  Legacy labels ("sonnet"/"opus"/"sonnet-4.6") still resolve so a historical task can be
+ *  continued on what it started with — see `lib/models.ts`. */
 export function resolveModel(requested: string | undefined | null): string {
-  return ALLOWED_MODELS.has(requested ?? "") ? (requested as string) : "auto";
+  return normalizeModelChoice(requested);
+}
+
+/** Same, for reasoning effort: an unknown level routes rather than guessing. */
+export function resolveEffortChoice(requested: string | undefined | null): string {
+  return normalizeEffortChoice(requested);
 }
 
 export type DispatchRefusal = {
@@ -105,6 +101,8 @@ export type DispatchInput = {
   userId: string;
   requestText?: string;
   model?: string | null;
+  /** Reasoning effort: "auto" or a level. Lower means fewer tool calls and a shorter run. */
+  effort?: string | null;
   attachments?: Attachment[];
   /** Pre-allocated id, for callers that had to name the task before the row existed
    *  (uploads land in `data/uploads/<taskId>/`). */
@@ -199,10 +197,25 @@ export async function createAndStartTask(input: DispatchInput): Promise<Dispatch
 
   // Snapshot the agent's current version so history records which version ran this task.
   const agent = db
-    .select({ version: agents.version })
+    .select({ version: agents.version, namespace: agents.namespace })
     .from(agents)
     .where(eq(agents.id, input.agentId))
     .get();
+
+  // Enforce the per-agent model policy on an *explicit* pick, before the row exists.
+  // "Not allowed" has to mean refused, not merely absent from the dropdown — otherwise the
+  // setting is decoration that any API caller can step around. "auto" is not checked here:
+  // the router clamps its own choice to the policy, so it can never select a denied model.
+  const wantedModel = resolveModel(input.model);
+  if (wantedModel !== "auto" && agent && !modelAllowed(agent.namespace, wantedModel)) {
+    return {
+      ok: false,
+      status: 400,
+      error:
+        `${wantedModel} is not allowed for the ${agent.namespace} agent. ` +
+        `Change it in Settings → Agent models, or pick another model.`,
+    };
+  }
 
   db.insert(tasks)
     .values({
@@ -216,6 +229,7 @@ export async function createAndStartTask(input: DispatchInput): Promise<Dispatch
       title: cleanTitle(input.title),
       status: "queued",
       model: resolveModel(input.model),
+      effort: resolveEffortChoice(input.effort),
       attachments: input.attachments ?? [],
       parallel: input.parallel ?? false,
       featureId: input.featureId ?? null,

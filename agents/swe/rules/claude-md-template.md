@@ -8,6 +8,13 @@ When a `CLAUDE.md` already exists, **merge** into it: update the managed section
 preserve anything the team wrote outside them, and don't duplicate. Wrap the sections this
 plugin owns between the markers shown so future onboarding runs can update them cleanly.
 
+**Budget: 20 KB.** `CLAUDE.md` is auto-loaded into every session on this project, so every
+kilobyte is re-sent on every model call of every future task. Write it as an **orientation
+map, not a manual**: what the project is, how to build/test/run it, the conventions, and
+pointers to where the detail lives (`.swe/notes/<topic>.md`). A fact a
+reader could get by reading the code it describes does not belong here. Check
+`wc -c CLAUDE.md` before you finish.
+
 ---
 
 ```markdown

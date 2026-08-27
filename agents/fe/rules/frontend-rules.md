@@ -85,11 +85,32 @@ touch git:
 - Pushing and opening PRs are separate and explicit — only via `/fe:ship`.
 (A safety hook also blocks committing/pushing to the default branch mechanically.)
 
-## 7. Keep CLAUDE.md and the design-system inventory current
+## 7. Keep CLAUDE.md and the design-system inventory current — inside their budgets
 When a task changes the framework setup, build/run commands, conventions, or — especially —
 introduces or changes a token, color, or shared component, update the relevant `CLAUDE.md`
 section **and** `.fe/design-system.md` in the same task. Treat a stale design inventory as a
 bug: it's what keeps future work consistent.
+
+**Both files have hard budgets: `CLAUDE.md` 20 KB, `.fe/design-system.md` 25 KB.** Exceeding
+one is also a bug. `CLAUDE.md` is auto-loaded into every session on the project, so it sits in
+the prompt of *every* model call every future task makes; `design-system.md` gets read at the
+start of most of them. At 150 KB a `CLAUDE.md` is ~38k tokens re-sent thousands of times per
+task, and nothing warns you as it grows.
+
+Check with `wc -c CLAUDE.md .fe/design-system.md` before you finish. Over budget means
+**consolidate, not append**:
+- Keep the design inventory a **reference**, not an essay: tables of tokens and components
+  with one line each, not the reasoning behind them (that belongs in the journal, rule 10).
+- Merge duplicated explanations; cut how a decision was reached down to the decision plus one
+  line of why.
+- Delete what is now false, or what a reader could re-derive from `globals.css` / the
+  components themselves.
+
+**Never open `CLAUDE.md` with the Read tool.** It is already in your context verbatim before
+your first turn — it is memory, not a file you need to fetch. Reading it adds a second full
+copy to the transcript, re-sent on every remaining call of the session, and tells you nothing
+you didn't have. Edit it freely; never read it back. Same for any file the harness says it
+already loaded.
 
 ## 8. Ask only when genuinely blocked
 Resolve ambiguity with sensible, on-brand defaults and note the choice. Ask the user only
@@ -120,13 +141,27 @@ describing the symptom and the evidence you have, and say in your report that yo
 recommended pm investigate. The pm agent investigates and breaks it into implementable specs,
 which come back into the same backlog.
 
-## 10. Keep a decision & gotcha journal (`.fe/notes.md`)
-The project carries a running journal at `.fe/notes.md` — reusable lessons not obvious from
-the code: design decisions and their rationale, framework/build gotchas, and conventions
-discovered the hard way.
-- **Read it before acting** — at the start of every request.
-- **Update it after every decision or change** — record new gotchas, decisions and why, and
-  **correct or remove** stale notes. Keep entries short and accurate.
+## 10. Keep a decision & gotcha journal — as an index, not one long file
+The project carries a running journal of reusable lessons not obvious from the code: design
+decisions and their rationale, framework/build gotchas, and conventions discovered the hard
+way. It is stored as **an index plus topic files**, because one flat journal grows without
+bound and then gets read in full at the start of every request:
+
+- **`.fe/notes.md` is an index, budget 8 KB** — one line per topic, with the path to its file.
+- **`.fe/notes/<topic>.md` holds the notes, budget 30 KB each.** Split a topic that outgrows
+  its budget rather than letting it run.
+
+- **Read it before acting — cheaply.** Read the index, then open **only** the topic files this
+  request touches; `grep -ril '<term>' .fe/notes/` finds a note whose topic you don't know.
+  Never read the whole journal for context: an 80 KB journal is ~20k tokens that then ride in
+  the prompt of every remaining call, almost none of it for a reason.
+- **Update it after every decision or change** — record new gotchas, decisions and why, in the
+  topic file where they belong, and **correct or remove** stale notes. A wrong note is worse
+  than none. Check budgets with `wc -c .fe/notes.md .fe/notes/*.md` before you finish.
+
+*Migrating an existing flat `.fe/notes.md`:* if you find one over budget, split it into topic
+files as part of the task that noticed, leaving the index behind. Don't rewrite notes while
+you move them.
 
 ## 11. Plan and decompose every request
 No request is too small to plan. Break the work into an ordered **checklist** of small,
@@ -156,12 +191,25 @@ They are independent and decorrelated from you. Resolve every **blocking** findi
 either and re-review until both are clean. A hardcoded value bypassing the theme, a
 duplicated component, or an accessibility regression is blocking.
 
-## 14. Deliver a nutshell + a test scenario
-Finish every feature/fix with (a) a **plain-language result in a nutshell** (what the user
-will see change), and (b) a **manual test scenario** written to
-`.fe/test-scenarios/<slug>.md` and linked in your report — including the visual,
-responsive, and accessibility checks the user should run. (Setup commands like onboarding
-are exempt.)
+## 14. Deliver a nutshell — and a test scenario when there is something to look at
+Finish every feature/fix with a **plain-language result in a nutshell** (what the user will see
+change). That part is not optional.
+
+A **manual test scenario** (`.fe/test-scenarios/<slug>.md`, linked in your report) is for when
+the user has something they can actually go and *look at or use*. Write one when:
+- the change adds or alters a view, flow, or interaction they'll click through;
+- it changes responsive behavior, dark mode, or anything a person has to *see* to confirm;
+- it affects keyboard/screen-reader behavior worth walking once.
+
+Include the views to open, the happy path, responsive checks (mobile + desktop), dark mode if
+applicable, and at least one accessibility check.
+
+**Skip it, and say so in one line, when there is nothing to look at** — a component extraction
+that renders identically, a token rename with no visual change, a lint or docs fix, a
+dependency bump. "Open the app and confirm nothing moved" is not a test scenario; it is noise
+that makes the real ones easier to ignore. (Setup commands like onboarding are exempt outright.)
+
+Prefer one genuinely useful scenario over one per task.
 
 ## 15. Project-wide consistency is a first-class goal
 Beyond the task in front of you, you are the guardian of visual consistency. Use `/fe:audit`
@@ -182,7 +230,7 @@ The project carries a **code knowledge graph** at `graphify-out/graph.json` (bui
 where a component is defined, which components/pages use it, where a token or style is
 referenced, how a change ripples — **query the graph first** instead of reading or grepping
 broadly. It's faster and burns far fewer tokens.
-Invoke it with the PATH prefix described in rule 18 — `PATH="$PATH:$HOME/.local/bin" graphify …`:
+Invoke it with the PATH prefix described in rule 19 — `PATH="$PATH:$HOME/.local/bin" graphify …`:
 - `graphify query "<question>"` — traverse the graph for a question (token-budgeted).
 - `graphify explain "<node>"` — a node and its immediate neighbors.
 - `graphify path "<A>" "<B>"` — how two things connect.
@@ -197,7 +245,37 @@ the `ui-explorer` subagent) only when the graph is absent, stale, or lacks the d
 (no LLM) — treat a stale graph like a stale `.fe/design-system.md` (rule 7). If
 `graphify-out/` doesn't exist, run `bash ${CLAUDE_PLUGIN_ROOT}/scripts/ensure-graphify.sh .`.
 
-## 18. A missing tool is a thing you install, not a dead end
+## 18. Read narrowly, and never read the same thing twice
+Everything you read stays in the conversation for the rest of the run and is re-sent to the
+model on **every subsequent call**. A 2,000-line component you opened once to check one prop is
+not a one-off cost — it is paid again on every turn that follows. Measured on this agent's own
+history, tool results were 25M tokens, two thirds of it `Read`, and 67% of those reads pulled
+whole files.
+
+So read like it costs something, because it does:
+
+- **Locate first, then read the part.** `grep -n` (or the code graph, rule 17) to find the
+  component, prop or token, then read a bounded range around it. Reading a whole file is right
+  when you are about to restyle most of it, or it is small; it is the wrong default for "which
+  variant does this Button take".
+- **Never re-read what you already have.** If a file is already in the conversation, it is
+  still there — scroll, don't re-read. Re-read only after *you* changed it.
+- **The design system is a lookup, not a read-through.** `.fe/design-system.md` and the
+  component catalog exist to be searched for the token or component you need (rule 10). Grep
+  them; don't page through the whole inventory.
+- **Big generated artifacts** — lock files, bundles, minified CSS/JS, build logs — get grepped,
+  never read. Pipe long command output through `head`/`tail`/`grep`.
+- **Screenshots are not free.** A screenshot is worth far more than a paragraph when you need
+  to *see* a layout — that is the job, take them. But take the one you need at the breakpoint
+  you're checking, rather than re-shooting the same view each turn.
+- **A subagent is the tool for a wide sweep.** When something genuinely needs many files read,
+  dispatch the `ui-explorer` so the reading happens in *its* context and only the map comes
+  back to yours.
+
+This is not a reason to under-investigate. Read whatever you need to be correct — the rule is
+to read the *right* slice on purpose, not less than the work requires.
+
+## 19. A missing tool is a thing you install, not a dead end
 When a CLI you need isn't on the machine, **install it into user space and carry on** — don't
 silently downgrade to a worse method and don't ask the user to install it for you.
 

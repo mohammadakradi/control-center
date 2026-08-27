@@ -1,5 +1,10 @@
 # Test Scenario Template
 
+**Only write one when there is something to walk through** (rule 14). An internal change that
+alters nothing the user can observe gets a one-line "no test scenario: nothing to walk through"
+in the report instead — a scenario that says "confirm nothing changed" is noise, and it
+makes the real ones easier to ignore.
+
 The agent writes a manual test scenario to `.swe/test-scenarios/<short-slug>.md` at the
 report gate so the user can follow it to exercise a feature/fix and learn its behavior.
 Use this structure. Keep it concrete and copy-pasteable — real commands, real values.

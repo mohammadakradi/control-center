@@ -49,11 +49,32 @@ const MODELS = [
   { value: "sonnet-5", label: "Sonnet 5" },
 ];
 
-/** What "Auto" routes to, per agent (mirrors runner/model-router.ts). */
-function autoHint(namespace?: string): string {
-  if (namespace === "pm")
-    return "Auto picks Fable 5 for very complex planning, otherwise Sonnet 5.";
-  return "Auto picks Fable 5 for very complex tasks, Opus 5 for complex work, and Sonnet 5 for simple changes.";
+/** Reasoning effort. Lower does less per turn — fewer, more consolidated tool calls and less
+ *  preamble — so it is the control to reach for on routine work. `max` is intentionally not
+ *  offered (see lib/models.ts). */
+const EFFORTS = [
+  { value: "auto", label: "Auto", description: "Match the request's complexity" },
+  { value: "low", label: "Low", description: "Fastest, cheapest — routine work" },
+  { value: "medium", label: "Medium", description: "Moderate reasoning" },
+  { value: "high", label: "High", description: "Deep reasoning (API default)" },
+  { value: "xhigh", label: "Extra high", description: "Hardest problems" },
+];
+
+/**
+ * What "Auto" routes to, per agent (mirrors runner/model-router.ts).
+ *
+ * Auto never escalates past what the agent is allowed (Settings → Agent models), so the hint
+ * has to know the policy: telling someone to "pick Fable 5" when Fable is denied for this
+ * agent describes a control they cannot use, and the dispatcher would refuse it.
+ */
+function autoHint(namespace: string | undefined, fableAllowed: boolean): string {
+  const base =
+    namespace === "pm"
+      ? "Auto picks Opus 5 for very complex planning, otherwise Sonnet 5."
+      : "Auto picks Opus 5 for complex work and Sonnet 5 for simple changes.";
+  return fableAllowed
+    ? `${base} Pick Fable 5 yourself if you want it.`
+    : `${base} Fable 5 is off for this agent — enable it in Settings → Agent models.`;
 }
 
 // Per-namespace presentation for the agent cards. Falls back gracefully for
@@ -85,6 +106,7 @@ export function NewTaskForm({
   onboardedByAgent = {},
   parallelOffer = false,
   features = [],
+  modelPolicy,
 }: {
   projectId: string;
   agents: AgentLite[];
@@ -99,6 +121,15 @@ export function NewTaskForm({
    * loading state and a second round trip for data already on screen.
    */
   features?: FeatureChoice[];
+  /**
+   * Which models each agent namespace may run on (Settings → Agent models). Passed from the
+   * server page for the same reason as `features`: it is already known there, so fetching it
+   * here would buy a loading state for data that could have arrived with the page.
+   *
+   * Absent means "unknown", which shows the full list — the dispatcher still enforces the
+   * policy, so a stale client can only ever produce a clear refusal, never a disallowed run.
+   */
+  modelPolicy?: Record<string, string[]>;
   /** Offer "Run isolated": this project can isolate runs at all (a plain git repo, not a
    *  workspace — `parallelOffer` server-side). Where offered the box defaults to *checked*:
    *  isolation is the default and queueing is the manual choice (2026-08-22). On a free
@@ -123,6 +154,7 @@ export function NewTaskForm({
   const [command, setCommand] = useState(commands[0]?.name ?? "");
   const [requestText, setRequestText] = useState("");
   const [model, setModel] = useState("auto");
+  const [effort, setEffort] = useState("auto");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Set when dispatch was refused for a reason the user can act on (no Anthropic token) — the
@@ -142,10 +174,26 @@ export function NewTaskForm({
   const hasOnboard = (agent?.commands ?? []).some((c) => c.name === "onboard");
   // Nudge the user to onboard the selected agent before running other commands.
   const needsOnboard = !onboarded && hasOnboard && command !== "onboard";
-  const modelLabel = MODELS.find((m) => m.value === model)?.label ?? model;
+  // Only offer what this agent is allowed to run (Settings → Agent models). "Auto" always
+  // stays: the router clamps its own pick to the policy, so it can never land on a denied
+  // model. When the policy is unknown the full list shows and the server still decides.
+  const allowedForAgent = agent ? modelPolicy?.[agent.namespace] : undefined;
+  const modelChoices = useMemo(
+    () =>
+      allowedForAgent
+        ? MODELS.filter((m) => m.value === "auto" || allowedForAgent.includes(m.value))
+        : MODELS,
+    [allowedForAgent],
+  );
+  // Switching to an agent that can't use the picked model falls back to Auto. **Derived, not
+  // synced** — an effect calling setState is a hard lint error in this build, and deriving is
+  // the better shape regardless: there is no second source of truth to get out of step.
+  const effectiveModel = modelChoices.some((m) => m.value === model) ? model : "auto";
+  const modelLabel = MODELS.find((m) => m.value === effectiveModel)?.label ?? effectiveModel;
+  const effortLabel = EFFORTS.find((e) => e.value === effort)?.label ?? effort;
   // Live, human-readable echo of the slash command that will be dispatched.
   const resolved = agent
-    ? `/${agent.namespace}:${command || "…"} on ${modelLabel}`
+    ? `/${agent.namespace}:${command || "…"} on ${modelLabel} · ${effortLabel} effort`
     : "";
 
   if (agents.length === 0) {
@@ -188,7 +236,8 @@ export function NewTaskForm({
       fd.set("agentId", agentId);
       fd.set("command", command);
       fd.set("requestText", requestText);
-      fd.set("model", model);
+      fd.set("model", effectiveModel);
+      fd.set("effort", effort);
       if (parallel && parallelOffer) fd.set("parallel", "1");
       // Gated on the control actually being offered, like `parallel` above: a stale id from a
       // feature closed since this page rendered would be refused with a 400 the user can do
@@ -350,25 +399,41 @@ export function NewTaskForm({
           />
         </div>
 
-        {/* Footer: attachments on the left, model selector on the right. */}
+        {/* Footer: attachments on the left, model + effort on the right. Effort sits beside
+            Model because they are one decision in two parts — which brain, and how hard it
+            thinks — and separating them made the cheaper of the two easy to miss. */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-3 py-2">
           <div className="min-w-0 flex-1">
             <AttachmentPicker files={files} setFiles={setFiles} />
           </div>
-          <div className="flex shrink-0 items-center gap-1.5">
-            <span className="text-xs text-fg-faint">Model</span>
-            <Select
-              ariaLabel="Model"
-              value={model}
-              onChange={setModel}
-              options={MODELS}
-              placement="up"
-            />
+          <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-fg-faint">Model</span>
+              <Select
+                ariaLabel="Model"
+                value={effectiveModel}
+                onChange={setModel}
+                options={modelChoices}
+                placement="up"
+              />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-fg-faint">Effort</span>
+              <Select
+                ariaLabel="Effort"
+                value={effort}
+                onChange={setEffort}
+                options={EFFORTS}
+                placement="up"
+              />
+            </div>
           </div>
         </div>
       </FileDropZone>
-      {model === "auto" && (
-        <p className="mt-2 text-xs text-fg-faint">{autoHint(agent?.namespace)}</p>
+      {effectiveModel === "auto" && (
+        <p className="mt-2 text-xs text-fg-faint">
+          {autoHint(agent?.namespace, modelChoices.some((m) => m.value === "fable-5"))}
+        </p>
       )}
 
       {/* Optional grouping. Its own row rather than a third control in the footer beside

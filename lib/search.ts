@@ -281,7 +281,7 @@ export function searchAll(
   const take = capped + 1;
 
   // LEFT join, not inner: `tasks.project_id` is NOT NULL with a cascade FK on paper, but FK
-  // enforcement in the real database is unreliable (see .swe/notes.md), and a task that matched
+  // enforcement in the real database is unreliable (see .swe/notes/gotchas-1.md), and a task that matched
   // must not vanish from search because its project row is missing.
   const taskRows = db
     .select({

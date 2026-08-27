@@ -11,7 +11,8 @@ command is **read-only** — report findings, do not modify code.
 
 ## Steps
 
-1. **Ground yourself.** Read this project's `CLAUDE.md` for the project's conventions.
+1. **Ground yourself.** This project's `CLAUDE.md` is already in your context — use it for
+   the conventions, don't read it back.
 2. **Get the diff.** Use `git diff` (and `git diff --staged`) to see uncommitted changes.
    If the repo is clean, review the most recent commit instead and say so.
 3. **Review** for:

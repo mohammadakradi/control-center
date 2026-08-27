@@ -110,7 +110,7 @@ export function spendForUser(
     .where(scoped)
     .get();
 
-  // LEFT join, not inner: the projects FK is unenforced in the real DB (see .swe/notes.md),
+  // LEFT join, not inner: the projects FK is unenforced in the real DB (see .swe/notes/gotchas-1.md),
   // and an orphaned task must not silently vanish from a billing figure.
   const top = db
     .select({

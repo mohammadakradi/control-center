@@ -30,6 +30,8 @@ type TaskFields = {
   command?: string;
   requestText?: string;
   model?: string;
+  /** Reasoning effort: "auto" or low|medium|high|xhigh. */
+  effort?: string;
   /** Opt in to running in an isolated worktree if the project is busy (see lib/dispatch). */
   parallel?: boolean;
   /** Which feature the run belongs to. Refused unless it names one of `projectId`'s features —
@@ -73,6 +75,7 @@ export async function POST(request: Request) {
       command: form.get("command")?.toString(),
       requestText: form.get("requestText")?.toString(),
       model: form.get("model")?.toString(),
+      effort: form.get("effort")?.toString(),
       parallel: form.get("parallel")?.toString() === "1",
       // An absent field and an empty one both mean "no feature"; a form can't send null.
       featureId: form.get("featureId")?.toString() || null,
@@ -104,6 +107,7 @@ export async function POST(request: Request) {
     userId: user.id,
     requestText: fields.requestText,
     model: fields.model,
+    effort: fields.effort,
     attachments,
     parallel: fields.parallel === true,
     featureId: feature.value ?? null,

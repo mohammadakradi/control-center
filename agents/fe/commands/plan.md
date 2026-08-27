@@ -10,7 +10,9 @@ Follow `${CLAUDE_PLUGIN_ROOT}/rules/epics.md` and the frontend engineering rules
 
 ## Steps
 
-1. **Ground yourself.** Read `CLAUDE.md`, `.fe/notes.md`, and `.fe/design-system.md`. If
+1. **Ground yourself.** `CLAUDE.md` is already in your context — don't read it. Read
+   `.fe/design-system.md` and the `.fe/notes.md` index (then only the topic files this goal
+   touches). If
    there's no `CLAUDE.md`/inventory, run the `onboard` skill first. Investigate enough of the
    UI to plan realistically (use the `ui-explorer` subagent for big projects).
 2. **Decompose** the goal into **milestones**, each broken into **small, independently

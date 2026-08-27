@@ -2,7 +2,7 @@
 name: explorer
 description: Read-only codebase explorer. Use during onboarding or large tasks to fan out across a repository and return a structured map (stack, directory purposes, entry points, test locations, conventions) without polluting the main thread. Does not modify files.
 tools: Read, Grep, Glob, Bash
-model: claude-sonnet-5
+model: claude-haiku-4-5
 color: cyan
 ---
 

@@ -99,6 +99,37 @@ export const projectAgents = sqliteTable(
   (t) => [uniqueIndex("project_agent_unq").on(t.projectId, t.agentId)],
 );
 
+/**
+ * Which models an agent is allowed to run on.
+ *
+ * Install-wide rather than per-user, matching how an agent is already treated: a project is a
+ * folder on the device and an agent is an installed plugin, both shared (see `projects` /
+ * `agents`). "The swe agent must never use Fable" is a statement about the agent, not about
+ * one person's wallet. Spend is still per-user — the owner's token pays — so if this ever
+ * needs to differ per person, that is a `userId` column here, not a redesign.
+ *
+ * Keyed by **namespace** (`swe`/`fe`/`pm`), not by the `agents.id` plugin id: an agent
+ * re-discovered from a different marketplace or path gets a new row in `agents`, and a policy
+ * that silently reset to defaults on a re-install would quietly re-enable a model someone had
+ * deliberately switched off.
+ *
+ * A missing row means "never configured" and resolves to the defaults in `lib/models.ts`
+ * (everything except Fable) — deliberately not "all allowed", so a fresh install can't
+ * auto-route onto the most expensive model before anyone has opened Settings.
+ */
+export const agentModelPolicies = sqliteTable("agent_model_policies", {
+  namespace: text("namespace").primaryKey(),
+  // The allowlist, as stored. Read it through `allowedModelsFor()`, which applies the
+  // defaults and the all-denied fallback — never trust this array raw.
+  allowedModels: text("allowed_models", { mode: "json" })
+    .notNull()
+    .$type<string[]>()
+    .default(sql`'[]'`),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(unixepoch())`),
+});
+
 /** A file/photo the user attached to a task request. `path` is absolute (under data/uploads). */
 export type Attachment = {
   name: string; // original filename
@@ -230,6 +261,12 @@ export const tasks = sqliteTable("tasks", {
   // overwritten by the runner with the resolved label once selected.
   model: text("model").notNull().default("auto"),
   modelReason: text("model_reason"),
+  // Reasoning effort, same shape as `model`: the user's choice ("auto" or a level like
+  // "low"), overwritten by the runner with the level it resolved. Lower effort means fewer,
+  // more consolidated tool calls and less preamble — which is what actually reduces spend
+  // here, since the transcript is re-sent on every call (see lib/models.ts).
+  effort: text("effort").notNull().default("auto"),
+  effortReason: text("effort_reason"),
   // Files/photos the user attached to the request (stored under data/uploads/<taskId>/).
   attachments: text("attachments", { mode: "json" })
     .notNull()

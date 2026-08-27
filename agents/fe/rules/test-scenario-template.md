@@ -1,5 +1,10 @@
 # Test Scenario Template (frontend)
 
+**Only write one when there is something to look at** (rule 14). An internal change that
+alters nothing the user can observe gets a one-line "no test scenario: nothing to look at"
+in the report instead — a scenario that says "confirm nothing changed" is noise, and it
+makes the real ones easier to ignore.
+
 The agent writes a manual test scenario to `.fe/test-scenarios/<short-slug>.md` at the report
 gate so the user can follow it to exercise a UI change and confirm it looks and behaves right.
 Use this structure. Keep it concrete and clickable — real routes, real values, real

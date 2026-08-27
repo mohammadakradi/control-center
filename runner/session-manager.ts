@@ -13,6 +13,13 @@ import {
   type TaskStatus,
 } from "../lib/db/schema";
 import { attachmentNote } from "../lib/uploads";
+import {
+  AUTO_COMPACT_WINDOW,
+  MIN_LAUNCH_BUDGET_USD,
+  TASK_MAX_BUDGET_USD,
+  TASK_MAX_TURNS,
+  remainingTaskBudgetUsd,
+} from "../lib/config";
 import { classifyTurnEnd, type PauseReason } from "./completion";
 import { GATE_PROMPT } from "./gate-prompt";
 import {
@@ -20,7 +27,12 @@ import {
   type GateDecision,
   type GateKind,
 } from "./platform-mcp";
-import { generateTitle, resolveModel, type ModelChoice } from "./model-router";
+import {
+  generateTitle,
+  resolveEffort,
+  resolveModel,
+  type ModelChoice,
+} from "./model-router";
 import { buildTaskEnv, sensitiveEnvValues, type TaskEnv } from "./user-env";
 import {
   ensureFeatureBranch,
@@ -743,6 +755,23 @@ function runTask(
       : `${LAUNCH_LOG.dispatched} ${prompt}`,
   });
 
+  // What this launch may still spend. Computed from the row, so it is a *task* ceiling that
+  // survives continues rather than a fresh allowance per subprocess (see lib/config.ts).
+  const budgetLeft = remainingTaskBudgetUsd(task.usageCostUsd ?? 0);
+  if (budgetLeft !== null && budgetLeft <= MIN_LAUNCH_BUDGET_USD) {
+    // Refused rather than started: a session handed a few cents dies inside its first tool
+    // call, which reads to the user as a crash instead of a cap. Says the number and the way
+    // out, because otherwise this is indistinguishable from the app being broken.
+    finalize(
+      handle,
+      "failed",
+      `Task budget exhausted — $${(task.usageCostUsd ?? 0).toFixed(2)} spent of the ` +
+        `$${TASK_MAX_BUDGET_USD.toFixed(2)} per-task cap. Raise CC_TASK_MAX_BUDGET_USD (or set ` +
+        `it to 0 for no cap) and continue this task, or dispatch a fresh one.`,
+    );
+    return;
+  }
+
   // Resolve the model (triage for "auto"), start the session, consume the output stream.
   (async () => {
     try {
@@ -755,25 +784,54 @@ function runTask(
         choice,
         env,
       );
+      // Effort reuses the tier the model triage already classified (see resolveEffort), so
+      // this costs no extra round-trip. On resume `task.effort` is already concrete.
+      const effort = resolveEffort(task.command, task.effort || "auto", chosen.reason);
       db.update(tasks)
-        .set({ model: chosen.label, modelReason: chosen.reason })
+        .set({
+          model: chosen.label,
+          modelReason: chosen.reason,
+          effort: effort.level,
+          effortReason: effort.reason,
+        })
         .where(eq(tasks.id, taskId))
         .run();
-      record(handle, "model", { model: chosen.label, reason: chosen.reason });
+      record(handle, "model", {
+        model: chosen.label,
+        reason: chosen.reason,
+        effort: effort.level,
+        effortReason: effort.reason,
+      });
       record(handle, "log", {
-        message: `🧠 Model: ${chosen.label} — ${chosen.reason}`,
+        message: `🧠 Model: ${chosen.label} — ${chosen.reason} · effort ${effort.level} (${effort.reason})`,
       });
 
       const q = query({
         prompt: channel.gen(),
         options: {
           model: chosen.id,
+          // How hard the agent reasons, and how much it does per turn. Lower effort produces
+          // fewer, more consolidated tool calls — a shorter transcript, which is where the
+          // cost actually is (lib/models.ts).
+          effort: effort.level,
+          // Runaway guards. The SDK ends the query with `error_max_turns` /
+          // `error_max_budget_usd`, which the stream loop below already turns into a failed
+          // task carrying the reason. Spread conditionally so "no cap" omits the key rather
+          // than passing 0, which the SDK would read as a real (and instantly exceeded) limit.
+          ...(TASK_MAX_TURNS > 0 ? { maxTurns: TASK_MAX_TURNS } : {}),
+          ...(budgetLeft !== null ? { maxBudgetUsd: budgetLeft } : {}),
           // An isolated run executes in its own worktree — but only one this process just
           // ensured exists (handle.worktree), never a stale `workdir` column alone.
           cwd: handle.worktree?.dir ?? project.path,
           env, // owner's token; replaces process.env (see buildTaskEnv)
           plugins: [{ type: "local", path: agent.sourcePath }],
           settingSources: ["user", "project", "local"],
+          // Applies to every task whatever project it runs against — the "flag settings"
+          // layer, which outranks the project's own settings.json. Only the compaction
+          // window is set here: the rest of the user's settings must keep working.
+          ...(AUTO_COMPACT_WINDOW > 0
+            ? { settings: { autoCompactWindow: AUTO_COMPACT_WINDOW } }
+            : {}),
           permissionMode: "bypassPermissions",
           systemPrompt: { type: "preset", preset: "claude_code", append: GATE_PROMPT },
           includePartialMessages: true,

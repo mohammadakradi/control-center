@@ -184,7 +184,7 @@ export function makeBacklogTool(ctx: BacklogToolContext) {
         }
 
         // The FK would catch this, but foreign keys aren't reliably enforced on this database
-        // (see .swe/notes.md), and an orphaned row appears in no project's backlog at all.
+        // (see .swe/notes/gotchas-1.md), and an orphaned row appears in no project's backlog at all.
         const project = db
           .select({ id: projects.id })
           .from(projects)

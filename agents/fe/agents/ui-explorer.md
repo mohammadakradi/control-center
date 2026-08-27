@@ -2,7 +2,7 @@
 name: ui-explorer
 description: Read-only frontend explorer. Use during onboarding, audits, or large UI tasks to fan out across a project and return a structured map of the framework, styling system, design tokens (colors/typography/spacing), reusable components, and route/page structure — without polluting the main thread. Does not modify files.
 tools: Read, Grep, Glob, Bash
-model: claude-sonnet-5
+model: claude-haiku-4-5
 color: cyan
 ---
 

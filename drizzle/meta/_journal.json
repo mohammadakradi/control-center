@@ -43,6 +43,13 @@
       "when": 1787326257813,
       "tag": "0005_sweet_magma",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1787763611907,
+      "tag": "0006_cute_smiling_tiger",
+      "breakpoints": true
     }
   ]
 }

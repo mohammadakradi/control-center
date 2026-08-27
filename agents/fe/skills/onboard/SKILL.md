@@ -94,7 +94,7 @@ install or build, it prints the reason and you fall back to normal search. Note 
 whether the graph is available.
 
 Afterwards, **query it with a PATH prefix** (`$HOME/.local/bin` isn't on PATH and an `export`
-doesn't survive between Bash calls — see rule 18):
+doesn't survive between Bash calls — see rule 19):
 
 ```bash
 PATH="$PATH:$HOME/.local/bin" graphify query "…"
@@ -125,25 +125,30 @@ This file is personal and git-ignored by Claude Code. The permission mode is rea
 start, so it takes effect in the **next** session in this project.
 
 ### 9. Initialize the decision & gotcha journal
-If `.fe/notes.md` doesn't exist, create it as an empty journal the agent reads before each
-task and updates after each decision/change (frontend rule 10):
+If `.fe/notes.md` doesn't exist, create it as an **index** (frontend rule 10). The notes
+themselves live in `.fe/notes/<topic>.md`; the index is read at the start of every request, so
+it stays under 8 KB and holds pointers only:
 
 ```markdown
-# Frontend Notes & Decisions
+# Frontend Notes & Decisions — index
 
-A running journal kept by the fe-agent: reusable frontend lessons not obvious from the code —
-design decisions and rationale, framework/build gotchas, conventions discovered the hard way.
-Read before acting; updated after each decision or change. Keep entries short and accurate.
+A journal kept by the fe-agent: reusable frontend lessons not obvious from the code — design
+decisions and rationale, framework/build gotchas, conventions discovered the hard way.
 
-## Decisions
-<!-- YYYY-MM-DD — what was decided — why -->
+Notes live in `.fe/notes/<topic>.md`. Read this index, then open only the topics your request
+touches — or `grep -ril '<term>' .fe/notes/` to find one by keyword. Never read the whole
+journal.
 
-## Gotchas
-<!-- non-obvious facts: build setup, styling traps, framework quirks to avoid -->
+| Topic | Covers |
+|---|---|
+| [environment](notes/environment.md) | build/run setup, framework and tooling quirks |
+| [decisions](notes/decisions.md) | design + technical decisions and why, newest first |
 ```
 
-Seed it with anything notable learned during onboarding (e.g. "dark mode toggles via the
-`dark` class on `<html>`", "Tailwind is the only styling system — no inline hex allowed").
+Create `.fe/notes/environment.md` and `.fe/notes/decisions.md` alongside it, and seed them
+with anything notable learned during onboarding (e.g. "dark mode toggles via the `dark` class
+on `<html>`", "Tailwind is the only styling system — no inline hex allowed"). Add topics as the
+project needs them; each file's budget is 30 KB, and a topic that outgrows it gets split.
 
 ### 10. Report
 Summarize for the user: detected framework + styling system + component library, where the

@@ -8,7 +8,8 @@ Before starting, make sure the project is onboarded (a `CLAUDE.md` exists). If n
 `onboard` skill first.
 
 **Multi-repo workspaces:** if a `.swe/workspace.json` exists, this is a workspace spanning
-several repos — read it and the workspace `CLAUDE.md`, and apply the multi-repo adjustments
+several repos — read it (the workspace `CLAUDE.md` is already in your context) and apply the
+multi-repo adjustments
 in `${CLAUDE_PLUGIN_ROOT}/rules/workspace.md` at each phase (investigate across all members,
 list affected members in the plan, keep shared contracts in sync, commit per repo).
 
@@ -22,8 +23,11 @@ into an epic up front via `/swe:plan`.
 ## Phase 1 — Investigate
 Understand the request before planning anything.
 
-- **Read `.swe/notes.md` first** — the project's decision & gotcha journal. It tells you
-  about settled decisions, environment quirks, and traps so you don't re-learn them. (If it
+- **Read the `.swe/notes.md` index first** — the project's decision & gotcha journal. It
+  tells you about settled decisions, environment quirks, and traps so you don't re-learn
+  them. It is an **index** (rule 10): read it, then open only the `.swe/notes/<topic>.md`
+  files this request actually touches, or `grep -ril '<term>' .swe/notes/` to find a note by
+  keyword. Don't read the whole journal — it is the largest avoidable cost in a run. (If it
   doesn't exist yet, onboarding should have created it; create it if missing.)
 - **Query the code graph first** (rule 17): if `graphify-out/graph.json` exists, use
   `graphify query/explain/path/affected` to locate the code and understand its relationships
@@ -74,9 +78,8 @@ reason about complexity and flag any regression risk. If anything fails, fix and
 Then **update `.swe/notes.md`** with new gotchas and the rationale for choices made here;
 correct any note this change made stale.
 
-## Phase 4 — Independent review (required, blocking)
-Before reporting, get **two independent, decorrelated lenses** that are not you — dispatch
-both (they can run together):
+## Phase 4 — Independent review (blocking, scaled to the diff)
+Before reporting, get independent lenses that are not you. There are two:
 
 - **`reviewer` subagent** — adversarial **correctness + test-coverage** review. A changed
   behavior with no real test is blocking.
@@ -84,9 +87,28 @@ both (they can run together):
   scanners** (dependency audit, secret scan, semgrep if present) per `rules/security.md`.
   Pinned to a different model so it doesn't share the author's blind spots.
 
-**Resolve every blocking finding** from either (re-enter Phase 3 as needed), then re-review
-until both return no blocking findings. Address or consciously note non-blocking ones. You
-may not advance to the report gate while any blocking finding is open.
+**Scale the review to the change, and decide from the actual diff** (`git diff --stat`), not
+from how the request was worded. A subagent is a fresh context that re-loads the project's
+docs from scratch, so an unconditional pair on a two-line change costs more than the change:
+
+- **Both** — the default for any real behavior change. Mandatory, whatever the size, when the
+  diff touches auth, sessions, input handling, secrets/tokens, file/DB/network access,
+  permissions, deserialization, crypto, or process spawning; adds or bumps a dependency; or
+  changes a migration. Also both once the diff exceeds ~150 changed lines or ~6 files.
+- **`reviewer` alone** — a small, self-contained behavior change (under ~150 lines, no file
+  from the mandatory list above). Say in your report that you skipped the security lens and
+  why.
+- **Neither** — only when the diff changes no behavior at all: comments, docs, copy strings,
+  formatting, a renamed local. Run the test and lint suites and say you skipped review.
+
+When in doubt, dispatch both — the cost of a missed security finding dwarfs the cost of a
+subagent. Never skip a lens to save time on a change you are unsure about.
+
+**Resolve every blocking finding** from whichever lenses ran (re-enter Phase 3 as needed),
+then re-review until they return no blocking findings. Address or consciously note
+non-blocking ones. You may not advance to the report gate while any blocking finding is open.
+**Re-review the fix, not the whole diff again** — dispatch the follow-up scoped to what you
+changed in response.
 
 ## Phase 5 — Report & test scenario  🚦 GATE 2 (report)
 Two deliverables, then stop for approval:
@@ -94,12 +116,14 @@ Two deliverables, then stop for approval:
 1. **Result in a nutshell** — 2–4 plain-language sentences on what changed from the user's
    point of view (the flows affected, not the code). Mention which files/repos were touched
    and the test/review outcome (e.g. "8 tests pass, reviewer clean").
-2. **Test scenario for the user.** Write a step-by-step manual test scenario to
+2. **Test scenario — when there is something to walk through** (rule 14). If the change gives
+   the user something to actually go and do, write a step-by-step manual scenario to
    `.swe/test-scenarios/<short-slug>.md` using
-   `${CLAUDE_PLUGIN_ROOT}/rules/test-scenario-template.md`, so the user can follow it to
-   exercise and get familiar with the new behavior. Include preconditions/setup, numbered
+   `${CLAUDE_PLUGIN_ROOT}/rules/test-scenario-template.md`: preconditions/setup, numbered
    steps with the expected result at each key step, and at least one edge/failure case.
-   **Link the file in your report** (e.g. `Test scenario: .swe/test-scenarios/<slug>.md`).
+   **Link it in your report** (e.g. `Test scenario: .swe/test-scenarios/<slug>.md`).
+   If there is nothing to walk through — an internal refactor, a fix the regression test
+   already covers, a dependency bump — **skip it and say so in one line.**
 
 3. **Anything you found and are not fixing.** Out-of-scope work goes into the project backlog
    via `add_backlog_item` (one item per piece of work) rather than living in this report,
@@ -117,9 +141,10 @@ Only **after the user approves**, commit:
 - If on the default branch (`main`/`master`), create a feature branch first — never commit
   directly to the default branch. (A safety hook also blocks this mechanically.)
 - Use the project's existing commit-message style. Include the test-scenario file in the
-  commit.
+  commit if you wrote one.
 - If this task belongs to an epic, **update `.swe/epics/<slug>.md`**: check off the task,
-  append to the Log (branch + test-scenario link), and mark the epic `done` if complete.
+  append to the Log (branch, plus the test-scenario link if there is one), and mark the epic
+  `done` if complete.
 
 Pushing and opening a PR are **not** part of this workflow — those happen only via the
 explicit `/swe:ship` command.

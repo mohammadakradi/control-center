@@ -64,7 +64,7 @@ const GITDIR_FILE_CAP = 4096;
  * directory that merely sits inside some repo, or one pointed at a different repo entirely?
  *
  * The question matters because worktrees live under `data/worktrees/`, which **in a dev checkout
- * is inside the platform's own repository** (`.swe/notes.md`, 2026-08-16). For a directory git no
+ * is inside the platform's own repository** (`.swe/notes/log-task-changes.md`, 2026-08-16). For a directory git no
  * longer recognises, git walks *up* and finds the enclosing repo — so a weak test here renders the
  * platform checkout's entire change set under the task's name.
  *

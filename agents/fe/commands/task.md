@@ -6,11 +6,14 @@ argument-hint: <what to build / redesign / restyle>
 Handle this frontend request: **$ARGUMENTS**
 
 Follow the **request workflow** in `${CLAUDE_PLUGIN_ROOT}/rules/workflow.md` and the frontend
-engineering rules in `${CLAUDE_PLUGIN_ROOT}/rules/frontend-rules.md`.
+engineering rules in `${CLAUDE_PLUGIN_ROOT}/rules/frontend-rules.md`. **Read each of those
+at most once**, at the start — they don't change mid-task, and a re-read is a second full
+copy in the transcript, re-sent on every later call (rule 18).
 
 In short:
 
-1. **Investigate** — read `.fe/notes.md`, `.fe/design-system.md` (tokens + reuse catalog), and
+1. **Investigate** — read `.fe/design-system.md` (tokens + reuse catalog), the `.fe/notes.md`
+   index (then only the topic files this touches), and
    any active `.fe/epics/` plan this belongs to. Find the components/styles/routes involved
    (use the `ui-explorer` subagent for big UIs). Do a **reuse survey**: which existing
    components/tokens you'll reuse. Onboard first if there's no `CLAUDE.md`.
@@ -21,11 +24,14 @@ In short:
    tokens (no hardcoded colors/spacing/type); verify it renders at the relevant breakpoints
    (and dark mode); add tests where supported. Then run the full typecheck/lint/build/test
    gate. Update `.fe/design-system.md` if you added/changed a token or shared component.
-4. **Independent review** — dispatch **both** the `design-reviewer` (design fidelity, reuse,
-   a11y, responsiveness, UI correctness) and the `frontend-auditor` (security, correctness,
-   performance) subagents. Resolve all blocking findings and re-review until both are clean.
-5. **Report & test scenario** 🚦 — nutshell of what the user will see change (and what was
-   reused vs. added), plus a manual test scenario written to `.fe/test-scenarios/<slug>.md`
-   (incl. responsive + dark-mode + a11y checks) and linked. **Stop for approval.**
+4. **Independent review** — dispatch review **scaled to the diff** (workflow Phase 4): both
+   the `design-reviewer` (design fidelity, reuse, a11y, responsiveness) and the
+   `frontend-auditor` (security, correctness, performance) for any real UI change,
+   `design-reviewer` alone for a small safe one. Resolve all blocking findings, re-review
+   until clean.
+5. **Report** 🚦 — nutshell of what the user will see change (and what was reused vs. added).
+   Add a manual test scenario at `.fe/test-scenarios/<slug>.md` (responsive + dark-mode + a11y
+   checks) **only if there is something to look at** (rule 14); otherwise say in one line why
+   not. **Stop for approval.**
 6. **Commit** — only after approval, on a feature branch (a hook blocks the default branch);
    update the epic if this task belongs to one. Pushing/PR is `/fe:ship`.

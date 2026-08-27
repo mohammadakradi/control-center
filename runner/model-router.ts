@@ -1,5 +1,12 @@
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { TaskEnv } from "./user-env";
+import { allowedModels } from "../lib/agent-policy";
+import {
+  EFFORT_LEVELS,
+  normalizeEffortChoice,
+  type EffortChoice,
+  type EffortLevel,
+} from "../lib/models";
 
 /** Model labels (stored on the task) → SDK model ids. Opus 4.8 stays resolvable
  *  (legacy/explicit) but auto-routing never selects it — Opus 5 replaced it. */
@@ -26,15 +33,61 @@ const LEGACY: Record<string, ModelLabel> = {
   opus: "opus-4.8",
 };
 
-/** Complexity tiers, mapped to models per agent.
- *  - pm: Fable 5 only for very complex planning; Sonnet 5 for everything else.
- *  - swe/fe (default): Fable 5 for very complex builds, Opus 5 for complex work,
- *    Sonnet 5 for simple changes. Sonnet 4.6 / Opus 4.8 are never auto-selected. */
+/**
+ * Complexity tiers, mapped to models per agent.
+ *  - pm: Opus 5 for very complex planning; Sonnet 5 for everything else.
+ *  - swe/fe (default): Opus 5 for complex and very complex work, Sonnet 5 for simple
+ *    changes. Sonnet 4.6 / Opus 4.8 are never auto-selected.
+ *
+ * **Fable 5 is deliberately not auto-selected**, though it stays fully available when a user
+ * picks it. It is $10/$50 per Mtok against Opus 5's $5/$25 — double the price on a tier
+ * chosen by a *triage guess* about a request nobody has read yet. Measured on this install:
+ * 17 auto-routed Fable runs cost $389, averaging $23 each, with no evidence the escalation
+ * was needed. Paying twice as much is a decision worth making on purpose, so it moved to the
+ * model picker. `CC_ENABLE_FABLE_TIER=1` restores the old auto-escalation.
+ */
 type Tier = "very-complex" | "complex" | "simple";
 const TIERS: Record<string, Record<Tier, ModelLabel>> = {
   pm: { "very-complex": "fable-5", complex: "sonnet-5", simple: "sonnet-5" },
   default: { "very-complex": "fable-5", complex: "opus-5", simple: "sonnet-5" },
 };
+
+/**
+ * The tier table names the *ideal* model for a tier; the agent's policy decides what it may
+ * actually run (`lib/agent-policy.ts`, configured in Settings). Fable 5 is denied by default,
+ * so out of the box "very complex" lands on Opus 5 here rather than escalating to a model
+ * that costs twice as much.
+ *
+ * Clamping walks **down** the ladder, never up: a denied model becomes the most capable one
+ * still permitted, and if the policy is narrower than the whole ladder the run gets the best
+ * it is allowed rather than a refusal. Refusing would be worse than downgrading — the user
+ * asked for work, not for a lecture about configuration — but the reason string always says
+ * the policy intervened, so a surprisingly cheap model is never silent.
+ */
+function clampToPolicy(
+  namespace: string,
+  wanted: ModelLabel,
+  reason: string,
+): ResolvedModel {
+  const allowed: readonly string[] = allowedModels(namespace);
+  if (allowed.includes(wanted)) return pick(wanted, reason);
+
+  const denied = `${reason} — ${wanted} not allowed for :${namespace}`;
+  // Walk *down* from the wanted model. A retired label (`opus-4.8`) isn't on the ladder, so
+  // `indexOf` gives -1 and the slice is empty — it falls through to the cheapest allowed
+  // model, which is the right answer for a policy that no longer permits what it ran on.
+  const below = MODEL_ORDER.slice(0, Math.max(MODEL_ORDER.indexOf(wanted as never), 0));
+  for (let i = below.length - 1; i >= 0; i--) {
+    if (allowed.includes(below[i])) return pick(below[i], denied);
+  }
+  // Nothing at or below it is permitted, so take the cheapest thing that is. `allowedModels`
+  // guarantees a non-empty list (see `policyFallback`), so this can't be undefined.
+  return pick(allowed[0] as ModelLabel, denied);
+}
+
+/** Cheapest-first ladder, used only for clamping. Retired labels are deliberately absent:
+ *  they are never auto-selected, so they only appear here as a `wanted` that falls through. */
+const MODEL_ORDER = ["sonnet-5", "opus-5", "fable-5"] as const;
 
 // Cheapest/fastest model — used for tiny side calls (naming a task) where quality
 // of prose doesn't matter and latency/cost do.
@@ -184,15 +237,68 @@ export async function resolveModel(
 
   if (choice !== "auto") {
     const label = (LEGACY[choice] ?? choice) as ModelLabel;
-    if (label in MODELS) return pick(label, "selected by user");
+    // Clamped, not trusted. Dispatch already refuses a disallowed pick, so reaching here
+    // means the row predates a policy change (a task being continued after someone switched
+    // a model off) — downgrade it rather than failing a run that was legal when it started.
+    if (label in MODELS) return clampToPolicy(namespace, label, "selected by user");
   }
   if (MECHANICAL.has(command))
-    return pick(tiers.simple, `mechanical command :${command}`);
+    return clampToPolicy(namespace, tiers.simple, `mechanical command :${command}`);
 
   let { tier, reason } = await classify(command, requestText, env);
   if (COMPLEX_CMDS.has(command) && tier === "simple") {
     tier = "complex";
     reason = `:${command} is inherently complex (floor)`;
   }
-  return pick(tiers[tier], `${tier} — ${reason}`);
+  return clampToPolicy(namespace, tiers[tier], `${tier} — ${reason}`);
 }
+
+/** Effort per complexity tier. Mirrors the model ladder: mechanical and simple work does not
+ *  need deep reasoning, and paying for it shows up as a longer transcript, not a better diff. */
+const TIER_EFFORT: Record<Tier, EffortLevel> = {
+  "very-complex": "xhigh",
+  complex: "high",
+  simple: "medium",
+};
+
+export type ResolvedEffort = { level: EffortLevel; reason: string };
+
+/**
+ * Decide how much reasoning effort a task runs with.
+ *
+ * Deliberately does **not** run its own triage call: a second classifier round-trip to pick
+ * effort would cost more than the effort setting saves. `auto` derives the level from the
+ * command and, when the model resolution already classified the request, that same tier — so
+ * one triage answer drives both decisions.
+ *
+ * Claude Code's own default is `xhigh`, which is why nothing here was cheap before: every run,
+ * including `/swe:ship`, reasoned as hard as the hardest task. A mechanical command dropping to
+ * `low` is most of the win.
+ */
+export function resolveEffort(
+  command: string,
+  choice: EffortChoice | string,
+  modelReason?: string,
+): ResolvedEffort {
+  const normalized = normalizeEffortChoice(choice);
+  if (normalized !== "auto") return { level: normalized, reason: "selected by user" };
+
+  if (MECHANICAL.has(command)) {
+    return { level: "low", reason: `mechanical command :${command}` };
+  }
+  // Reuse the tier the model router already paid to classify, rather than guessing again.
+  const tier: Tier | null = modelReason?.startsWith("very-complex")
+    ? "very-complex"
+    : modelReason?.startsWith("complex")
+      ? "complex"
+      : modelReason?.startsWith("simple")
+        ? "simple"
+        : null;
+  if (tier) return { level: TIER_EFFORT[tier], reason: `${tier} request` };
+  // No tier available (an explicit model choice skipped triage entirely) — "high" is the
+  // API's own default and the safe middle, not a guess dressed up as a decision.
+  return { level: "high", reason: "default" };
+}
+
+/** Exported for the settings UI and specs: the levels, cheapest first. */
+export { EFFORT_LEVELS };
