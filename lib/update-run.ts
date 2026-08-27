@@ -391,6 +391,15 @@ export function openAttemptLog(env: UpdateEnv = process.env): {
 } {
   const { log } = updateRunPaths(env);
   mkdirSync(dirname(log), { recursive: true });
+  // Keep the previous attempt before truncating. A failed update's log used to be destroyed by
+  // the next one — including by the successful retry someone runs immediately afterwards — so
+  // the only transcript of *why* it failed was gone by the time anyone came to look. One
+  // generation is enough: the interesting log is always the failure just before the retry.
+  try {
+    renameSync(log, `${log}.prev`);
+  } catch {
+    /* nothing to keep (first run), or an unwritable dir the write below will report */
+  }
   writeFileSync(
     log,
     `=== control-center update started ${new Date().toISOString()} ===\n`,

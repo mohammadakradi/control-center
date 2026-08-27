@@ -663,6 +663,9 @@ cmd_update() {
     update_run
   else
     # Run by hand: still show progress on the terminal, and keep the same record.
+    # Keep the previous attempt: `tee` truncates, and a failed update's log used to be
+    # destroyed by the very retry someone runs to recover from it.
+    [ -f "$UPDATE_LOG_FILE" ] && mv "$UPDATE_LOG_FILE" "$UPDATE_LOG_FILE.prev" 2>/dev/null || :
     update_run 2>&1 | tee "$UPDATE_LOG_FILE"
     # A pipeline exits with tee's status, so the attempt's own record is what we report —
     # anything short of a recorded success is a failure, including a death that never got to
