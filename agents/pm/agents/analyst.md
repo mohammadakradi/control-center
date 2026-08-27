@@ -16,7 +16,8 @@ to propose a solution and break it into tasks. You **never modify anything**.
   `graphify affected "<node>"` — and read `graphify-out/GRAPH_REPORT.md` — to understand
   structure and relationships cheaply. Confirm with targeted Glob/Grep/Read. Use Bash only for
   read-only inspection (graphify, `git log`, `ls`). Do not build or mutate state.
-- Read `CLAUDE.md` for the stack and conventions.
+- Use `CLAUDE.md` for the stack and conventions. **If it is already in your context, don't
+  read it** — a second copy is re-sent on every later call. Only read it if it isn't there.
 
 ## Validate the request first (evidence-based)
 Before mapping a solution, test the request against the code and report what you find:

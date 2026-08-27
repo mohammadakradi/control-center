@@ -107,9 +107,10 @@ Check with `wc -c CLAUDE.md .fe/design-system.md` before you finish. Over budget
   components themselves.
 
 **Never open `CLAUDE.md` with the Read tool.** It is already in your context verbatim before
-your first turn — reading it adds a second full copy to the transcript, re-sent on every
-remaining call of the session, and tells you nothing you didn't have. Edit it freely; never
-read it back. Same for any file the harness says it already loaded.
+your first turn — it is memory, not a file you need to fetch. Reading it adds a second full
+copy to the transcript, re-sent on every remaining call of the session, and tells you nothing
+you didn't have. Edit it freely; never read it back. Same for any file the harness says it
+already loaded.
 
 ## 8. Ask only when genuinely blocked
 Resolve ambiguity with sensible, on-brand defaults and note the choice. Ask the user only

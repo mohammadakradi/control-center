@@ -8,7 +8,8 @@ Before starting, make sure the project is onboarded (a `CLAUDE.md` exists). If n
 `onboard` skill first.
 
 **Multi-repo workspaces:** if a `.swe/workspace.json` exists, this is a workspace spanning
-several repos — read it and the workspace `CLAUDE.md`, and apply the multi-repo adjustments
+several repos — read it (the workspace `CLAUDE.md` is already in your context) and apply the
+multi-repo adjustments
 in `${CLAUDE_PLUGIN_ROOT}/rules/workspace.md` at each phase (investigate across all members,
 list affected members in the plan, keep shared contracts in sync, commit per repo).
 

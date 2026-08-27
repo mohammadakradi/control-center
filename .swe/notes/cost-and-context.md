@@ -244,3 +244,48 @@ Two traps hit while building this, both already documented elsewhere and both st
 - **`setState` in a `useEffect` is a hard lint error here.** Keeping the model picker valid when
   the agent changes had to be *derived* at render, not synced in an effect
   (`.fe/notes/environment.md`). Deriving is the better shape anyway — no second source of truth.
+
+## Are we cheaper than driving Claude Code by hand? (asked 2026-08-27)
+
+**Not measurable yet, and the comparison is not the right target.** Recording both halves so
+the question doesn't get re-answered from intuition.
+
+**Why not measurable:** all 207 rows in the database predate the changes. No task has run
+under the new budgets, caps, effort routing or review scaling, so there is no after-figure.
+The only honest number today is a projection; the real one arrives after ~20 tasks, by
+re-running the queries at the top of this note and comparing `avg(usage_cost_usd)` and the
+context-per-output-token ratio against the August baseline ($21.50/task, 194:1).
+
+**Projected effect on the historical workload**, mechanism by mechanism:
+
+| Lever | Modelled effect | Confidence |
+|---|---|---|
+| `CLAUDE.md` 147→13 KB | 464M of 4,598M cache-read tokens avoided (**10%** of all context) | high — measured sizes × real call counts |
+| Journal/doc reads | 1.5M tokens were read in as tool results, then rode every later prefix | high on volume, low on how much recurs |
+| Fable denied by default | those 17 runs: $389 → ~$195 | high — same tokens, half the rate |
+| Review scaled to the diff | subagents were 23% of spend ($500); small-diff tasks skip one or both lenses | medium — depends on diff mix |
+| Effort routing | mechanical commands xhigh → low | low — no measurement exists yet |
+| `$40`/task cap | 12 tasks exceeded it by $582 total (**21%** of the bill) | high on the bound, but it *stops* runs rather than reclaiming spend |
+
+A defensible expectation is **30–50% off a comparable workload**, most of it from the context
+shrink and the cap, and it will not be uniform: Control Center benefits most (its docs were the
+bloated ones), while a project with a small `CLAUDE.md` was already near the floor.
+
+**Why "cheaper than CLI chat" is the wrong goal.** These are not the same unit of work. A CLI
+chat turn is one exchange you steer; a `swe:task` is an autonomous multi-hour run with a median
+of **59 turns in a single subprocess** (max 302) that plans, builds, tests, dispatches
+adversarial review, reports and commits without a human in the loop. Measured here, **23% of
+all spend is subagent review** that a hand-driven session simply would not do.
+
+So per *task* the platform will lose to a human-steered chat, and should — it is buying
+autonomy, parallelism and a persistent audit trail with those tokens. The meaningful questions
+are the two below, and both are now answerable:
+1. Is the **overhead** (context re-transmission, duplicated docs, unbounded runs) small relative
+   to the work? That was the real problem — 82% of spend was re-transmission and only 17.5%
+   bought output — and it is what these rounds attacked.
+2. Does a task cost roughly what the work is worth? That is what the per-task cap makes explicit
+   rather than discovering it at $300.
+
+If the goal really is *lowest tokens per outcome*, the remaining lever is not technical: run
+fewer, larger tasks (each task pays the workflow's fixed cost once), keep `effort` low on
+routine work, and let Auto pick the model rather than reaching for the expensive tier.

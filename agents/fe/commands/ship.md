@@ -17,8 +17,9 @@ is the **only** command permitted to write to git, and it must follow these guar
 
 ## Steps
 
-1. **Sanity check.** Confirm there are changes to ship (`git status`). Read `CLAUDE.md` to
-   recall conventions. Confirm typecheck/lint/build/tests were run for this change — if not,
+1. **Sanity check.** Confirm there are changes to ship (`git status`). `CLAUDE.md` is already
+   in your context — use it to recall conventions, don't read it back.
+   Confirm typecheck/lint/build/tests were run for this change — if not,
    run them now and stop if they fail (report the failure).
 2. **Branch.** If on the default branch, create a descriptive feature branch.
 3. **Commit.** If the `/fe:task` or `/fe:fix` workflow already committed these changes, skip

@@ -12,7 +12,8 @@ read `.fe/design-system.md` for the project's tokens and reuse catalog. This com
 
 ## Steps
 
-1. **Ground yourself.** Read `CLAUDE.md` and `.fe/design-system.md` for conventions and tokens.
+1. **Ground yourself.** `CLAUDE.md` is already in your context — don't read it. Read
+   `.fe/design-system.md` for the tokens and the reuse catalog.
 2. **Get the diff.** Use `git diff` (and `git diff --staged`) to see uncommitted changes. If
    the repo is clean, review the most recent commit instead and say so.
 3. **Review** for:

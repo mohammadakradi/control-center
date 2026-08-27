@@ -54,11 +54,15 @@ you are over budget and must **consolidate, not append**:
 - Move long-form detail into `.swe/notes/<topic>.md` (rule 10) and leave a one-line pointer.
 - Delete what is now false, or what a reader could re-derive from the code it describes.
 
-**Never open `CLAUDE.md` with the Read tool.** It is already in your context verbatim before
-your first turn. Reading it adds a second full copy to the transcript, which is then re-sent
-on every remaining call of the session, and tells you nothing you did not already have. Edit
-it freely — just never read it back. The same applies to any file the harness tells you it
-has already loaded.
+**Never open this project's `CLAUDE.md` with the Read tool.** It is already in your context
+verbatim before your first turn — it is memory, not a file you need to fetch. Reading it adds
+a second full copy to the transcript, which is then re-sent on every remaining call of the
+session, and tells you nothing you did not already have. Edit it freely — just never read it
+back. The same applies to any file the harness tells you it has already loaded.
+
+*The one exception:* in a multi-repo workspace only the **workspace root's** `CLAUDE.md` is
+injected. A member repo's own `CLAUDE.md` (`backend/CLAUDE.md`, …) is not in your context, so
+read those when the work touches that member.
 
 ## 8. Ask only when genuinely blocked
 Resolve ambiguity yourself with sensible defaults and note the choice. Ask the user only
