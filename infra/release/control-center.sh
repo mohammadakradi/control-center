@@ -564,13 +564,38 @@ apply_update() {
   (cd "$tmp/app" && npx --yes "pnpm@${CC_PNPM_VERSION:-9.12.1}" install --frozen-lockfile) ||
     die "dependency install failed — the existing install is untouched."
 
-  # Build before anything is swapped: `next start` needs `.next`, and a build that fails here
-  # must leave the running install exactly as it was.
-  info "Building the app…"
-  (cd "$tmp/app" && NODE_ENV=production ./node_modules/.bin/next build) ||
-    die "build failed — the existing install is untouched."
-
+  # The app comes down *before* the build, not after it.
+  #
+  # A Turbopack production build is the heaviest thing this script does, and it used to run
+  # alongside the web server and runner it was about to replace. On a machine without memory to
+  # spare that is the difference between an update that works and one that dies partway through
+  # loading a module — reported on an 8 GB Mac, where the same update succeeded as soon as the
+  # app was closed by hand. Nothing is swapped yet, so the install on disk is still untouched;
+  # it is only stopped, and the failure path below starts it again.
+  info "Stopping the app so the build has the machine to itself…"
   stop_all
+
+  # Build before anything is swapped: `next start` needs `.next`, and a build that fails here
+  # must leave the existing install exactly as it was.
+  info "Building the app…"
+  if ! (cd "$tmp/app" && NODE_ENV=production ./node_modules/.bin/next build); then
+    # Put the app back before giving up. `$APP_DIR` has not been touched, so this is the same
+    # start the user would do by hand — and without it a failed update would leave them with a
+    # stopped app and no indication that starting it is all they need.
+    # `CC_SKIP_UPDATE_CHECK=1` so the restart cannot re-enter this attempt, and the update lock
+    # is deliberately still held: `cmd_start` lets its own locker through.
+    # `${was_running:-no}`, not `$was_running`: this script runs under `set -u`, and the other
+    # caller of apply_update is the **start path** (`cmd_start` applying an update before
+    # launching), which never sets it. Defaulting to `no` is also the right behaviour there —
+    # nothing was running to restart, and cmd_start is the very thing calling us.
+    if [ "${was_running:-no}" = yes ]; then
+      info "Restarting the version you were on…"
+      CC_SKIP_UPDATE_CHECK=1 cmd_start ||
+        warn "Couldn't restart automatically — run: control-center start"
+    fi
+    die "build failed — the existing install is untouched and running again."
+  fi
+
   # A copy of the pre-update database, distinct from the snapshot the migrator takes: this one
   # is the last good state for *this* version, before any schema change touches it.
   backup_db
@@ -643,7 +668,10 @@ update_run() {
   # The lock is deliberately still held through this restart: cmd_start lets its own locker
   # through, while someone else's `start` keeps refusing — otherwise the update's restart and
   # a user's reopen could each spawn a web+runner pair.
-  [ "$was_running" = yes ] && CC_SKIP_UPDATE_CHECK=1 cmd_start || :
+  # Defaulted for uniformity with the failure path in apply_update: this one is provably set
+  # two lines above, but "never compare it undefaulted" is a rule worth having no exceptions to
+  # under `set -u`.
+  [ "${was_running:-no}" = yes ] && CC_SKIP_UPDATE_CHECK=1 cmd_start || :
   record_update succeeded
   release_update_lock
 }

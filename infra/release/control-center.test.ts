@@ -456,3 +456,44 @@ test("`control-center update` still fails loudly — only the launch path is for
   assert.equal(res.status, 1);
   assert.doesNotMatch(res.stdout + res.stderr, /starting 9\.9\.9 instead/);
 });
+
+/**
+ * Two invariants inside `apply_update()` that no runnable spec here can reach.
+ *
+ * Everything above stops at the download — getting to the build needs a real tarball, a real
+ * `pnpm install` and a real Turbopack build, which is minutes of work and not a unit test. But
+ * both of these brick an install when they regress, and both are one careless edit away, so
+ * they are pinned structurally instead of behaviourally. A structural assertion is the weaker
+ * kind; it is here because the alternative is no assertion at all.
+ */
+test("the app is stopped before the build, not after it", () => {
+  // The reason: a Turbopack production build alongside the web server and runner it is about
+  // to replace exhausted an 8 GB machine, and the update died partway through loading a
+  // module. The same update succeeded with the app closed. If `stop_all` drifts back below
+  // the build, that failure returns and is miserable to diagnose.
+  const script = readFileSync(SCRIPT, "utf8");
+  const body = script.slice(
+    script.indexOf("apply_update() {"),
+    script.indexOf("\nupdate_run() {"),
+  );
+  assert.ok(body.length > 0, "found apply_update's body");
+  const stop = body.indexOf("stop_all");
+  const build = body.indexOf("next build");
+  assert.ok(stop > -1 && build > -1, "both steps are still in apply_update");
+  assert.ok(stop < build, "stop_all must come before the build");
+});
+
+test("the build-failure restart cannot trip `set -u` on the start path", () => {
+  // `apply_update` has two callers. `update_run` sets `was_running`; `cmd_start` — applying an
+  // update before launching — does not, and the script runs under `set -eu`, so a bare
+  // `$was_running` aborts the launch with "unbound variable". That turns a failed update into
+  // an app that will not start, which is the exact class of bug the surrounding comments in
+  // this script were written about.
+  const script = readFileSync(SCRIPT, "utf8");
+  assert.match(script, /\$\{was_running:-no\}/, "the reference is defaulted");
+  assert.doesNotMatch(
+    script,
+    /\[ "\$was_running" =/,
+    "no undefaulted `$was_running` comparison anywhere",
+  );
+});
