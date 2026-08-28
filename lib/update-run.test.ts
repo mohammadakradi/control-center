@@ -365,6 +365,36 @@ test("each attempt gets the log to itself", () => {
   );
 });
 
+test("the previous attempt is kept, not destroyed by the next one", () => {
+  // A real failure was undiagnosable because of this: the update log is truncated per attempt,
+  // so the successful retry someone runs to recover overwrote the only transcript of why the
+  // first one failed. One generation back is enough — the interesting log is always the
+  // failure immediately before the retry.
+  const dir = home();
+  const logPath = join(dir, "logs/update.log");
+  writeFileSync(logPath, "build failed — the reason nobody got to read\n", { mode: 0o644 });
+
+  const log = openAttemptLog(env(dir));
+  closeSync(log.fd);
+
+  const prev = readFileSync(`${logPath}.prev`, "utf8");
+  assert.match(prev, /the reason nobody got to read/, "the failed attempt survived the retry");
+  assert.ok(
+    !readFileSync(logPath, "utf8").includes("nobody got to read"),
+    "and the current log is still a clean slate for this attempt",
+  );
+});
+
+test("a first-ever attempt has nothing to keep and still opens cleanly", () => {
+  // No log yet: the rename must not turn a fresh install's first update into an error.
+  const dir = home();
+  const log = openAttemptLog(env(dir));
+  writeSync(log.fd, "Downloading…\n");
+  closeSync(log.fd);
+  assert.match(readFileSync(log.path, "utf8"), /control-center update started/);
+  assert.equal(existsSync(`${log.path}.prev`), false, "nothing invented to rotate");
+});
+
 /**
  * The other writer, end to end. `update` against an empty CC_HOME reaches `need_install` and
  * dies: no network, nothing installed, and the whole recording path runs — the tee into
