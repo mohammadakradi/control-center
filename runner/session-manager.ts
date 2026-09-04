@@ -66,11 +66,26 @@ type SessionHandle = {
   out: EventEmitter; // SSE subscribers listen here
   pushInput: (m: SDKUserMessage) => void;
   closeInput: () => void;
+  /** Re-open the input channel of a run that was sealed while its agent kept working. */
+  reopenInput: () => void;
+  /** Can the SDK's input stream still carry a message to this session? */
+  isInputLive: () => boolean;
   query: ReturnType<typeof query> | null;
   pendingApproval?: (decision: GateDecision) => void;
   started: boolean; // false while queued behind another job on the same project
   start?: () => void; // launches the SDK session (set only while queued)
   done: boolean;
+  /** Set once `finalize` has written the terminal `end` event. Everything the session emits
+   *  after that is late noise — a background subagent's last message, a tool result nobody
+   *  is waiting for — and `record` drops it rather than appending to a finished transcript
+   *  (which is what made a task's own events land *after* its `end`). Cleared by a re-open. */
+  sealed?: boolean;
+  /** The status the run was sealed with, so a late gate can tell "the user cancelled this"
+   *  (never resurrect) from "the runner thought it was finished" (re-openable). */
+  sealedStatus?: TaskStatus;
+  /** True once the isolated worktree has been handed back: the agent's cwd no longer
+   *  exists, so the run cannot be re-opened however alive its session looks. */
+  worktreeRemoved?: boolean;
   /** Credential values injected into this task's subprocess env. Task transcripts are
    *  visible to every signed-in user, so any event that would echo one of these (e.g.
    *  the agent running `env` — deliberately or via prompt injection) is scrubbed
@@ -169,10 +184,29 @@ function promoteNext(projectId: string): void {
   else if (!h) startTask(next.id); // no live handle (e.g. after restart) — dispatch fresh
 }
 
-function makeInputChannel() {
+/**
+ * How long the SDK's input stream stays open after the runner seals a run.
+ *
+ * Closing it is what ends the query — but it is also what turned a late `request_approval`
+ * into **`Stream closed`**: the agent was still mid-turn, raised a gate, and there was no
+ * longer a session to deliver the decision to. The grace keeps the stream alive long enough
+ * for that call to arrive and re-open the run (`gateAction`), and costs nothing else: the
+ * project has already been handed to the next job by then, and the handle is kept for a
+ * minute regardless.
+ */
+const SEAL_INPUT_GRACE_MS = 15_000;
+
+/** Exported (with the grace injectable) only so a spec can drive the close/re-open race
+ *  without waiting 15 s: this is the piece that decides whether a late gate has a session
+ *  left to answer into. */
+export function makeInputChannel(graceMs: number = SEAL_INPUT_GRACE_MS) {
   const queue: SDKUserMessage[] = [];
   let wake: (() => void) | null = null;
   let closed = false;
+  /** False once `gen()` has actually returned — after that the SDK's input stream is gone
+   *  for good and no amount of re-opening brings it back. */
+  let live = true;
+  let graceUsed = false;
   const push = (m: SDKUserMessage) => {
     queue.push(m);
     wake?.();
@@ -183,17 +217,50 @@ function makeInputChannel() {
     wake?.();
     wake = null;
   };
+  // Un-closes the channel for a run the runner sealed while the agent was still working —
+  // it just called a tool, so a re-opened task needs somewhere to put the user's answer.
+  // Only meaningful while `live` (see `gen`); `gateAction` refuses the gate otherwise.
+  const reopen = () => {
+    closed = false;
+    graceUsed = false;
+  };
   async function* gen(): AsyncGenerator<SDKUserMessage> {
-    while (true) {
-      if (queue.length) {
-        yield queue.shift()!;
-        continue;
+    try {
+      while (true) {
+        if (queue.length) {
+          yield queue.shift()!;
+          continue;
+        }
+        if (closed) {
+          // Don't end the stream the instant the runner seals: hold it open once, so a gate
+          // the agent raises immediately after can re-open the run instead of hitting a
+          // closed input channel. One grace per close, re-armed by `reopen`.
+          if (!graceUsed) {
+            graceUsed = true;
+            // Interruptible: a message pushed during the grace (the user's answer to a gate
+            // that re-opened the run) must not wait out the timer.
+            await new Promise<void>((r) => {
+              const timer = setTimeout(() => {
+                wake = null;
+                r();
+              }, graceMs);
+              timer.unref?.();
+              wake = () => {
+                clearTimeout(timer);
+                r();
+              };
+            });
+            continue;
+          }
+          return;
+        }
+        await new Promise<void>((r) => (wake = r));
       }
-      if (closed) return;
-      await new Promise<void>((r) => (wake = r));
+    } finally {
+      live = false;
     }
   }
-  return { push, close, gen };
+  return { push, close, reopen, gen, isLive: () => live };
 }
 
 function userMessage(text: string): SDKUserMessage {
@@ -213,8 +280,12 @@ const GATE_AT_END = /\[\[GATE:(PROPOSAL|REPORT)\]\]\s*$/;
 /** Cap auto-continue nudges so a stuck agent can't loop forever. */
 const MAX_AUTO_CONTINUE = 3;
 
-/** What to send when a turn ended without the agent being finished (see ./completion). */
-function nudgePrompt(reason: PauseReason): string {
+/** What to send when a turn ended without the agent being finished (see ./completion).
+ *  Exported for its spec: the wording is what actually steers the agent back onto the
+ *  workflow, and each reason has to describe the stop the agent just made — a nudge that
+ *  misnames it ("your sub-tasks have completed" to an agent that dispatched none) reads as
+ *  the platform being confused and invites a restart. */
+export function nudgePrompt(reason: PauseReason): string {
   const carryOn =
     "Do NOT stop here and do NOT restart: continue this SAME task from where you left " +
     "off and carry the workflow through to its report gate by calling the " +
@@ -224,6 +295,12 @@ function nudgePrompt(reason: PauseReason): string {
     return (
       "Your dispatched sub-tasks/reviews have completed and their results are above. " +
       `Incorporate the findings. ${carryOn}`
+    );
+  if (reason === "unfinished")
+    return (
+      "Your turn ended without a final report: the last thing you said reads as a step " +
+      "along the way rather than a result, and no report gate or [[DONE]] followed — so " +
+      `the work is not finished. ${carryOn}`
     );
   return (
     "Your turn ended without a result: the last thing you said announced what you were " +
@@ -280,6 +357,55 @@ export function resultAction(s: {
   return "complete";
 }
 
+/**
+ * What to do with a gate the agent raises — normally "deliver", but the interesting case is
+ * a gate that arrives on a run the runner has already sealed. That happened for real: the
+ * turn was sealed on a tool-call preamble, `finalize` closed the input channel, and the next
+ * `request_approval` died with `Stream closed` — so the user was handed a report on a
+ * finished task instead of the proposal the agent was trying to raise.
+ *
+ * A sealed run is re-opened rather than refused *when re-opening can actually work*: this
+ * handle is still the task's live session, its input stream hasn't ended, its working tree
+ * is still there, and nobody else has taken the working tree in the meantime. The refusals
+ * are the cases where honouring the gate would strand the agent waiting for a decision that
+ * can never arrive, undo a cancellation the user asked for, or — the one found in review —
+ * put two live agents in one directory. A refusal is explicit (the tool returns an error),
+ * never a silent hang.
+ *
+ * Pure and exported so the precedence is pinned by a spec, like `resultAction`.
+ */
+export type GateAction = "deliver" | "reopen" | "refuse";
+export function gateAction(s: {
+  /** handle.done — the runner already ended this run. */
+  sealed: boolean;
+  /** This handle is still the session registered for the task. */
+  current: boolean;
+  /** The SDK input stream can still carry the user's answer back. */
+  inputLive: boolean;
+  /** The seal was a user cancellation/stop. */
+  cancelled: boolean;
+  /** The isolated worktree was handed back — the agent's cwd is gone. */
+  treeGone: boolean;
+  /** Someone else now holds the working tree this run was using. `finalize` calls
+   *  `promoteNext`, so by the time a late gate arrives the project's main checkout may
+   *  already have been handed to the next queued job. Re-opening then would leave two
+   *  uncoordinated agents editing, staging and committing in one directory — worse than the
+   *  stranded gate this whole path exists to fix. (Worktree-isolated runs own their own
+   *  tree, so this is only ever true for a checkout-mode run.) */
+  checkoutTaken: boolean;
+}): GateAction {
+  if (!s.sealed) return "deliver";
+  if (
+    !s.current ||
+    !s.inputLive ||
+    s.cancelled ||
+    s.treeGone ||
+    s.checkoutTaken
+  )
+    return "refuse";
+  return "reopen";
+}
+
 /** True for messages from the main agent thread (subagent messages carry a
  *  parent_tool_use_id / subagent_type and must not drive task completion). */
 function isMainThread(m: SDKMessage): boolean {
@@ -318,12 +444,26 @@ export function redactPayload(payload: unknown, secrets: string[]): unknown {
   return JSON.parse(redactString(json, secrets));
 }
 
+/**
+ * May this event still be written to the task's transcript? Once `finalize` has recorded the
+ * terminal `end`, the answer is no: a task that keeps emitting events after its own `end` is
+ * a task whose transcript disagrees with its status, and the events are always leftovers
+ * (background subagents, tool results from an abandoned turn) rather than anything the user
+ * asked for. Pure and exported so the rule is pinned by a spec — `record` is not reachable
+ * from one.
+ */
+export function recordAllowed(handle: { sealed?: boolean }): boolean {
+  return !handle.sealed;
+}
+
 function record(
   handle: SessionHandle,
   type: string,
   rawPayload: unknown,
   persist = true,
 ): void {
+  // Nothing lands after the terminal `end` — not the DB, not the SSE stream.
+  if (!recordAllowed(handle)) return;
   // Single chokepoint for everything that reaches task_events or an SSE subscriber —
   // the owner's injected credential must never appear in either (transcripts are
   // visible to all signed-in users).
@@ -393,6 +533,7 @@ function finalize(
         db.update(tasks).set({ branch }).where(eq(tasks.id, handle.taskId)).run();
       }
       const removed = removeWorktreeIfClean(handle.worktree.projectPath, handle.worktree.dir);
+      handle.worktreeRemoved = removed;
       record(handle, "log", {
         message: removed
           ? `🧹 Cleaned up the isolated worktree — branch ${branch ?? "?"} keeps the commits.`
@@ -403,6 +544,10 @@ function finalize(
     }
   }
   record(handle, "end", { status });
+  // From here the transcript is closed: anything the session still emits is dropped
+  // (see `recordAllowed`). A gate that re-opens the run clears this again.
+  handle.sealed = true;
+  handle.sealedStatus = status;
   handle.closeInput();
   // This project just freed up — start the next job waiting on it (if any).
   promoteNext(handle.projectId);
@@ -636,6 +781,8 @@ function runTask(
     out,
     pushInput: channel.push,
     closeInput: channel.close,
+    reopenInput: channel.reopen,
+    isInputLive: channel.isLive,
     query: null,
     started: false,
     done: false,
@@ -678,6 +825,51 @@ function runTask(
   let seenUsage: UsageTotals = { ...ZERO_USAGE };
 
   const onGate = (gate: GateKind, summary: string): Promise<GateDecision> => {
+    const action = gateAction({
+      sealed: handle.done,
+      current: sessions.get(taskId) === handle,
+      inputLive: handle.isInputLive(),
+      cancelled: handle.sealedStatus === "cancelled",
+      treeGone: Boolean(handle.worktreeRemoved),
+      // `finalize` already called `promoteNext`, so the checkout this run was using may
+      // belong to another job by now. `projectBusy` counts only started, unfinished,
+      // non-worktree sessions, which is exactly "someone else is in that directory".
+      checkoutTaken:
+        !handle.worktree && projectBusy(handle.projectId, handle.taskId),
+    });
+    if (action !== "deliver") {
+      // The gate itself must not vanish: un-seal the transcript so the summary the agent
+      // wrote is at least recorded, whatever we can do about the decision.
+      handle.sealed = false;
+      record(handle, "log", {
+        message:
+          action === "reopen"
+            ? `↩️ Re-opened this task: it had been marked ${handle.sealedStatus ?? "finished"}, but the agent is still working and raised a ${gate} gate.`
+            : `⚠️ The agent raised a ${gate} gate after this run had already ended (${handle.sealedStatus ?? "finished"}); its summary is below, but no decision can be delivered to a finished session.`,
+      });
+    }
+    if (action === "refuse") {
+      record(handle, "message", {
+        type: "assistant",
+        message: { content: [{ type: "text", text: summary }] },
+      });
+      handle.sealed = true;
+      // An explicit error, not a hang: the agent sees why and can end its turn instead of
+      // waiting forever on a decision that is never coming (see ./platform-mcp).
+      return Promise.reject(
+        new Error(
+          `This run has already ended (${handle.sealedStatus ?? "finished"}) and its session cannot be re-opened, so the ${gate} gate could not be raised. Your summary was recorded in the task's transcript. Do not retry — end your turn.`,
+        ),
+      );
+    }
+    if (action === "reopen") {
+      handle.done = false;
+      handle.reopenInput();
+      db.update(tasks)
+        .set({ error: null, endedAt: null })
+        .where(eq(tasks.id, taskId))
+        .run();
+    }
     if (gate === "report") producedReport = true;
     record(handle, "gate", { gate, summary });
     setStatus(handle, gate === "proposal" ? "awaiting_proposal" : "awaiting_report");
@@ -1104,10 +1296,25 @@ function runTask(
   return handle;
 }
 
+/**
+ * What a user message can do with a session, given its state. `"gate"` answers the tool call
+ * the agent is blocked on; `"push"` sends it in as a conversational turn; `"refuse"` is a
+ * session that has nothing to receive it — the run is sealed and its input channel is closed,
+ * so pushing would set the task back to `building` and leave it there forever. The caller
+ * turns a refusal into a 404 rather than a false acknowledgement.
+ */
+export type ReplyAction = "gate" | "push" | "refuse";
+export function replyAction(s: { pendingApproval: boolean; done: boolean }): ReplyAction {
+  if (s.pendingApproval) return "gate";
+  return s.done ? "refuse" : "push";
+}
+
 /** Deliver a user decision/reply to a live task. */
 export function respond(taskId: string, decision: GateDecision): boolean {
   const h = sessions.get(taskId);
   if (!h) return false;
+  const action = replyAction({ pendingApproval: Boolean(h.pendingApproval), done: h.done });
+  if (action === "refuse") return false;
   if (h.pendingApproval) {
     h.pendingApproval(decision);
   } else {
@@ -1130,6 +1337,8 @@ export function respond(taskId: string, decision: GateDecision): boolean {
 export function sendReply(taskId: string, text: string): boolean {
   const h = sessions.get(taskId);
   if (!h) return false;
+  if (replyAction({ pendingApproval: Boolean(h.pendingApproval), done: h.done }) === "refuse")
+    return false;
   if (h.pendingApproval) {
     h.pendingApproval({ allow: true, feedback: text });
   } else {
