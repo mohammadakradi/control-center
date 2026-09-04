@@ -188,6 +188,46 @@ Two layout traps this hit, both worth knowing generally:
 ## SSE for live task view
 `TaskLiveView` uses `EventSource` (SSE) to stream task transcripts. The runner at `runner/server.ts` (Hono, port separate from Next.js) is the SSE source. The Next.js dev server and runner must both be running (`pnpm dev` starts both via `concurrently`).
 
+## The report card's fix-task offer: target resolved server-side, never a literal (2026-09-04)
+"Create fix task" used to `POST /api/tasks` with `command: "task"` and the report's **own**
+`agentId`. On a pm report that asked for `/pm:task` — a command pm doesn't have (`agents/pm/
+commands/` is `onboard` + `plan`), so the run could only fail — and where it did resolve it was
+still the wrong ask, because swe and fe both ship a purpose-built `fix`.
+
+`resolveFixTarget` (`lib/ui.ts`, pure and unit-tested) now picks from the agents' **real**
+`commands` lists: the report's own agent's `fix`, then its `task`, then an agent that implements
+(`swe`, then `fe`). The task page resolves it server-side and passes a narrow
+`{agentId, command, label}` — the `agents` rows themselves don't belong in the client payload
+(same reasoning as `mergeChipProps`). Two rules that follow from this:
+- **`null` means the callout renders its reasons with no button, and different copy.** A dead
+  button is worse than no button; the reasons still stand on their own, so `fixTaskReasons` is
+  no longer gated on `onConvert`.
+- **The copy names the run** ("starts a fresh `/swe:fix` run"). A pm report's follow-up is
+  handed to a different agent on purpose, and a redirect the user can't see is a surprise.
+
+A refused dispatch renders its own message under the button — `ErrorAlert` with a `mt-2 text-xs`
+density — instead of just resetting the spinner, which read as a button that doesn't work. Use
+the primitive, not a hand-rolled `<p role="alert">`: the raw copy is what the catalog note
+(`component-catalog-2.md`) already lists this file as owing a migration for, and a review caught
+the new one. The remaining raw copy here is `continueError`, still awaiting `/fe:audit`.
+`text-danger` on this warn wash is a checked cross-tone pair — see `.fe/design-system.md`.
+
+**The in-flight and error state is per report, keyed by the report's own text.** A continued task
+ends several turns with a `[[DONE]]` report, so a transcript can hold more than one card carrying
+this offer — one shared `converting`/`convertError` pair span *every* button at once and printed
+one card's failure under all the others, which `role="alert"` then announced repeatedly about the
+wrong report. An audit caught it; reproduced with two report events and confirmed fixed by
+counting one `role="alert"` on the page instead of two. **Not keyed by the bubble's index**:
+`visible` is `deduped.filter(…)` on the activity toggle, so indices renumber under the user and
+the error would move to a different card.
+
+**`fixTaskReasons` judges each line on its own, and that is deliberate.** `SETTLED_LINE` excuses
+a line that reports follow-up as *already filed* ("filed as `bli_…`", "added to the backlog",
+"has been addressed") exactly the way `ALL_CLEAR_LINE` excuses "no outstanding issues" — an
+explicit severity grading still wins over both. It does **not** look ahead: a `## Recommendations`
+heading whose item was filed still counts, because making one line's meaning depend on the next
+is how the old whole-blob heuristic got this wrong. Don't "fix" that; there's a spec pinning it.
+
 ## Dispatching a spec goes through its backlog item, and a failed lookup refuses (2026-08-14)
 `FileModal`'s **Create task** used to `POST /api/tasks` directly, so the backlog item the
 `.pm/tasks/` sync had already created for that same file stayed `todo` with no `linkedTaskId`

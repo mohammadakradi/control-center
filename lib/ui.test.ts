@@ -30,10 +30,12 @@ import {
   mergeChipView,
   mergeStateTone,
   orderSkills,
+  resolveFixTarget,
   statusColor,
   taskChangesView,
   taskDisplayTitle,
 } from "./ui";
+import type { FixTargetAgent } from "./ui";
 import type { BacklogStatus, FeatureStatus, TaskMergeState } from "./db/schema";
 
 /** Every backlog status, kept exhaustive by the compiler: a status added to the schema
@@ -629,6 +631,134 @@ test("a report that only describes bugs it already FIXED still explains itself",
   assert.equal(reasons.length, 1);
   assert.equal(reasons[0].label, "Findings section");
   assert.match(reasons[0].evidence, /Bugs found beyond the reported symptoms/);
+});
+
+test("follow-up that has already been filed is not follow-up work", () => {
+  // The screenshot that raised this: a pm report ended by saying it had *recorded* the two
+  // findings it couldn't take, and got an amber "this report flags follow-up work" banner for
+  // saying so. A line whose whole point is that the work is tracked elsewhere leaves nothing
+  // undone, whichever of the signals its wording happens to trip.
+  for (const report of [
+    "Recommendation — filed the two out-of-scope findings as bli_9f2a41 so they're tracked.",
+    "I recommend nothing further here; both were already filed.",
+    "The contrast gap is real but has been addressed in the token pass.",
+    "Suggest no change: that was fixed upstream.",
+  ]) {
+    assert.deepEqual(fixTaskReasons(report), [], report);
+  }
+});
+
+test("a real recommendation still raises the callout", () => {
+  // The guard above must not swallow the case the callout exists for.
+  const reasons = fixTaskReasons("I recommend replacing the hardcoded amber with a token.");
+  assert.equal(reasons.length, 1);
+  assert.equal(reasons[0].label, "Recommendation");
+  // "Filed" alone isn't a discharge — a filing that says it is still broken keeps its grading.
+  const graded = fixTaskReasons("[High] filed as bli_1, and the token still leaks.");
+  assert.equal(graded.length, 1);
+  assert.equal(graded[0].label, "Severity callout");
+});
+
+test("a section heading is still a section heading, whatever the lines under it say", () => {
+  // The excuse is judged per line, like every other signal here — a heading that announces a
+  // recommendations section counts on its own, even where the item under it was filed. Same
+  // decision as the already-FIXED report above: the heading is named and quoted, so the user
+  // can see what it is and ignore it. Lookahead would make one line's meaning depend on the
+  // next, which is how the old whole-blob heuristic got this wrong in the first place.
+  const reasons = fixTaskReasons(
+    "## Recommendations\nAdded to the backlog for whoever picks the page up next.",
+  );
+  assert.deepEqual(reasons, [
+    { label: "Findings section", evidence: "Recommendations" },
+  ]);
+});
+
+// ------------------------------------------------- where a fix task is dispatched
+
+/** The three shipped agents, as `resolveFixTarget` sees them — their real command inventories,
+ *  read from each plugin's `commands` directory by `lib/discovery/agents.ts`. */
+const INSTALLED: FixTargetAgent[] = [
+  {
+    id: "pm@bundled",
+    namespace: "pm",
+    commands: [{ name: "onboard" }, { name: "plan" }],
+  },
+  {
+    id: "swe@bundled",
+    namespace: "swe",
+    commands: [{ name: "fix" }, { name: "onboard" }, { name: "task" }],
+  },
+  {
+    id: "fe@bundled",
+    namespace: "fe",
+    commands: [{ name: "audit" }, { name: "fix" }, { name: "task" }],
+  },
+];
+
+test("a report's own agent takes its own fix task, using the purpose-built command", () => {
+  // `fix` over `task`: "address the findings in this report" is what `fix` is for, and the
+  // button asked for `task` regardless.
+  assert.deepEqual(resolveFixTarget(INSTALLED, "swe@bundled"), {
+    agentId: "swe@bundled",
+    command: "fix",
+    label: "/swe:fix",
+  });
+  assert.deepEqual(resolveFixTarget(INSTALLED, "fe@bundled"), {
+    agentId: "fe@bundled",
+    command: "fix",
+    label: "/fe:fix",
+  });
+});
+
+test("a pm report is handed to an agent that implements, not to /pm:task", () => {
+  // The bug: `command: "task"` with the report's own agent asked for `/pm:task`, which pm does
+  // not have — the run could only fail. pm plans; its report *is* work someone must pick up.
+  assert.deepEqual(resolveFixTarget(INSTALLED, "pm@bundled"), {
+    agentId: "swe@bundled",
+    command: "fix",
+    label: "/swe:fix",
+  });
+  // With swe absent it still lands somewhere that can do the work rather than giving up.
+  const noSwe = INSTALLED.filter((a) => a.namespace !== "swe");
+  assert.equal(resolveFixTarget(noSwe, "pm@bundled")?.label, "/fe:fix");
+});
+
+test("an agent with no fix command keeps the work itself, on task", () => {
+  // First refusal belongs to the agent that already knows the project, so its `task` beats
+  // another agent's `fix`.
+  const own: FixTargetAgent = {
+    id: "swe@local",
+    namespace: "swe",
+    commands: [{ name: "task" }],
+  };
+  assert.deepEqual(resolveFixTarget([own, INSTALLED[2]], "swe@local"), {
+    agentId: "swe@local",
+    command: "task",
+    label: "/swe:task",
+  });
+});
+
+test("an agent that is no longer installed doesn't strand the report", () => {
+  // A task outlives the plugin that ran it (deregistered, renamed, re-versioned id).
+  assert.equal(resolveFixTarget(INSTALLED, "swe@some-old-marketplace")?.label, "/swe:fix");
+});
+
+test("nothing installed can fix it means no target, never a dead button", () => {
+  assert.equal(resolveFixTarget([], "swe@bundled"), null);
+  assert.equal(resolveFixTarget([INSTALLED[0]], "pm@bundled"), null, "pm alone can't implement");
+});
+
+test("the report's own agent is excluded by id, so a stale duplicate row can't smuggle it back", () => {
+  // Two rows for one agent — a caller that rebuilt the row (a cache, a merged list) instead of
+  // passing the array element straight through. If the exclusion compared references, the second
+  // row would count as a *different* agent and hand back `/pm:fix` — a command pm doesn't have,
+  // which is exactly the class of bug this function exists to end.
+  const stale: FixTargetAgent = {
+    id: "pm@bundled",
+    namespace: "pm",
+    commands: [{ name: "fix" }],
+  };
+  assert.equal(resolveFixTarget([INSTALLED[0], stale], "pm@bundled"), null);
 });
 
 /** Written as escapes, not literals — these bytes don't survive a copy-paste or a heredoc. */

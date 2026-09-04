@@ -64,3 +64,20 @@ What that bought on this task, none of which static reasoning would have caught:
 
 Keep `--virtual-time-budget` in mind for the plain `--screenshot` path (see the 2026-08-13
 note) — with CDP you don't need it, because you control when the shot is taken.
+
+### Cropping a CDP shot to one component: three traps (2026-09-04)
+Screenshotting just the block under review beats a full page, but `Page.captureScreenshot`'s
+`clip` has sharp edges:
+- **Don't pass `clip.scale: 2` when `deviceScaleFactor` is already 2** — it multiplies, and it
+  scales the clip's *origin* too, so the shot lands somewhere else on the page entirely (I got
+  a blank margin twice before spotting it). `deviceScaleFactor` for resolution, `clip.scale: 1`.
+- **Measure in page coordinates and pass `captureBeyondViewport: true`**, rather than
+  `scrollIntoView` then measuring — no scroll means the geometry you measured is the geometry
+  you get. A `fixed` element (the mobile bottom nav) will still composite into the crop.
+- **Select by text, not by class.** `[...document.querySelectorAll('div')].find(d =>
+  d.className.includes('border-warn-line'))` finds `TokenNudge` at the top of the page, not the
+  callout you meant — several surfaces share a tone. Add a `textContent.includes(…)` check.
+
+A related freebie: an instance with **no `SECRETS_MASTER_KEY`** refuses every dispatch, which
+makes it the cheapest way to *see* a POST-failure path (an error line, a reset spinner) instead
+of reasoning about it. `Runtime.evaluate` clicks the button; the refusal renders for real.
