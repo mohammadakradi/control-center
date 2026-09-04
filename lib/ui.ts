@@ -756,6 +756,27 @@ const RECOMMENDATION_LINE =
 const UNCHECKED_TODO = /^\s*[-*]\s*\[ \]/;
 const ALL_CLEAR_LINE =
   /\b(?:no (?:real |outstanding |open |remaining |unresolved |blocking )?(?:issues?|bugs?|findings?|vulnerabilit\w+|problems?|secrets?|concerns?|regressions?)|nothing (?:to fix|blocking|actionable|of note|to address)|no action (?:needed|required)|0 (?:critical|high|blocking)|all clear|looks good|lgtm)\b/i;
+/**
+ * Follow-up that is **already dealt with** — the second half of `ALL_CLEAR_LINE`'s job.
+ *
+ * A report that says *"Recommendation — filed the two out-of-scope findings as `bli_…`"* is
+ * reporting a discharge, not leaving work behind, and it used to raise the amber callout on the
+ * strength of the word "recommendation" alone. The line has to be excused whichever signal fired
+ * on it: that same sentence trips `FINDING_HEADING` when it starts with "Recommendation" and
+ * `RECOMMENDATION_LINE` when the word sits mid-line, so tightening one of those regexes would
+ * only move the false positive rather than remove it.
+ *
+ * A backlog id (`bli_…`) counts on its own — an agent that filed an item is the case rule 9 of
+ * the agent rules exists to produce, and it is the strongest possible evidence the work is
+ * recorded elsewhere. The word gap in the *filed/logged/tracked* branch is bounded (at most six
+ * words before the preposition) so this stays linear on a long line.
+ *
+ * Like `ALL_CLEAR_LINE` this can be defeated by a line that says both things ("filed as `bli_1`,
+ * but it is still broken"); an explicit severity grading still wins, and the report itself is
+ * rendered in full directly above the callout.
+ */
+const SETTLED_LINE =
+  /\b(?:bli_[a-z0-9]+|(?:filed|logged|tracked|recorded)(?:\s+\S+){0,6}?\s+(?:as|in|under|with)|(?:added|moved)\s+to\s+the\s+backlog|backlog item|already\s+(?:fixed|addressed|filed|handled|done|resolved|covered|tracked)|(?:has|have|had)\s+been\s+(?:fixed|addressed|filed|resolved|handled|covered)|(?:was|were)\s+(?:fixed|addressed|resolved|filed)|(?:now|since)\s+(?:fixed|addressed|resolved|handled))\b/i;
 
 /**
  * A quotable line: markdown furniture off, non-printing characters out, capped by code point.
@@ -807,9 +828,14 @@ export function fixTaskReasons(report: string): FixTaskReason[] {
             ? "Recommendation"
             : null;
     if (!label) continue;
-    // "No outstanding issues" matches `issues?` and is the *opposite* of a finding. A
-    // severity tag still wins on its own line — that's an explicit grading, not prose.
-    if (label !== "Severity callout" && ALL_CLEAR_LINE.test(line)) continue;
+    // "No outstanding issues" matches `issues?` and is the *opposite* of a finding, and
+    // "filed as bli_…" is work already recorded elsewhere. A severity tag still wins on its own
+    // line — that's an explicit grading, not prose.
+    if (
+      label !== "Severity callout" &&
+      (ALL_CLEAR_LINE.test(line) || SETTLED_LINE.test(line))
+    )
+      continue;
     // One entry per kind: an audit lists twenty findings, and twenty near-identical rows in a
     // callout is a wall of text where the point was "here is why the button is there".
     if (seen.has(label)) continue;
@@ -858,6 +884,73 @@ export function orderSkills<T extends { name: string }>(
   if (onboarded) return ordered.filter((c) => c.name !== "onboard");
   const onboard = ordered.find((c) => c.name === "onboard");
   return onboard ? [onboard, ...ordered.filter((c) => c.name !== "onboard")] : ordered;
+}
+
+/** An installed agent, narrowed to what choosing a fix target needs. */
+export type FixTargetAgent = {
+  id: string;
+  namespace: string;
+  commands: { name: string }[];
+};
+
+/** Where "Create fix task" will dispatch — resolved from real command lists, never guessed. */
+export type FixTarget = {
+  agentId: string;
+  command: string;
+  /** `/swe:fix` — the run that is about to start, so the offer can name it. */
+  label: string;
+};
+
+/** In preference order: `fix` is the purpose-built "handle a bug end-to-end" skill, and `task`
+ *  is the general one that can still do the work where an agent has no `fix`. */
+const FIX_COMMANDS = ["fix", "task"];
+/** Agents that *implement*, for a report whose own agent can't. `pm` plans, so a pm report —
+ *  which is entirely work someone must pick up — has to be handed on rather than dropped. */
+const IMPLEMENTER_NAMESPACES = ["swe", "fe"];
+
+/**
+ * Pick the agent and command a fix task should run, from the agents actually installed.
+ *
+ * The button used to post `command: "task"` with the report's own `agentId`, which on a pm
+ * report asked for `/pm:task` — a command pm does not have (`agents/pm/commands/` is `onboard`
+ * and `plan`), so the run could only fail. It was also the wrong ask where it did resolve: swe
+ * and fe both ship `fix`, which is exactly "address the findings in this report".
+ *
+ * The report's own agent gets first refusal — it already knows the project — and only if it has
+ * neither command does the work move to one that implements. Returns `null` when nothing
+ * installed can take it, which the caller renders as the callout **without** an action: a
+ * button that cannot work is worse than no button.
+ */
+export function resolveFixTarget(
+  agents: FixTargetAgent[],
+  reportAgentId: string,
+): FixTarget | null {
+  const own = agents.find((a) => a.id === reportAgentId);
+  // Compared by id, not by reference: today every caller passes `own` straight out of the same
+  // array, but a caller that rebuilt the row for the same agent would slip a duplicate into the
+  // fallback list and could hand the work back to the agent that just declined it.
+  const notOwn = (a: FixTargetAgent) => a.id !== own?.id;
+  const candidates = [
+    ...(own ? [own] : []),
+    ...IMPLEMENTER_NAMESPACES.flatMap((ns) =>
+      agents.filter((a) => notOwn(a) && a.namespace === ns),
+    ),
+    ...agents.filter(
+      (a) => notOwn(a) && !IMPLEMENTER_NAMESPACES.includes(a.namespace),
+    ),
+  ];
+  for (const agent of candidates) {
+    for (const command of FIX_COMMANDS) {
+      if (agent.commands.some((c) => c.name === command)) {
+        return {
+          agentId: agent.id,
+          command,
+          label: `/${agent.namespace}:${command}`,
+        };
+      }
+    }
+  }
+  return null;
 }
 
 /**

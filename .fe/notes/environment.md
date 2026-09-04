@@ -10,6 +10,20 @@ This project uses Next.js `16.2.9` — far beyond the public release train. Per 
 ## There IS a test suite now (superseded "no test suite", 2026-08-01)
 `pnpm test` runs Node's built-in runner via `tsx` over `runner/*.test.ts` **and** `lib/*.test.ts` — no extra deps. Pure UI logic belongs there (`lib/usage-format.test.ts` is the frontend-side example). There's still no DOM/component test tooling, so rendering and interaction are verified by hand; don't invent a React testing setup without agreeing it with the user first.
 
+## `grep`/`rg` silently skip `lib/ui.test.ts` — it contains NUL bytes (2026-09-04)
+That file's Trojan-Source specs embed literal `\0` characters, so both tools classify it as
+**binary**: `grep -n` prints "Binary file matches" (which some harnesses swallow) and `grep -c`
+prints nothing. The failure mode is that a search returns *nothing at all* and reads as "no such
+code exists" — I concluded `fixTaskReasons` had no specs when it has a dozen. Use `grep -a` /
+`rg -a` on that file, or `sed -n` a line range. Worth suspecting on any test file that pins
+control-character handling.
+
+## A `*/` inside a JSDoc comment ends the comment (2026-09-04)
+Writing a path glob in a doc comment — `/** … (`agents/*/commands/`) */` — terminates the block
+comment at the glob, and the rest of the line becomes code. `tsc` then reports a cascade of
+`TS1005: ';' expected` / `TS1443` from that line onwards with no hint at the cause. Write the
+path in prose ("each plugin's `commands` directory") instead.
+
 ## `drizzle.config.ts` hardcodes the LIVE db — always pass `--url` explicitly
 `npx drizzle-kit push` with `PLATFORM_DB=…` in the env **ignores it** and targets
 `./data/platform.db`, because the config file hardcodes that path and nothing reads the env

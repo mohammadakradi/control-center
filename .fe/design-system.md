@@ -105,6 +105,14 @@ blocking step for the explanatory sentence under a warn-toned heading. Only ever
 matching `bg-{t}-soft`, and only for a supporting line; a *primary* string in a toned block
 stays at full `text-{t}`.
 
+**A `danger` line inside a `warn` block is an allowed cross-tone pair.** The table's guarantee
+is same-tone (`text-{t}` on `bg-{t}-soft`), but a failure that happens *inside* an already-toned
+block shouldn't repaint the block — the report card's follow-up callout keeps its warn wash and
+puts the refused dispatch on it as `text-danger` (`ErrorAlert` inside `TaskLiveView`'s callout),
+the same way `UpdateBanner` puts a danger button on a warn bar. Measured: `#b91c1c` on `#fffbeb`
+≈ 6.3:1 light, and `#fca5a5` over `amber-500/15` on `surface-2` ≈ 7.2:1 dark — both AA. Only
+`danger` on `warn`/`info` has been checked; any other crossing needs measuring before use.
+
 ### Syntax highlighting (`--syn-*`)
 The one place in the app where colour is applied by **class name** rather than a Tailwind
 utility. `lib/highlight.ts` returns highlight.js' own scope names (`hljs-keyword`,
