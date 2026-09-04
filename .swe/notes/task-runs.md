@@ -60,6 +60,23 @@ untouched — this feature adds no git call of its own.
 `runner/completion.ts` (`classifyTurnEnd`) answers that for a turn ending with **no** report
 gate, no `[[GATE:…]]` marker and no trailing `[[DONE]]` — the runner, not the SDK, decides when
 a task is finished. A pause becomes a nudge; a final answer seals the task.
+- **Sealing needs positive evidence (2026-09-04).** The first version asked "is there a signal
+  of continuation?" and sealed whenever there wasn't — so a preamble naming no dispatched work
+  and using no announcing verb went through. Reproduced: `task_2ad6afb5` sealed `done` on
+  *"Smoking gun found. Let me confirm the reconciler's status coverage."*, which then became the
+  task's report. Now a turn seals only if `looksLikeReport` says so — structured, or ≥60 chars
+  carrying completion vocabulary (`REPORTED_WORK_RE`: complete/fixed/committed/passes/…, and
+  **not** investigation verbs like "found"/"confirmed", which is what narration says), or ≥500
+  chars of prose as a safety valve. Everything else is the new pause reason `"unfinished"`.
+- **`NEXT_ACTION_RE` is the subset of `INTENT_RE` that pauses even a structured message** —
+  "let me / let's / next I'll / now I'll / I'm going to / time to". `looksStructured` used to
+  wave a bulleted analysis through on its formatting alone. A bare "I'll …" is deliberately not
+  in it ("I'll hold off on committing" is how a report ends), and "let me know" is excluded from
+  both patterns for the same reason.
+- **The trade, accepted deliberately:** a terse marker-less summary may now cost one nudge turn.
+  That is cheaper than sealing an unfinished task, and an agent that ends without a gate or
+  `[[DONE]]` is off-contract anyway. Note "I'll wait for your approval" still pauses via
+  `WAITING_RE` — pre-existing, pinned by a spec so the distinction stays visible.
 - **`IN_FLIGHT_RE` catches "my dispatched work hasn't come back", which `WAITING_RE` misses**
   because the sentence never mentions waiting: *"both review agents are still running"*, *"the
   audit hasn't returned"*. Measured on a real transcript that ended exactly that way and was
@@ -74,10 +91,45 @@ a task is finished. A pause becomes a nudge; a final answer seals the task.
   "Tests are still running in CI, but the change is complete") stay final.
 - **What this does NOT fix, knowingly:** a `[[DONE]]`/`[[GATE:REPORT]]` marker skips
   `classifyTurnEnd` entirely, so an agent can still stamp `[[DONE]]` on a report that says its
-  reviews are outstanding and seal the task — and background subagent events still land in the
-  transcript after `finalize()` writes `end`. Filed (`bli_9119b0b6`, plus the agent-rules half
-  `bli_dd973b87`) rather than patched, because the cheap patch — running `WAITING_RE` at the
-  seal point — would nudge legitimate completions into a loop, per the bullet above.
+  reviews are outstanding and seal the task (`bli_dd973b87` is the agent-rules half). Not
+  patched by running `WAITING_RE` at the seal point — that would nudge legitimate completions
+  into a loop, per the bullet above. *(The other half of `bli_9119b0b6` — events landing after
+  the terminal `end` — is fixed; see below.)*
+
+## A gate raised after the runner sealed the run
+Sealing used to be irreversible and silent about it: `finalize()` sets `handle.done` and calls
+`closeInput()`, so the next `request_approval` died with **`Stream closed`** — the user was
+handed a report on a finished task instead of the proposal the agent was trying to raise.
+- **`gateAction` (`runner/session-manager.ts`, pure + specced) decides.** A gate on a live run
+  is `deliver`. On a sealed run it is `reopen` — clear `done`, re-open the input channel, clear
+  `endedAt`/`error`, status back to `awaiting_proposal`/`awaiting_report`, and log that it
+  re-opened — *unless* honouring it could not work (this handle is no longer the task's live
+  session, the input stream has ended, the worktree was already handed back so the agent's cwd
+  is gone) or the seal was a **cancellation**, which a late gate must never undo. Those refuse.
+- **`checkoutTaken` is the refusal both review lenses found independently.** `finalize` calls
+  `promoteNext` *before* the grace window even opens, so for a **checkout-mode** run the next
+  queued job may already be live in `project.path`. Re-opening there would put two
+  `bypassPermissions` agents in one working tree — each staging, committing and clobbering the
+  other's uncommitted work — which is far worse than the stranded gate this path exists to fix.
+  `onGate` therefore re-checks `projectBusy(projectId, taskId)` at re-open time and refuses.
+  Worktree-isolated runs own their tree, so it never applies to them. The window is real, not
+  theoretical: an agent can be steered (by injected file/web content) to delay its
+  `request_approval` until just after its turn's `result`.
+- **A refusal is explicit, never a hang.** `onGate` rejects, and `runner/platform-mcp.ts`
+  returns that message as a tool result with `isError: true`, so the agent reads a sentence it
+  can act on where it reads every other tool result. The summary it wrote is still recorded in
+  the transcript first — a gate the user can't answer must not also be invisible.
+- **`SEAL_INPUT_GRACE_MS` (15 s) is what makes `reopen` reachable at all.** The input generator
+  used to return on the next microtask after `close()`, so by the time a gate arrived the SDK
+  stream was gone. It now holds one grace window per close (interruptible — a pushed message
+  doesn't wait out the timer), and `isLive()` reports honestly once the generator has returned.
+- **Nothing is persisted after the terminal `end`.** `finalize` sets `handle.sealed` right after
+  writing `end`, and `record` drops everything — DB *and* SSE — while it is set (`recordAllowed`,
+  exported for its spec). A re-open clears it, which is also why the refuse path un-seals just
+  long enough to record the agent's summary.
+- **`respond()`/`sendReply()` refuse a sealed session** (`replyAction`) instead of pushing into a
+  closed channel and setting the task to `building` — a finished task that then sat in "building"
+  forever, having acknowledged a reply nobody received. The runner returns 404.
 
 ## The report card, and offering a fix task
 A change report can end with a "Create fix task" button that dispatches a fresh run against the
