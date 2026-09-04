@@ -105,6 +105,104 @@ export const isOpenBacklogStatus = (status: BacklogStatus): boolean =>
   !CLOSED_BACKLOG_STATUSES.includes(status as (typeof CLOSED_BACKLOG_STATUSES)[number]);
 
 /**
+ * The same question for a **feature**, deliberately spelled the same way one line down.
+ *
+ * A feature and a backlog item close out through the same two words, and the two definitions
+ * living together is what stops one of them growing a third status the other doesn't know
+ * about. `active` is the only open state a feature has.
+ */
+export const CLOSED_FEATURE_STATUSES = ["done", "cancelled"] as const;
+
+export const isOpenFeatureStatus = (status: FeatureStatus): boolean =>
+  !CLOSED_FEATURE_STATUSES.includes(status as (typeof CLOSED_FEATURE_STATUSES)[number]);
+
+/**
+ * Split a project's features into the ones still in flight and the ones closed out.
+ *
+ * The features surfaces show the active ones and hide the rest behind a filter, so both hosts
+ * need the same two lists **and** both counts: the count of what is hidden is what the filter
+ * pill says out loud, and hiding something without saying how much would be the one version of
+ * this change that loses information.
+ *
+ * Order within each list is the caller's — `listFeatures` is oldest-first (creation order), and
+ * the Features card is a management list whose rows must not move under a click.
+ */
+export function splitFeaturesByStatus<F extends { status: FeatureStatus }>(
+  features: readonly F[],
+): { active: F[]; closed: F[] } {
+  const active: F[] = [];
+  const closed: F[] = [];
+  for (const feature of features) {
+    (isOpenFeatureStatus(feature.status) ? active : closed).push(feature);
+  }
+  return { active, closed };
+}
+
+/** Which features a page is showing. The default carries no query param. */
+export type FeatureFilter = "active" | "closed";
+
+/** The query parameter both hosts filter on. One constant, because the page that writes the
+ *  link and the page that reads it are different files. */
+export const FEATURE_FILTER_PARAM = "features";
+
+/**
+ * Read `?features=` leniently: anything that isn't exactly `closed` is the default view.
+ *
+ * The `/usage` `?range=` rule. A repeated param arrives as an array and an unknown value is
+ * someone's stale bookmark or a typo — neither is worth an error page, and both have an obvious
+ * safe answer, since the default view is the one that hides nothing the reader is looking for.
+ */
+export function parseFeatureFilter(
+  value: string | string[] | undefined,
+): FeatureFilter {
+  return value === "closed" ? "closed" : "active";
+}
+
+/**
+ * Whether the Active/Closed filter is worth putting on screen at all.
+ *
+ * With nothing closed there is no choice to make, so the control hides rather than showing a
+ * permanently-empty "Closed 0" on every install that has never closed a feature out — the rule
+ * `ProjectFilterNav` follows below two projects.
+ *
+ * **Except while the reader is already in the closed view**, which is not a hypothetical: reopen
+ * a project's last closed feature and the count that justified the control drops to zero on the
+ * very render that still has to offer the way back. Hiding it there would strand them on an
+ * empty list with only the back button, so the second clause is the whole reason this is a
+ * function and not an inline `> 0`.
+ */
+export function showsFeatureFilter(
+  filter: FeatureFilter,
+  closedCount: number,
+): boolean {
+  return closedCount > 0 || filter === "closed";
+}
+
+/**
+ * The href for one of the filter's two views, keeping every other param the page is carrying.
+ *
+ * Preserving matters more than it looks: on `/backlog` the current project (`?project=`) and the
+ * lifted row cap (`?all=1`) both live in the URL, so a filter link that rebuilt the query from
+ * scratch would quietly throw the reader back to the first project. The default view carries
+ * **no** param, so "Active" and the bare page are the same URL — the same rule `SpendRangeNav`
+ * follows for "All time", and what keeps the back button from collecting identical entries.
+ */
+export function featureFilterHref(
+  basePath: string,
+  current: Record<string, string | string[] | undefined>,
+  filter: FeatureFilter,
+): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(current)) {
+    if (key === FEATURE_FILTER_PARAM || value === undefined) continue;
+    for (const one of Array.isArray(value) ? value : [value]) query.append(key, one);
+  }
+  if (filter !== "active") query.set(FEATURE_FILTER_PARAM, filter);
+  const qs = query.toString();
+  return qs ? `${basePath}?${qs}` : basePath;
+}
+
+/**
  * The status dot beside a backlog item — a solid tone fill, which the design system allows
  * only for small non-text marks like this one. It is decorative on purpose: the status is
  * also written out in the control next to it, so nothing here is carried by colour alone.
@@ -377,8 +475,13 @@ export function featureRowActions(f: FeatureAdmin): FeatureRowActions {
  * Whether a feature group starts expanded. Active features (and the ungrouped bucket, whose
  * `feature` is null) do — they are the work in flight, the thing the reader came for. Closed
  * features start collapsed: their rows are history, and on a long-lived project they would
- * otherwise push every live group below the fold. The heading itself always renders, so
- * nothing is hidden — collapsed is a default, not a filter.
+ * otherwise push every live group below the fold. Collapsed is a default, not a filter — the
+ * heading still renders, and the reader opens it.
+ *
+ * A closed feature only reaches here at all when it was filtered **in** (`?features=closed`,
+ * `splitFeaturesByStatus`), which is where this default was always right: you asked to see the
+ * closed ones, so the headings are the answer and their rows are the detail. In the default
+ * view the question never comes up.
  */
 export function featureGroupDefaultOpen(
   feature: { status: FeatureStatus } | null,

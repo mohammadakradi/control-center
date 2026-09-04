@@ -33,16 +33,30 @@ import { ProjectActions } from "@/components/ProjectActions";
 import { TokenNudge } from "@/components/TokenNudge";
 import { CardSection, Chip } from "@/components/ui-cards";
 import { buttonClasses } from "@/components/ui/button";
-import { featureRowDefaultOpen, featureWorkRows, ACTIVE_STATUSES, UNGROUPED_KEY } from "@/lib/ui";
+import {
+  featureRowDefaultOpen,
+  featureWorkRows,
+  parseFeatureFilter,
+  splitFeaturesByStatus,
+  ACTIVE_STATUSES,
+  FEATURE_FILTER_PARAM,
+  UNGROUPED_KEY,
+} from "@/lib/ui";
+import { FeatureStatusNav } from "@/components/FeatureStatusNav";
 
 export const dynamic = "force-dynamic";
 
 export default async function ProjectDetail({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  // Async in Next 16, like `params` — see
+  // node_modules/next/dist/docs/.../file-conventions/page.md.
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const { id } = await params;
+  const query = await searchParams;
   // Only this owner's runs — sign-in is optional, so the alternative is showing a visitor
   // everyone's history.
   const user = await getCurrentUser();
@@ -126,6 +140,15 @@ export default async function ProjectDetail({
   // which is also what lets a feature nothing has run against still get a row.
   const featureList = listFeatures(project.id);
 
+  // Closed features are hidden by default and brought back with `?features=closed`. Splitting
+  // here rather than in the card keeps it off the client entirely: `FeatureManager` is a client
+  // component, so a closed feature the reader isn't looking at shouldn't cross the RSC boundary
+  // at all — the same minimization argument as the task panels below.
+  const featureFilter = parseFeatureFilter(query[FEATURE_FILTER_PARAM]);
+  const { active: activeFeatures, closed: closedFeatures } =
+    splitFeaturesByStatus(featureList);
+  const visibleFeatures = featureFilter === "closed" ? closedFeatures : activeFeatures;
+
   // Every feature with its own runs, plus the ungrouped remainder — and then three flat maps
   // for the card below, keyed by feature id (or `UNGROUPED_KEY`).
   //
@@ -140,7 +163,19 @@ export default async function ProjectDetail({
   //
   // `openByDefault` is computed here for the same reason: deciding it in the client would mean
   // shipping every task's status to do it.
-  const workRows = featureWorkRows(featureList, history, (t) => t.featureId);
+  //
+  // **Grouped over `featureList`, never `visibleFeatures` — then filtered.** `featureWorkRows`
+  // files a task under "No feature" when its `featureId` matches nothing in the list it was
+  // given, so handing it the filtered list would move every closed feature's runs into the
+  // ungrouped bucket — the card would claim work belongs to no feature purely because of a view
+  // setting. So the full list goes *in*, and the filter is applied to what comes *out*: the
+  // maps below carry the visible features plus the ungrouped remainder, and nothing else.
+  // Skipping that second step would leave the minimization argument above only half-true — the
+  // unread entries still cross the boundary, rendered `<TaskList>` markup and all.
+  const visibleIds = new Set(visibleFeatures.map((f) => f.id));
+  const workRows = featureWorkRows(featureList, history, (t) => t.featureId).filter(
+    (row) => row.feature === null || visibleIds.has(row.feature.id),
+  );
   const taskCounts: Record<string, number> = {};
   const taskPanels: Record<string, ReactNode> = {};
   const openByDefault: Record<string, boolean> = {};
@@ -163,7 +198,11 @@ export default async function ProjectDetail({
   // Backlog items per feature, for the management card's counts and its delete confirmation.
   // Items only — a task is private to whoever ran it, so an unscoped count of those on this
   // shared page would disclose that someone else is working on the feature.
-  const featureItemCounts = backlogCountsByFeature(project.id);
+  // Narrowed to the visible rows for the same reason as the maps above: a count nothing renders
+  // is a count that shouldn't be serialized to the client.
+  const featureItemCounts = Object.fromEntries(
+    Object.entries(backlogCountsByFeature(project.id)).filter(([id]) => visibleIds.has(id)),
+  );
 
   const aheadBehind = branchInfo
     ? branchInfo.ahead || branchInfo.behind
@@ -254,6 +293,10 @@ export default async function ProjectDetail({
             agents={agents}
             onboardedByAgent={onboardedByAgent}
             parallelOffer={offerParallel}
+            // The **full** list, not `visibleFeatures` — this is the composer's picker, and a
+            // form's options must not change with the page's view setting. `featureOptions`
+            // already narrows it to active features, so the closed view would otherwise leave
+            // the picker with nothing but "No feature" in it.
             features={featureList}
             modelPolicy={modelPolicy}
           />
@@ -288,12 +331,30 @@ export default async function ProjectDetail({
         <FeatureManager
           projectId={project.id}
           projectName={project.name}
-          features={featureList}
+          features={visibleFeatures}
           itemCounts={featureItemCounts}
           taskCounts={taskCounts}
           taskPanels={taskPanels}
           openByDefault={openByDefault}
           totalTasks={history.length}
+          // One prop, so "this host doesn't filter" stays a single `undefined` and the card's
+          // old behaviour is exactly what a caller without it still gets. The nav is rendered
+          // here and handed down like the task panels — it is `<Link>`s and two numbers, and
+          // this way the card needs to know nothing about the page's URL.
+          statusFilter={{
+            nav: (
+              <FeatureStatusNav
+                basePath={`/projects/${project.id}`}
+                params={query}
+                filter={featureFilter}
+                activeCount={activeFeatures.length}
+                closedCount={closedFeatures.length}
+              />
+            ),
+            filter: featureFilter,
+            activeCount: activeFeatures.length,
+            closedCount: closedFeatures.length,
+          }}
           className="lg:col-span-2"
         />
       </div>
