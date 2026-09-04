@@ -23,6 +23,11 @@ import {
   groupByFeature,
   hasMergeSummary,
   isOpenBacklogStatus,
+  isOpenFeatureStatus,
+  splitFeaturesByStatus,
+  parseFeatureFilter,
+  featureFilterHref,
+  showsFeatureFilter,
   ACTIVE_STATUSES,
   MERGE_STATE_LABEL,
   MERGE_STATE_TITLE,
@@ -809,4 +814,119 @@ test("a narrowed row still produces the same chip the fat row did", () => {
   // The narrowing must not change what the user sees — that would trade a leak for a bug.
   const row = { mergeState: "conflict" as TaskMergeState, status: "done", parallel: true };
   assert.deepEqual(mergeChipView(mergeChipProps(row)), mergeChipView(row));
+});
+
+/** Every feature status, kept exhaustive by the compiler for the same reason the backlog map
+ *  above is: a fourth status added to the schema fails typecheck here rather than silently
+ *  landing on whichever side of the split the `includes` check happens to put it. */
+const ALL_FEATURE_STATUSES: Record<FeatureStatus, true> = {
+  active: true,
+  done: true,
+  cancelled: true,
+};
+
+test("isOpenFeatureStatus treats only active as open", () => {
+  const open = (Object.keys(ALL_FEATURE_STATUSES) as FeatureStatus[]).filter(
+    isOpenFeatureStatus,
+  );
+  assert.deepEqual(open, ["active"]);
+});
+
+test("splitFeaturesByStatus keeps each list in the order it was given", () => {
+  // `listFeatures` is oldest-first and the Features card is a management list, so a split that
+  // reordered would move a row under someone's click.
+  const features = [
+    { id: "f1", status: "active" as FeatureStatus },
+    { id: "f2", status: "done" as FeatureStatus },
+    { id: "f3", status: "active" as FeatureStatus },
+    { id: "f4", status: "cancelled" as FeatureStatus },
+  ];
+  const { active, closed } = splitFeaturesByStatus(features);
+  assert.deepEqual(
+    active.map((f) => f.id),
+    ["f1", "f3"],
+  );
+  assert.deepEqual(
+    closed.map((f) => f.id),
+    ["f2", "f4"],
+  );
+});
+
+test("splitFeaturesByStatus loses nothing", () => {
+  // The whole change hides rows, so the one property that must hold is that every row is on
+  // exactly one of the two lists — never dropped, never counted twice.
+  const features = (Object.keys(ALL_FEATURE_STATUSES) as FeatureStatus[]).map(
+    (status, i) => ({ id: `f${i}`, status }),
+  );
+  const { active, closed } = splitFeaturesByStatus(features);
+  assert.equal(active.length + closed.length, features.length);
+  assert.deepEqual(
+    [...active, ...closed].map((f) => f.id).sort(),
+    features.map((f) => f.id).sort(),
+  );
+});
+
+test("splitFeaturesByStatus answers two empty lists for no features", () => {
+  assert.deepEqual(splitFeaturesByStatus([]), { active: [], closed: [] });
+});
+
+test("parseFeatureFilter falls back to the default view for anything but `closed`", () => {
+  assert.equal(parseFeatureFilter("closed"), "closed");
+  assert.equal(parseFeatureFilter(undefined), "active");
+  assert.equal(parseFeatureFilter("active"), "active");
+  assert.equal(parseFeatureFilter(""), "active");
+  // A repeated `?features=` param arrives as an array, and a stale bookmark as junk. Neither is
+  // worth an error page when the safe answer is the view that hides nothing.
+  assert.equal(parseFeatureFilter(["closed", "active"]), "active");
+  assert.equal(parseFeatureFilter("DONE"), "active");
+});
+
+test("featureFilterHref keeps the params the page is already carrying", () => {
+  // `/backlog` holds the current project and the lifted row cap in the URL; a link that rebuilt
+  // the query would throw the reader back to the first project.
+  assert.equal(
+    featureFilterHref("/backlog", { project: "proj_1", all: "1" }, "closed"),
+    "/backlog?project=proj_1&all=1&features=closed",
+  );
+});
+
+test("featureFilterHref drops the param for the default view", () => {
+  // "Active" and the bare page must be one URL, or the back button collects duplicates.
+  assert.equal(featureFilterHref("/backlog", { features: "closed" }, "active"), "/backlog");
+  assert.equal(
+    featureFilterHref("/backlog", { project: "proj_1", features: "closed" }, "active"),
+    "/backlog?project=proj_1",
+  );
+});
+
+test("featureFilterHref replaces an existing filter rather than appending a second", () => {
+  assert.equal(
+    featureFilterHref("/backlog", { features: "closed", project: "proj_1" }, "closed"),
+    "/backlog?project=proj_1&features=closed",
+  );
+});
+
+test("showsFeatureFilter hides itself until something has been closed out", () => {
+  // A permanently-empty "Closed 0" on every install that has never closed a feature is exactly
+  // the clutter this change is removing.
+  assert.equal(showsFeatureFilter("active", 0), false);
+  assert.equal(showsFeatureFilter("active", 1), true);
+});
+
+test("showsFeatureFilter still renders in the closed view with nothing left in it", () => {
+  // Reopen a project's last closed feature: the count that justified the control drops to zero
+  // on the very render that still has to offer the way back to Active. Hiding it there strands
+  // the reader on an empty list with only the browser's back button.
+  assert.equal(showsFeatureFilter("closed", 0), true);
+});
+
+test("featureFilterHref encodes and preserves repeated params", () => {
+  assert.equal(
+    featureFilterHref("/backlog", { project: "a b&c=d", all: undefined }, "closed"),
+    "/backlog?project=a+b%26c%3Dd&features=closed",
+  );
+  assert.equal(
+    featureFilterHref("/backlog", { tag: ["x", "y"] }, "active"),
+    "/backlog?tag=x&tag=y",
+  );
 });

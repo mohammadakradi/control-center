@@ -272,6 +272,14 @@ are what make `<Link>` prefetch do anything. See `.fe/notes.md` for the measurem
   - the *field-shaped button* in `PaletteTrigger`'s default branch, which restates
     `border-line-strong bg-surface-2` rather than calling `fieldClasses("md")` — that helper
     forces `w-full` and an input-tuned focus ring onto what is a `<button>`.
+- **`SpendRangeNav` still hand-rolls its own markup, and that is not pill drift** (2026-09-04).
+  The wrapping filter pill was extracted to `FilterPill` when `FeatureStatusNav` became its
+  second user, and `/usage`'s range filter was deliberately left out: it is a segmented *track*
+  (bordered container, `rounded-md` tabs, `shadow-sm` on the active one) for a fixed set of
+  three, not free-floating `rounded-full` pills for an unbounded one. Folding them together
+  buys a variant flag that makes one component render two unrelated looks. If `/usage` ever
+  *should* look like the others, that is a design decision to take deliberately, not a
+  refactor to fall into.
 - `AgentAvatar`'s initials fallback uses one colour for every namespace, so agents without a
   photo are visually indistinguishable in a contributor stack.
 - Keyboard navigation is reasoned about but not formally tested end-to-end (no a11y test

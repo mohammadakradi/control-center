@@ -34,6 +34,14 @@ wondering why a rebuilt page still renders the old markup (this cost me a round 
 button kept rendering at its pre-fix size). Match `*next-server*` as well — and take care not to
 kill the container's own dev server, which is the low-PID one of the same name.
 
+**That last caveat has bitten twice, so prefer an explicit PID over any pattern.** The
+container's *dev* server also renames itself to `next-server (v16.2.9)`, so a `| tail -N` over
+that match is a coin flip. Kill by PID — on the host `lsof -ti:3099` gives it directly; inside
+the container walk `/proc/*/cmdline` for the wrapper chain that still carries the port
+(`sh -c … -p 3099`, `npm exec …`). If you do lose the dev server, `docker restart platform`
+re-runs the entrypoint and brings web + runner back cleanly — note `concurrently` survives with
+a dead child, so the port stays down until the container restarts.
+
 ## Headless Chrome screenshots of this app need `--virtual-time-budget` (2026-08-13)
 `--headless=new --screenshot` waits for the load event, and pages here hold open connections
 (`ActivityBadge` polls, `UpdateBanner` fetches `/api/updates`, which reaches out to the GitHub
@@ -53,7 +61,34 @@ not 500), `Emulation.setEmulatedMedia` flips `prefers-color-scheme` so **dark mo
 `localStorage` seeding**, and `Runtime.evaluate` lets you *click real controls* and read values
 back — so a modal no longer has to be verified by temporarily seeding its `useState`.
 
-What that bought on this task, none of which static reasoning would have caught:
+**The clamp is worse than a clamp — it is a crop, and it looks exactly like your bug.**
+`--window-size=W` sets the *window*; Chrome then lays the page out at some wider viewport and
+**crops to W**. So a "390px" screenshot shows desktop-width line breaks with the right-hand side
+cut off, which is indistinguishable from a responsive regression you just introduced. That cost a
+full round of wrong conclusions once: clipping "found" on the feature-grouped pages reproduced
+identically on the **dashboard**, which that task never touched. Screenshot an untouched page as
+a control before believing any of it.
+
+Two things worth building into the driver:
+- **Measure, don't eyeball**: `documentElement.scrollWidth - clientWidth`, and when that is
+  positive, walk `body *` for elements whose `getBoundingClientRect().right` exceeds
+  `clientWidth`. That names the offending element and its classes, which is what turned "the page
+  looks cut off" into "the branch chip is `shrink-0`" — and, on project detail, into proof that
+  the offenders were in files that task never opened (filed as a backlog item, not fixed there).
+- **`captureBeyondViewport: false`** unless you want it: these pages run to ~26 000px tall and a
+  full-page capture scaled to fit is unreadable. When you do want a whole component, pass a
+  `clip` computed from its `getBoundingClientRect()` instead — a legible crop beats a tall
+  thumbnail, and `Runtime.evaluate` can find the element by heading text or selector.
+
+If you ever fall back to hand-assembled HTML rather than a live server: pin the theme with a
+script that runs **last** (`document.documentElement.className = "dark"`), not by editing the
+`<html>` tag — the app's own blocking init script sets that class from `localStorage`/
+`matchMedia` and will overwrite markup. Mirror the SSR'd HTML plus the one
+`/_next/static/chunks/*.css` file, drop `<script src>` tags but **keep the inline ones**: Next
+streams the shell first and its inline scripts are what swap real content over the loading
+skeleton. Strip those and you screenshot the skeleton and conclude the page is broken.
+
+What CDP bought on the task that introduced it, none of which static reasoning would have caught:
 - focus **stays on the Next button** across a file change (the `key={path}` remount could have
   dropped it — this project's `UpdateBanner` note is emphatic that focus claims must be
   measured, and it was right);

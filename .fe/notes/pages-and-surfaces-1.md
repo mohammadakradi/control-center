@@ -240,42 +240,45 @@ verification traps, neither of which is guessable from the code.
   accessible name at every width (`MobileTabBar`'s trick). The tight title truncation visible on
   a row with a wide status badge at 390px is pre-existing `TaskList` behaviour, not this.
 
-### `chrome --headless --window-size=W,H --screenshot` does not lay the page out at W
-This cost a full round of wrong conclusions, so it is the load-bearing note here. That flag sets
-the *window*, then Chrome renders at some wider viewport and **crops to W** — so a "390px"
-screenshot shows desktop-width line breaks with the right-hand side cut off, which looks exactly
-like a responsive regression you just introduced. I "found" clipping on the grouped pages this
-way and then reproduced the identical clipping on the **dashboard**, which this task never
-touched — that control is what exposed the tool, and it is the check to run first next time.
+**Both verification traps this task hit — the `--window-size` crop that fakes a responsive
+regression, and killing the wrong `next-server` — are written up in
+[verification](verification.md), which is where you will go looking for them.**
 
-The only truthful way is real device emulation over CDP: launch with
-`--remote-debugging-port=9222`, `PUT /json/new`, then `Emulation.setDeviceMetricsOverride`
-(`width`, `height`, `deviceScaleFactor: 2`, `mobile: width < 768`) before `Page.navigate`. Node
-22+ has a global `WebSocket`, so the whole driver is ~40 lines with no dependencies. Two things
-worth building into it:
-- **Measure, don't eyeball**: `documentElement.scrollWidth - clientWidth`, and when that's
-  positive, walk `body *` for elements whose `getBoundingClientRect().right` exceeds
-  `clientWidth`. That names the offending element and its classes, which is what turned "the
-  page looks cut off" into "the branch chip is `shrink-0`" — and, on project detail, into proof
-  that the offenders were `ProjectActions`' buttons in files this task never opened (filed as a
-  backlog item rather than fixed here).
-- **`captureBeyondViewport: false`** unless you want it. These pages run to ~26 000px tall; a
-  full-page capture scaled to fit is unreadable.
+## A closed feature no longer stays on screen forever (2026-09-04)
+The 2026-08-22 stance — closing a feature out leaves it as a collapsed heading, "which is right
+for finished work" — was reversed by the user after a few months of shipped features made it
+clutter above the work in flight. Both feature surfaces now show **active features by default**,
+with `?features=closed` bringing the rest back (`FeatureStatusNav`, `lib/ui.ts`). What is worth
+recording is the four things that made it a visibility change rather than a data one:
 
-Pin the theme with a script that runs **last** (`document.documentElement.className = "dark"`),
-not by editing the `<html>` tag: the app's own blocking init script sets that class from
-`localStorage`/`matchMedia` and will overwrite markup. Assets: mirror the SSR'd HTML plus the one
-`/_next/static/chunks/*.css` file, drop `<script src>` tags but **keep the inline ones** — Next
-streams the shell first and its inline scripts are what swap the real content over the loading
-skeleton. Strip those and you screenshot the skeleton and think the page is broken.
+- **Nothing is ever hidden without saying so.** The pill row states the closed count whichever
+  view you are in, `/backlog`'s section heading still counts the **true total** (`N items`, not
+  the filtered count) so it and the disclosure below agree, and each section discloses what the
+  current view is holding back with a link to it ("1 item in closed features — show the closed
+  ones"). A filter that silently shrinks a list is indistinguishable from data loss.
+- **Filter before the cap, not after.** `/backlog` caps a section at `SECTION_LIMIT` rows; doing
+  that first meant one closed feature's fifty items could eat the whole budget and push every
+  active row behind "Show all". The filtered list is what gets capped, and the "show all" link is
+  now built with `featureFilterHref` so lifting the cap can't drop `?features=` and throw the
+  reader back to the active view.
+- **Group over the unfiltered list, then filter the *output*.** `featureWorkRows` files a task
+  under "No feature" when its `featureId` doesn't resolve in the list it was handed, so passing
+  it `visibleFeatures` would move every closed feature's runs into the ungrouped bucket. The
+  first cut therefore fed it `featureList` and stopped there — and the frontend audit caught the
+  half-measure: `taskCounts`/`taskPanels`/`openByDefault` are props of a **client** component, so
+  entries no row renders still serialize into the flight payload, pre-rendered `<TaskList>`
+  markup and all. Unread is not unsent. The full list goes in and `visibleIds` filters what
+  comes out (`featureItemCounts` too); measured with a seeded run under a closed feature, whose
+  title now appears **zero** times in the active view's HTML. `NewTaskForm` still gets the whole
+  list, for the picker reason in the next bullet.
+- **The Add-item picker was already right and was left alone.** `featureOptions` restricts to
+  `status === "active"` — filing new work under a closed feature would quietly reopen something
+  every list shows as finished — so `/backlog` hands `AddBacklogItem` the **unfiltered** list and
+  lets that helper decide. Filtering there too would mean a form's contents changed with the
+  page's view setting.
 
-### Killing the throwaway `next start` will kill your dev server if you match loosely
-The existing note says match `*next-server*`; the trap is that the container's **dev** server is
-also `next-server (v16.2.9)`, so any `| tail -N` over that match is a coin flip. I killed the dev
-server twice this way. Kill by **explicit PID**, read off `/proc/*/cmdline` for the wrapper chain
-that still carries the port (`sh -c … -p 3099`, `npm exec …`), and if you do lose it,
-`docker restart platform` re-runs the entrypoint and brings web + runner back cleanly — note
-`concurrently` survives with a dead child, so the port stays down until the container restarts.
+`FeatureGroup`'s start-collapsed-when-closed behaviour was deliberately not touched: it now
+only applies to a feature you filtered *in*, which is where it was always the right default.
 
 ## The activity badge — chrome that takes a row, not a floating corner (2026-08-12)
 `ActivityBadge` is the app's only global sign that agents are working. Four decisions in it are
