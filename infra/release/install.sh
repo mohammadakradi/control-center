@@ -81,7 +81,13 @@ tar -xzf "$tmp/$TARBALL" -C "$tmp/app" --strip-components=1
 
 info "Installing dependencies (a minute or two — this compiles nothing, it downloads a"
 info "prebuilt SQLite binary for your platform)…"
-(cd "$tmp/app" && npx --yes "pnpm@${CC_PNPM_VERSION:-9.12.1}" install --frozen-lockfile) ||
+# `--prod=false` is load-bearing, not belt-and-braces. An in-app update is spawned by the
+# # running Next.js server (app/api/updates/apply/route.ts passes `...process.env`), and that
+# # server is started with NODE_ENV=production — so pnpm inherits it and silently skips
+# # devDependencies. The build two steps down then dies on `Cannot find module
+# # '@tailwindcss/postcss'`, which is a devDependency, and the whole update rolls back. This
+# # install must produce a tree that can BUILD, not merely one that can run.
+(cd "$tmp/app" && npx --yes "pnpm@${CC_PNPM_VERSION:-9.12.1}" install --frozen-lockfile --prod=false) ||
   die "dependency install failed."
 
 # Build once, here, rather than compiling every page on demand forever. This is what lets the

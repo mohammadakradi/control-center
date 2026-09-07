@@ -24,6 +24,7 @@ stage="$out/$name"
 PATHS="
 package.json
 pnpm-lock.yaml
+.npmrc
 next.config.ts
 tsconfig.json
 postcss.config.mjs
