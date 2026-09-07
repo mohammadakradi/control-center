@@ -37,9 +37,11 @@ import { buttonClasses } from "@/components/ui/button";
 import {
   featureRowDefaultOpen,
   featureWorkRows,
+  parseComposeOnboard,
   parseFeatureFilter,
   splitFeaturesByStatus,
   ACTIVE_STATUSES,
+  COMPOSE_PARAM,
   FEATURE_FILTER_PARAM,
   UNGROUPED_KEY,
 } from "@/lib/ui";
@@ -149,6 +151,8 @@ export default async function ProjectDetail({
   // component, so a closed feature the reader isn't looking at shouldn't cross the RSC boundary
   // at all — the same minimization argument as the task panels below.
   const featureFilter = parseFeatureFilter(query[FEATURE_FILTER_PARAM]);
+  // The health nudge's Re-onboard button lands here — the composer opens on `onboard`.
+  const composeOnboard = parseComposeOnboard(query[COMPOSE_PARAM]);
   const { active: activeFeatures, closed: closedFeatures } =
     splitFeaturesByStatus(featureList);
   const visibleFeatures = featureFilter === "closed" ? closedFeatures : activeFeatures;
@@ -308,6 +312,7 @@ export default async function ProjectDetail({
             // the picker with nothing but "No feature" in it.
             features={featureList}
             modelPolicy={modelPolicy}
+            composeOnboard={composeOnboard}
           />
         </CardSection>
 

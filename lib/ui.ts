@@ -145,6 +145,27 @@ export type FeatureFilter = "active" | "closed";
  *  link and the page that reads it are different files. */
 export const FEATURE_FILTER_PARAM = "features";
 
+/** `?compose=onboard` — what `ProjectHealthNudge`'s Re-onboard button links to. */
+export const COMPOSE_PARAM = "compose";
+
+/**
+ * Should the composer open with `onboard` already selected?
+ *
+ * The health nudge sits directly above the New task card, so a plain `#new-task` anchor scrolls
+ * nowhere the reader can perceive and the button reads as broken (reported 2026-09-07). It has
+ * to arrive with the command chosen, not merely with the form in view.
+ *
+ * A URL param rather than shared client state: it survives a reload, it can be linked to, and
+ * the page is already `force-dynamic` and already reads `?features=` this way. Lenient for the
+ * same reason as `parseFeatureFilter` — an array or an unknown value is a stale bookmark, and
+ * "just open the composer normally" is the obvious safe answer.
+ */
+export function parseComposeOnboard(
+  value: string | string[] | undefined,
+): boolean {
+  return value === "onboard";
+}
+
 /**
  * Read `?features=` leniently: anything that isn't exactly `closed` is the default view.
  *

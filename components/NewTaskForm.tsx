@@ -104,6 +104,7 @@ export function NewTaskForm({
   projectId,
   agents,
   onboardedByAgent = {},
+  composeOnboard = false,
   parallelOffer = false,
   features = [],
   modelPolicy,
@@ -112,6 +113,9 @@ export function NewTaskForm({
   agents: AgentLite[];
   /** Per-agent onboarding state for this project, keyed by agent id. */
   onboardedByAgent?: Record<string, boolean>;
+  /** Open with `onboard` already picked — the health nudge's Re-onboard button
+   *  (`?compose=onboard`). Seeds initial state only; the user is free to change it. */
+  composeOnboard?: boolean;
   /**
    * The project's features, for grouping this run with related work. Empty (the default) hides
    * the control entirely — a select with only "No feature" in it is a question with one answer.
@@ -146,7 +150,11 @@ export function NewTaskForm({
   const onboarded = onboardedByAgent[agentId] ?? true;
   // `onboard` is dropped from the list once it's done — but CLAUDE.md and the design-system
   // notes go stale, so "Re-onboard" puts it back rather than making a refresh unreachable.
-  const [reonboard, setReonboard] = useState(false);
+  //
+  // Seeded from `?compose=onboard` so the health nudge can hand the composer over ready to go.
+  // Seeding *this* is all it takes: `orderSkills` puts `onboard` first whenever it is shown, so
+  // the `command` initialiser below picks it up. No effect, no second source of truth.
+  const [reonboard, setReonboard] = useState(composeOnboard);
   const commands = useMemo(
     () => orderSkills(agent?.namespace, agent?.commands ?? [], onboarded && !reonboard),
     [agent, onboarded, reonboard],
