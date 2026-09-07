@@ -16,7 +16,9 @@ export type GateKind = "proposal" | "report";
 export type GateDecision = { allow: boolean; feedback?: string };
 
 export type PlatformServerOptions = {
-  /** Resolves when the user answers the gate in the UI. */
+  /** Resolves when the user answers the gate in the UI. **Rejects** when the gate cannot be
+   *  raised at all — the run it belongs to has already ended and cannot be re-opened — and
+   *  the rejection's message is what the agent is told. */
   onGate: (gate: GateKind, summary: string) => Promise<GateDecision>;
   /** Which project this session may file backlog items against, and where to log them. */
   backlog: BacklogToolContext;
@@ -33,7 +35,19 @@ function makeApprovalTool(onGate: PlatformServerOptions["onGate"]) {
     "Request the user's approval at a workflow gate (proposal or change report). Blocks until the user responds in the platform UI. Returns their decision.",
     { gate: z.enum(["proposal", "report"]), summary: z.string() },
     async (args) => {
-      const decision = await onGate(args.gate, args.summary);
+      let decision: GateDecision;
+      try {
+        decision = await onGate(args.gate, args.summary);
+      } catch (err) {
+        // The gate could not be raised at all — the run this session belongs to has already
+        // ended (see `gateAction`). Returned as a tool *error* rather than thrown, so the
+        // agent reads a sentence explaining what happened where it reads every other tool
+        // result, instead of an SDK-level `Stream closed` it can do nothing with.
+        return {
+          content: [{ type: "text" as const, text: (err as Error).message }],
+          isError: true,
+        };
+      }
       const text = decision.allow
         ? decision.feedback
           ? `User APPROVED with changes: ${decision.feedback}. Proceed, incorporating the feedback.`

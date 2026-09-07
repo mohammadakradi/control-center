@@ -192,8 +192,11 @@ is that half; `deleteFeature` in `lib/features.ts` is the only new rule, and `DE
 /api/projects/[id]/features/[featureId]` only translates it.
 - **Delete ungroups; it never destroys.** Both FKs are `set null` and `foreign_keys` is ON, so
   tasks (with their transcripts) and backlog items survive the row that grouped them. Deleting is
-  the honest verb for "this grouping was a mistake" — `status: done` keeps the heading forever as
-  collapsed history, which is right for finished work and wrong for a group nobody wants.
+  the honest verb for "this grouping was a mistake" — `status: done` is the record that the work
+  shipped, which is right for finished work and wrong for a group nobody wants. (Since
+  2026-09-04 closing out also *takes it off the default view*: both feature surfaces show active
+  features and put the rest behind `?features=closed`. One click away, not gone — so it is still
+  not a substitute for deleting. See `.fe/notes/pages-and-surfaces-1.md`.)
 - **`mergeState` is cleared by hand, because the FK can't.** `ON DELETE SET NULL` only touches
   `feature_id`, so without this an ungrouped task keeps `blocked`/`conflict` — breaking the
   invariant `setTaskFeature` documents (`mergeState` null ⇔ no feature) and rendering a chip that
@@ -303,7 +306,8 @@ cross-project list that way.
   the ungrouped bucket start open, closed features start collapsed
   (`featureGroupDefaultOpen`, spec'd) — their rows are history that would otherwise push live
   work below the fold. Deliberately **not persisted**: a remembered collapse is a filter, not
-  a fold. The chips and the count stay outside the button — the branch chip is a string to
+  a fold. Since 2026-09-04 a closed feature only reaches a group at all when the reader asked
+  for it (`?features=closed`), which is where that default was always right. The chips and the count stay outside the button — the branch chip is a string to
   copy, and folding it into the button would make it unselectable without toggling.
 - **A row's chip goes through `mergeChipView` (`lib/ui.ts`), and `pending` is no longer one
   word.** The old label "Not merged" was read by a real user as a verdict on work that was in

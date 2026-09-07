@@ -105,6 +105,104 @@ export const isOpenBacklogStatus = (status: BacklogStatus): boolean =>
   !CLOSED_BACKLOG_STATUSES.includes(status as (typeof CLOSED_BACKLOG_STATUSES)[number]);
 
 /**
+ * The same question for a **feature**, deliberately spelled the same way one line down.
+ *
+ * A feature and a backlog item close out through the same two words, and the two definitions
+ * living together is what stops one of them growing a third status the other doesn't know
+ * about. `active` is the only open state a feature has.
+ */
+export const CLOSED_FEATURE_STATUSES = ["done", "cancelled"] as const;
+
+export const isOpenFeatureStatus = (status: FeatureStatus): boolean =>
+  !CLOSED_FEATURE_STATUSES.includes(status as (typeof CLOSED_FEATURE_STATUSES)[number]);
+
+/**
+ * Split a project's features into the ones still in flight and the ones closed out.
+ *
+ * The features surfaces show the active ones and hide the rest behind a filter, so both hosts
+ * need the same two lists **and** both counts: the count of what is hidden is what the filter
+ * pill says out loud, and hiding something without saying how much would be the one version of
+ * this change that loses information.
+ *
+ * Order within each list is the caller's — `listFeatures` is oldest-first (creation order), and
+ * the Features card is a management list whose rows must not move under a click.
+ */
+export function splitFeaturesByStatus<F extends { status: FeatureStatus }>(
+  features: readonly F[],
+): { active: F[]; closed: F[] } {
+  const active: F[] = [];
+  const closed: F[] = [];
+  for (const feature of features) {
+    (isOpenFeatureStatus(feature.status) ? active : closed).push(feature);
+  }
+  return { active, closed };
+}
+
+/** Which features a page is showing. The default carries no query param. */
+export type FeatureFilter = "active" | "closed";
+
+/** The query parameter both hosts filter on. One constant, because the page that writes the
+ *  link and the page that reads it are different files. */
+export const FEATURE_FILTER_PARAM = "features";
+
+/**
+ * Read `?features=` leniently: anything that isn't exactly `closed` is the default view.
+ *
+ * The `/usage` `?range=` rule. A repeated param arrives as an array and an unknown value is
+ * someone's stale bookmark or a typo — neither is worth an error page, and both have an obvious
+ * safe answer, since the default view is the one that hides nothing the reader is looking for.
+ */
+export function parseFeatureFilter(
+  value: string | string[] | undefined,
+): FeatureFilter {
+  return value === "closed" ? "closed" : "active";
+}
+
+/**
+ * Whether the Active/Closed filter is worth putting on screen at all.
+ *
+ * With nothing closed there is no choice to make, so the control hides rather than showing a
+ * permanently-empty "Closed 0" on every install that has never closed a feature out — the rule
+ * `ProjectFilterNav` follows below two projects.
+ *
+ * **Except while the reader is already in the closed view**, which is not a hypothetical: reopen
+ * a project's last closed feature and the count that justified the control drops to zero on the
+ * very render that still has to offer the way back. Hiding it there would strand them on an
+ * empty list with only the back button, so the second clause is the whole reason this is a
+ * function and not an inline `> 0`.
+ */
+export function showsFeatureFilter(
+  filter: FeatureFilter,
+  closedCount: number,
+): boolean {
+  return closedCount > 0 || filter === "closed";
+}
+
+/**
+ * The href for one of the filter's two views, keeping every other param the page is carrying.
+ *
+ * Preserving matters more than it looks: on `/backlog` the current project (`?project=`) and the
+ * lifted row cap (`?all=1`) both live in the URL, so a filter link that rebuilt the query from
+ * scratch would quietly throw the reader back to the first project. The default view carries
+ * **no** param, so "Active" and the bare page are the same URL — the same rule `SpendRangeNav`
+ * follows for "All time", and what keeps the back button from collecting identical entries.
+ */
+export function featureFilterHref(
+  basePath: string,
+  current: Record<string, string | string[] | undefined>,
+  filter: FeatureFilter,
+): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(current)) {
+    if (key === FEATURE_FILTER_PARAM || value === undefined) continue;
+    for (const one of Array.isArray(value) ? value : [value]) query.append(key, one);
+  }
+  if (filter !== "active") query.set(FEATURE_FILTER_PARAM, filter);
+  const qs = query.toString();
+  return qs ? `${basePath}?${qs}` : basePath;
+}
+
+/**
  * The status dot beside a backlog item — a solid tone fill, which the design system allows
  * only for small non-text marks like this one. It is decorative on purpose: the status is
  * also written out in the control next to it, so nothing here is carried by colour alone.
@@ -377,8 +475,13 @@ export function featureRowActions(f: FeatureAdmin): FeatureRowActions {
  * Whether a feature group starts expanded. Active features (and the ungrouped bucket, whose
  * `feature` is null) do — they are the work in flight, the thing the reader came for. Closed
  * features start collapsed: their rows are history, and on a long-lived project they would
- * otherwise push every live group below the fold. The heading itself always renders, so
- * nothing is hidden — collapsed is a default, not a filter.
+ * otherwise push every live group below the fold. Collapsed is a default, not a filter — the
+ * heading still renders, and the reader opens it.
+ *
+ * A closed feature only reaches here at all when it was filtered **in** (`?features=closed`,
+ * `splitFeaturesByStatus`), which is where this default was always right: you asked to see the
+ * closed ones, so the headings are the answer and their rows are the detail. In the default
+ * view the question never comes up.
  */
 export function featureGroupDefaultOpen(
   feature: { status: FeatureStatus } | null,
@@ -653,6 +756,27 @@ const RECOMMENDATION_LINE =
 const UNCHECKED_TODO = /^\s*[-*]\s*\[ \]/;
 const ALL_CLEAR_LINE =
   /\b(?:no (?:real |outstanding |open |remaining |unresolved |blocking )?(?:issues?|bugs?|findings?|vulnerabilit\w+|problems?|secrets?|concerns?|regressions?)|nothing (?:to fix|blocking|actionable|of note|to address)|no action (?:needed|required)|0 (?:critical|high|blocking)|all clear|looks good|lgtm)\b/i;
+/**
+ * Follow-up that is **already dealt with** — the second half of `ALL_CLEAR_LINE`'s job.
+ *
+ * A report that says *"Recommendation — filed the two out-of-scope findings as `bli_…`"* is
+ * reporting a discharge, not leaving work behind, and it used to raise the amber callout on the
+ * strength of the word "recommendation" alone. The line has to be excused whichever signal fired
+ * on it: that same sentence trips `FINDING_HEADING` when it starts with "Recommendation" and
+ * `RECOMMENDATION_LINE` when the word sits mid-line, so tightening one of those regexes would
+ * only move the false positive rather than remove it.
+ *
+ * A backlog id (`bli_…`) counts on its own — an agent that filed an item is the case rule 9 of
+ * the agent rules exists to produce, and it is the strongest possible evidence the work is
+ * recorded elsewhere. The word gap in the *filed/logged/tracked* branch is bounded (at most six
+ * words before the preposition) so this stays linear on a long line.
+ *
+ * Like `ALL_CLEAR_LINE` this can be defeated by a line that says both things ("filed as `bli_1`,
+ * but it is still broken"); an explicit severity grading still wins, and the report itself is
+ * rendered in full directly above the callout.
+ */
+const SETTLED_LINE =
+  /\b(?:bli_[a-z0-9]+|(?:filed|logged|tracked|recorded)(?:\s+\S+){0,6}?\s+(?:as|in|under|with)|(?:added|moved)\s+to\s+the\s+backlog|backlog item|already\s+(?:fixed|addressed|filed|handled|done|resolved|covered|tracked)|(?:has|have|had)\s+been\s+(?:fixed|addressed|filed|resolved|handled|covered)|(?:was|were)\s+(?:fixed|addressed|resolved|filed)|(?:now|since)\s+(?:fixed|addressed|resolved|handled))\b/i;
 
 /**
  * A quotable line: markdown furniture off, non-printing characters out, capped by code point.
@@ -704,9 +828,14 @@ export function fixTaskReasons(report: string): FixTaskReason[] {
             ? "Recommendation"
             : null;
     if (!label) continue;
-    // "No outstanding issues" matches `issues?` and is the *opposite* of a finding. A
-    // severity tag still wins on its own line — that's an explicit grading, not prose.
-    if (label !== "Severity callout" && ALL_CLEAR_LINE.test(line)) continue;
+    // "No outstanding issues" matches `issues?` and is the *opposite* of a finding, and
+    // "filed as bli_…" is work already recorded elsewhere. A severity tag still wins on its own
+    // line — that's an explicit grading, not prose.
+    if (
+      label !== "Severity callout" &&
+      (ALL_CLEAR_LINE.test(line) || SETTLED_LINE.test(line))
+    )
+      continue;
     // One entry per kind: an audit lists twenty findings, and twenty near-identical rows in a
     // callout is a wall of text where the point was "here is why the button is there".
     if (seen.has(label)) continue;
@@ -755,6 +884,73 @@ export function orderSkills<T extends { name: string }>(
   if (onboarded) return ordered.filter((c) => c.name !== "onboard");
   const onboard = ordered.find((c) => c.name === "onboard");
   return onboard ? [onboard, ...ordered.filter((c) => c.name !== "onboard")] : ordered;
+}
+
+/** An installed agent, narrowed to what choosing a fix target needs. */
+export type FixTargetAgent = {
+  id: string;
+  namespace: string;
+  commands: { name: string }[];
+};
+
+/** Where "Create fix task" will dispatch — resolved from real command lists, never guessed. */
+export type FixTarget = {
+  agentId: string;
+  command: string;
+  /** `/swe:fix` — the run that is about to start, so the offer can name it. */
+  label: string;
+};
+
+/** In preference order: `fix` is the purpose-built "handle a bug end-to-end" skill, and `task`
+ *  is the general one that can still do the work where an agent has no `fix`. */
+const FIX_COMMANDS = ["fix", "task"];
+/** Agents that *implement*, for a report whose own agent can't. `pm` plans, so a pm report —
+ *  which is entirely work someone must pick up — has to be handed on rather than dropped. */
+const IMPLEMENTER_NAMESPACES = ["swe", "fe"];
+
+/**
+ * Pick the agent and command a fix task should run, from the agents actually installed.
+ *
+ * The button used to post `command: "task"` with the report's own `agentId`, which on a pm
+ * report asked for `/pm:task` — a command pm does not have (`agents/pm/commands/` is `onboard`
+ * and `plan`), so the run could only fail. It was also the wrong ask where it did resolve: swe
+ * and fe both ship `fix`, which is exactly "address the findings in this report".
+ *
+ * The report's own agent gets first refusal — it already knows the project — and only if it has
+ * neither command does the work move to one that implements. Returns `null` when nothing
+ * installed can take it, which the caller renders as the callout **without** an action: a
+ * button that cannot work is worse than no button.
+ */
+export function resolveFixTarget(
+  agents: FixTargetAgent[],
+  reportAgentId: string,
+): FixTarget | null {
+  const own = agents.find((a) => a.id === reportAgentId);
+  // Compared by id, not by reference: today every caller passes `own` straight out of the same
+  // array, but a caller that rebuilt the row for the same agent would slip a duplicate into the
+  // fallback list and could hand the work back to the agent that just declined it.
+  const notOwn = (a: FixTargetAgent) => a.id !== own?.id;
+  const candidates = [
+    ...(own ? [own] : []),
+    ...IMPLEMENTER_NAMESPACES.flatMap((ns) =>
+      agents.filter((a) => notOwn(a) && a.namespace === ns),
+    ),
+    ...agents.filter(
+      (a) => notOwn(a) && !IMPLEMENTER_NAMESPACES.includes(a.namespace),
+    ),
+  ];
+  for (const agent of candidates) {
+    for (const command of FIX_COMMANDS) {
+      if (agent.commands.some((c) => c.name === command)) {
+        return {
+          agentId: agent.id,
+          command,
+          label: `/${agent.namespace}:${command}`,
+        };
+      }
+    }
+  }
+  return null;
 }
 
 /**

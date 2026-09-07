@@ -155,6 +155,69 @@ test("a turn that ends with its reviewers still running is a pause, not a report
   }
 });
 
+test("a tool-call preamble never seals the task (from a real transcript)", () => {
+  // task_2ad6afb5, sealed `done` at 2026-09-03T09:31:24Z on exactly this text — which then
+  // became the task's report — while the session kept running. It names no dispatched work
+  // (so IN_FLIGHT_RE can't see it) and reads as a statement of fact up to its last sentence.
+  assert.deepEqual(
+    classifyTurnEnd("Smoking gun found. Let me confirm the reconciler's status coverage."),
+    { kind: "paused", reason: "narration" },
+  );
+  // The same sign-off under a long, bulleted analysis: `looksStructured` used to wave the
+  // whole message through as a report on the strength of its formatting alone.
+  const analysis =
+    "The reconciler's coverage is narrower than it looks:\n" +
+    "- `queued` and `running` are reclassified on every sweep.\n" +
+    "- `cancelled` is never visited, so the row keeps its old status forever.\n" +
+    "- the sweep runs before the status write lands, which widens the window.\n\n" +
+    "Let me confirm the reconciler's status coverage.";
+  assert.deepEqual(classifyTurnEnd(analysis), { kind: "paused", reason: "narration" });
+});
+
+test("prose that reports nothing is a pause, not a report", () => {
+  // The other half of the same bug: sealing needs positive evidence, so a short declarative
+  // that announces no next step (and therefore trips none of the narration patterns) is
+  // still not a report.
+  for (const text of [
+    "Smoking gun found.",
+    "Found it — the sweep never sees cancelled rows.",
+    "The reconciler only covers three of the five statuses.",
+    "That matches what the transcript showed.",
+  ]) {
+    assert.deepEqual(classifyTurnEnd(text), { kind: "paused", reason: "unfinished" }, text);
+  }
+});
+
+test("a report that ends by deferring to the user is still final", () => {
+  // "let me know" / "I'll wait" close reports; they must not read as a next action.
+  assert.deepEqual(
+    classifyTurnEnd(
+      "Fixed the off-by-one in `parseRange` and added a regression test; the full suite " +
+        "passes. Let me know if you'd rather I split the commit.",
+    ),
+    { kind: "final" },
+  );
+  // "I'll wait for your approval" is a different case: WAITING_RE matches it, so it pauses
+  // and the agent is nudged to raise the gate properly. That is pre-existing and deliberate
+  // — a report that never called request_approval is off-contract, and a nudge is cheaper
+  // than a task the user can't act on. Pinned so the distinction stays visible.
+  assert.deepEqual(
+    classifyTurnEnd(
+      "The migration is written and applied locally, and all 692 tests pass. I'll wait " +
+        "for your approval before committing.",
+    ),
+    { kind: "paused", reason: "waiting" },
+  );
+});
+
+test("a long message with no completion vocabulary is still allowed to be a report", () => {
+  // The safety valve: prose this long is not a tool-call preamble, whatever register it is
+  // written in. Kept so an unusual but genuine report isn't nudged into a loop.
+  const longform = `${"The runner reads a turn's closing message and has to decide, with no help from the SDK, whether the run is over. ".repeat(5)}`;
+  assert.ok(longform.length >= 500);
+  assert.deepEqual(classifyTurnEnd(longform), { kind: "final" });
+});
+
 test("a finished report is not demoted by mentioning reviews or things still running", () => {
   // The other half, and the reason IN_FLIGHT_RE is narrow: nudging a *finished* report puts the
   // run in a loop. Note the first two already match the older, looser WAITING_RE — which is

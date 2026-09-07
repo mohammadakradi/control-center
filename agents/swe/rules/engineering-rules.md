@@ -116,11 +116,16 @@ consolidate or split, never append. This is a tool, not a diary.
 files as part of the task that noticed, and leave the index behind. Don't rewrite the notes
 while you move them.
 
-## 11. Plan and decompose every request
-No request is too small to plan. Break the work into an ordered **checklist** of small,
-independently verifiable steps (each with its own test), then **execute task-by-task** —
-implement and verify one step before starting the next. Don't write the whole change in one
-shot. The plan is presented and approved at Gate 1.
+## 11. Plan and decompose every request — and size the plan to the change
+Break the work into an ordered **checklist** of small, independently verifiable steps (each
+with its own test), then **execute task-by-task** — implement and verify one step before
+starting the next. Don't write a large change in one shot.
+
+**Size the plan to the work.** Phase 3 verifies every checklist item separately, so a
+six-step checklist for a ten-line change multiplies the run without buying any safety. A
+small, self-contained, non-sensitive change with one obvious approach gets a one-line goal, a
+single checklist item, and **no Gate 1** — see Phase 2 for the exact test. Gate 2 (report)
+is never skipped.
 
 ## 12. Verify security with tools, not just reasoning
 For every change, consider how it could be abused — and **run the actual scanners**, don't
@@ -191,6 +196,19 @@ Invoke it with the PATH prefix described in rule 19 — `PATH="$PATH:$HOME/.loca
 - `graphify affected "<node>"` — reverse-traversal: what's impacted by changing it (use this
   for blast-radius before editing).
 - Read `graphify-out/GRAPH_REPORT.md` for a high-level map.
+
+**This is enforced, not advisory.** A `PreToolUse` hook (`hooks/guard-search.mjs`) holds a
+tree-wide search — `grep -r`, a bare `rg`, `find . -name` — the first time you run it in a repo
+that has a graph, and tells you the graphify command to try instead. It was made mechanical
+because the rule alone did not work: measured over a week, 1,951 grep/find calls against 44
+graphify calls, and those sweeps are *turns*, which is the whole bill. Targeted reads
+(`grep -n x path/to/file.ts`), pipeline filters (`git log | grep fix`) and repos with no graph
+are never touched.
+
+**You can always get past it.** If the graph doesn't answer the question — a string literal, a
+comment, a config or non-code file, a stale graph — run the *same* command again and it goes
+through. Each distinct search is held at most once per session, so there is no way to get
+stuck; just don't reach for a sweep before you have asked the graph.
 
 Fall back to grep/read (or the `explorer` subagent) only when the graph is absent, stale, or
 doesn't cover the detail you need. **Keep it current:** after a change that adds/moves/removes

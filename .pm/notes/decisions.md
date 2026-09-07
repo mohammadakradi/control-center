@@ -126,3 +126,57 @@ Product and planning decisions, and why — oldest first.
   the PR/ship flow — the real need ("all tasks done ⇒ one branch holds all work") requires it.
   Rejected: agent-performed merges (non-deterministic, siblings race on one target) and
   auto-resolution (`-X theirs` = silently wrong code).
+
+- 2026-09-03 — planned workspace parallel runs + per-task changes + honest gate/report rendering
+  (`.pm/tasks/20260903-131534-workspace-parallel-and-gate-rendering/`, 7 tasks). Verdict BUILD on
+  all three reported symptoms; two reproduced live on the running install.
+  **One flag, two features:** Award Maven is the install's only `isWorkspace: true` project, and
+  `isWorkspace` disables *both* things the user reported — parallel isolation (`parallelOffer`
+  `lib/dispatch.ts:89-94`, the 400 at `:174-183`, `canIsolate` in `runner/worktree.ts:86-92`, so a
+  workspace is hard-capped at concurrency 1 — 81/81 Award Maven tasks ran `parallel=false`,
+  `workdir=null`) and the per-task Changes card (`lib/task-root.ts:48` → `lib/ui.ts:835` maps
+  `available:false` to `{kind:"hidden"}`, so it vanishes with no explanation). The documented
+  reason ("member repos make the isolated worktree ambiguous") is real but solvable *because the
+  members are siblings of the root*: one per-task dir holding a worktree per repo reproduces the
+  relative layout, so `../portal-frontend` still resolves. Approved design: a **set** of worktrees
+  per task, and `resolveTaskWorkRoot`'s single root becomes a **`workRoots`** list (label + cwd +
+  per-root kind), with a plain-git project as the one-entry case. `isTaskWorktree` is applied per
+  repo and NOT widened — accepting a member's worktree under another repo's admin dir is exactly
+  the hole that guard closes.
+  **Symptoms 2 and 3 share a root cause.** `classifyTurnEnd` seals on the *absence* of a pause
+  signal, so a tool-call preamble becomes the report AND ends the task — reproduced on this very
+  planning task (`task_2ad6afb5` sealed `done` on *"Smoking gun found. Let me confirm…"* while the
+  session kept running and recording events past `end`), and `finalize()`'s `closeInput()` then
+  made this request's own `request_approval` fail with `Stream closed`. Decision: sealing must
+  require positive evidence, and a gate raised on a handle the runner thinks is finished must
+  re-open the task rather than hit a closed channel. `WAITING_RE` still must never be consulted
+  where the answer *seals* (the pre-existing trap in `.swe/notes/task-runs.md`) — lean on shape,
+  not on waiting language.
+  Two transport defects found unfiled: the live stream path never sends `closed`
+  (`runner/server.ts:128-145` vs the cold path `:124`), so `EventSource` reconnects into the 60 s
+  grace window and parks with `connected:true` forever — and the indicator is that transport
+  boolean, not run status; plus no heartbeat against undici's 300 s default `bodyTimeout` on a bare
+  proxy `fetch` (224 × `UND_ERR_BODY_TIMEOUT` in `web.log`).
+  Rejected: normalizing report text in `components/` (it goes in `lib/ui.ts`, where `pnpm test` can
+  reach it); stripping alone as the fix for the proposal card (`[[GATE:PROPOSAL]]` needs a real
+  `PROPOSAL_AT_END` branch or it keeps leaking literally); and half-isolating a workspace (a member
+  whose worktree can't be created must fail the launch loudly).
+  Filed out of scope: `bli_7a99ac63` (platform.db at 545 MB — needs a retention/vacuum decision),
+  `bli_c2b4d806` (Award Maven's stale upstream-less `defaultBranch` spamming git errors).
+  Extended to 10 tasks on a second follow-up the same day. **Closed features stay on screen —
+  reversed on purpose.** `lib/features.ts:345` documents the old stance ("closing a feature out
+  keeps it on screen forever as a collapsed heading, which is right for finished work"); the user
+  wants active-only with an opt-in closed filter. `listFeatures` returns every status and there is
+  no filter anywhere; the fix follows the precedent backlog *items* already set one page over
+  (split on `isOpenBacklogStatus`, count the remainder in the header, disclose separately) plus the
+  existing query-param `FilterPill` idiom — no new filter mechanism.
+  **`createAndStartTask` never validated `command`.** `DispatchInput.command` is a bare string,
+  stored as-is, and the runner formats `/${namespace}:${command}` blind — an unknown command
+  reaches Claude Code as *prose*, so the run silently does something else instead of failing.
+  Reachable because "Create fix task" hardcodes `command: "task"` against the report's own agent
+  and `agents/pm/commands/` has only `onboard` + `plan`. Every other path is safe by construction
+  (NewTaskForm picks from the discovered list), so the decision is to validate centrally in
+  dispatch against `readCommands` — never a hardcoded per-namespace table, which would drift with
+  `pnpm agents:sync` and the prefer-a-CLI-copy rule. Also decided: a fix task should go to an agent
+  that can *implement* (prefer `fix` over `task`; route a pm report's findings to swe rather than
+  hiding the button — a dead button is worse than no button).

@@ -163,11 +163,16 @@ bound and then gets read in full at the start of every request:
 files as part of the task that noticed, leaving the index behind. Don't rewrite notes while
 you move them.
 
-## 11. Plan and decompose every request
-No request is too small to plan. Break the work into an ordered **checklist** of small,
-independently verifiable steps, then **execute task-by-task**. The plan is presented and
-approved at Gate 1. For UI work, the plan also states which **existing components/tokens you
-will reuse** and any new ones you must introduce (and why).
+## 11. Plan and decompose every request — and size the plan to the change
+Break the work into an ordered **checklist** of small, independently verifiable steps, then
+**execute task-by-task**. For UI work, the plan also states which **existing components/tokens
+you will reuse** and any new ones you must introduce (and why).
+
+**Size the plan to the work.** Phase 3 verifies every checklist item separately, so a six-step
+checklist for a ten-line restyle multiplies the run without buying any safety. A small,
+self-contained change that introduces no new component or token gets a one-line goal, a single
+checklist item, and **no Gate 1** — see Phase 2 for the exact test. Anything introducing a new
+component or token is a design decision and is always gated. Gate 2 (report) is never skipped.
 
 ## 12. Verify the result — build, lint, and *look*
 A frontend change is not done because the code compiles. Before claiming done:
@@ -237,6 +242,19 @@ Invoke it with the PATH prefix described in rule 19 — `PATH="$PATH:$HOME/.loca
 - `graphify affected "<node>"` — reverse-traversal: what's impacted by changing a component/
   token (use this for blast-radius before a restyle or an extraction).
 - Read `graphify-out/GRAPH_REPORT.md` for a high-level map.
+
+**This is enforced, not advisory.** A `PreToolUse` hook (`hooks/guard-search.mjs`) holds a
+tree-wide search — `grep -r`, a bare `rg`, `find . -name` — the first time you run it in a repo
+that has a graph, and tells you the graphify command to try instead. It was made mechanical
+because the rule alone did not work: measured over a week, 1,951 grep/find calls against 44
+graphify calls, and those sweeps are *turns*, which is the whole bill. Targeted reads
+(`grep -n x path/to/file.tsx`), pipeline filters (`git log | grep fix`) and repos with no graph
+are never touched.
+
+**You can always get past it.** If the graph doesn't answer the question — a class name in a
+string, a comment, a config or non-code file, a stale graph — run the *same* command again and
+it goes through. Each distinct search is held at most once per session, so there is no way to
+get stuck; just don't reach for a sweep before you have asked the graph.
 
 This pairs with rule 3 (reuse) and rule 15 (`/fe:audit`): the graph helps you find existing
 components to reuse and the call sites a repeated pattern spans. Fall back to grep/read (or

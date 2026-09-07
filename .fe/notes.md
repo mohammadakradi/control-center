@@ -16,7 +16,7 @@ a note whose topic you don't know. **Never read the whole directory.** Budgets: 
 | [tokens-and-theming](notes/tokens-and-theming.md) | Tailwind v4 with no config, the semantic token layer, light/dark via `<html>`, and the theming regressions this project keeps having (`fg-ghost`) |
 | [primitives](notes/primitives.md) | The shared primitives — **check before hand-rolling** a field, button, modal, select, card or task row |
 | [component-catalog-1](notes/component-catalog-1.md) · [component-catalog-2](notes/component-catalog-2.md) | The full reusable-component inventory (frontend rule 3 — check it before building anything new) |
-| [pages-and-surfaces-1](notes/pages-and-surfaces-1.md) · [-2](notes/pages-and-surfaces-2.md) · [-3](notes/pages-and-surfaces-3.md) | Per-surface notes: `/tasks`, `/backlog`, feature grouping, the dashboard, usage, the activity badge, toasts, the command palette, the update banner, the diff viewer, syntax highlighting, `loading.tsx` |
+| [pages-and-surfaces-1](notes/pages-and-surfaces-1.md) · [-2](notes/pages-and-surfaces-2.md) · [-3](notes/pages-and-surfaces-3.md) | Per-surface notes: `/tasks`, `/backlog`, feature grouping and the active/closed feature filter, the dashboard, usage, the activity badge, toasts, the command palette, the update banner, the diff viewer, syntax highlighting, `loading.tsx` |
 | [verification](notes/verification.md) | How to actually look at a page: throwaway DBs, CDP, the headless-Chrome flags this app needs |
 | [environment](notes/environment.md) | Build/run traps — the container, `pnpm build` in OrbStack, no native OS dialogs, new route dirs, `apple-icon.png` poison, icons, React lint |
 

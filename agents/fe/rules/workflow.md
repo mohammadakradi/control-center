@@ -43,9 +43,31 @@ Understand the request before planning anything.
 - Identify the affected views, the breakpoints involved, dark-mode implications, and any open
   design questions.
 
-## Phase 2 — Plan & decompose  🚦 GATE 1 (proposal)
-**Every request gets a plan — no matter how small.** Break the work into a **checklist of
-small, ordered steps**, each independently verifiable. Then present a short proposal:
+## Phase 2 — Plan & decompose  🚦 GATE 1 (proposal — scaled to the change)
+**Every request gets a plan. Not every plan needs a gate.** Decide from what Phase 1 actually
+found, not from how the request was worded — the same way Phase 4 decides from the diff.
+
+**Skip the gate and build directly** when *all* of these hold:
+- one logical change, expected to touch **≤2 files and ~50 lines**;
+- it reuses existing components and tokens only — no new component, no new token, no value
+  outside the current palette, no shared base component to extract;
+- it is not a sensitive area (auth/session UI, input handling, anything rendering
+  user-supplied content), no dependency add/bump;
+- exactly one sensible approach — nothing to choose between and nothing to ask.
+
+Then say, in one line, *"Small, self-contained change — building directly; the report gate
+still applies,"* give the one-line goal, and go straight to Phase 3 with a **single checklist
+item**. Do not manufacture a six-step checklist for a ten-line change: Phase 3 verifies every
+item separately, so an over-decomposed plan multiplies the run for no extra safety. **GATE 2
+(report) still applies, always** — nothing reaches a commit unreviewed.
+
+**Gate normally** in every other case, and *always* when a new component or token is involved,
+when more than one approach is defensible, when you need an answer, or when the user asked for
+a plan. A new token or component is a design decision, and design decisions get approved —
+whatever the line count. If you are unsure which side you are on, gate.
+
+When you do gate, break the work into a **checklist of small, ordered steps**, each
+independently verifiable, and present a short proposal:
 
 - **Goal** in one line (what the user will see change).
 - **Checklist** — the decomposed steps, each a single logical change (incl. the test/visual

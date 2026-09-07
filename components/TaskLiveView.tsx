@@ -17,8 +17,10 @@ import {
   X,
 } from "lucide-react";
 import { ACTIVE_STATUSES, STATUS_LABEL, fixTaskReasons } from "@/lib/ui";
+import type { FixTarget } from "@/lib/ui";
 import { materializeFiles } from "@/lib/attachments";
 import { Button } from "@/components/ui/button";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import { AttachmentPicker, FileDropZone } from "@/components/AttachmentPicker";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Markdown } from "@/components/Markdown";
@@ -261,7 +263,7 @@ export function TaskLiveView({
   initialEvents = [],
   request,
   projectId,
-  agentId,
+  fixTarget = null,
   parallelOffer = false,
 }: {
   taskId: string;
@@ -271,7 +273,10 @@ export function TaskLiveView({
   /** The original request (text + attachments), pinned to the top of the transcript. */
   request?: { text: string; attachments: Attachment[] };
   projectId: string;
-  agentId: string;
+  /** Which agent and command a fix task raised from a report should run, resolved server-side
+   *  from the agents' real command lists. `null` when nothing installed can take it — the
+   *  callout then explains the follow-up without offering an action. */
+  fixTarget?: FixTarget | null;
   /** Whether a spec opened from this transcript may be dispatched into its own worktree
    *  instead of queueing — this project's checkout is busy and it's a plain git repo. Only
    *  used by the file modal below; computed server-side by `parallelOffer`. */
@@ -528,25 +533,61 @@ export function TaskLiveView({
     setReconnectKey((k) => k + 1); // reopen SSE from the last event id
   }
 
-  const [converting, setConverting] = useState(false);
-  // Spin up a new `/swe:task` that works through the findings in a report.
+  // Which report's create is in flight, and which report's create failed — both keyed by the
+  // report's own text, not by one flag for the whole transcript. A continued task ends several
+  // turns with a report, so more than one card can carry this offer, and a shared pair span
+  // every button at once and printed one card's failure under all the others — which
+  // `role="alert"` then announced repeatedly, about the wrong report. Keyed by text rather than
+  // by the bubble's index because `visible` is filtered: toggling activity renumbers the cards.
+  const [converting, setConverting] = useState<string | null>(null);
+  const [convertError, setConvertError] = useState<{
+    report: string;
+    message: string;
+  } | null>(null);
+  // Spin up the run that works through the findings in a report — whichever agent and command
+  // `fixTarget` resolved to, never a literal (`/pm:task` is not a command pm has).
   async function createFixTask(reportText: string) {
-    setConverting(true);
+    if (!fixTarget) return;
+    setConverting(reportText);
+    setConvertError(null);
     const requestText =
       "Address the findings from the following report and implement the fixes, " +
       "working through them by priority (highest severity first):\n\n" +
       reportText;
-    const res = await fetch("/api/tasks", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId, agentId, command: "task", requestText }),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (res.ok && body.id) {
-      router.push(`/tasks/${body.id}`);
-    } else {
-      setConverting(false);
+    let res: Response | null;
+    try {
+      res = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          projectId,
+          agentId: fixTarget.agentId,
+          command: fixTarget.command,
+          requestText,
+        }),
+      });
+    } catch {
+      res = null;
     }
+    const body = res
+      ? ((await res.json().catch(() => ({}))) as { id?: string; error?: string })
+      : {};
+    if (res?.ok && body.id) {
+      router.push(`/tasks/${body.id}`);
+      return;
+    }
+    // A refused create used to just reset the spinner, which reads as a button that doesn't
+    // work. The dispatch has real reasons to say no — no Anthropic token, a deregistered
+    // project, a command the agent doesn't have — and every one of them is actionable.
+    setConverting(null);
+    setConvertError({
+      report: reportText,
+      message:
+        body.error ??
+        (res
+          ? `Couldn't create the fix task (HTTP ${res.status}).`
+          : "Couldn't reach the server."),
+    });
   }
 
   return (
@@ -620,7 +661,9 @@ export function TaskLiveView({
                 key={i}
                 bubble={b}
                 onConvert={createFixTask}
+                fixTarget={fixTarget}
                 converting={converting}
+                convertError={convertError}
                 onFileClick={setScenarioPath}
               />
             ),
@@ -787,12 +830,18 @@ function GateCard({
 function BubbleView({
   bubble,
   onConvert,
+  fixTarget,
   converting,
+  convertError,
   onFileClick,
 }: {
   bubble: Bubble;
   onConvert?: (text: string) => void;
-  converting?: boolean;
+  fixTarget?: FixTarget | null;
+  /** The report text whose create is in flight — not a boolean, so only that card spins. */
+  converting?: string | null;
+  /** The failure, tagged with the report it belongs to, for the same reason. */
+  convertError?: { report: string; message: string } | null;
   onFileClick?: (path: string) => void;
 }) {
   if (bubble.kind === "request")
@@ -834,8 +883,15 @@ function BubbleView({
   if (bubble.kind === "report") {
     // One list drives both the callout and the button, so the offer can never appear without
     // its reason (see `fixTaskReasons`). A bare "Create fix task" beside a report that never
-    // says what needs fixing is an unanswerable question.
-    const reasons = onConvert ? fixTaskReasons(bubble.text) : [];
+    // says what needs fixing is an unanswerable question. The reverse is allowed: with no
+    // agent able to take the work, the reasons still stand on their own.
+    const reasons = fixTaskReasons(bubble.text);
+    const canConvert = Boolean(onConvert && fixTarget);
+    // This card's own share of the transcript-wide state, so a create started on one report
+    // doesn't spin every other report's button or print its failure under them.
+    const isConverting = converting === bubble.text;
+    const error =
+      convertError?.report === bubble.text ? convertError.message : null;
     return (
       <div className="rounded-lg border border-line-strong bg-surface-2 p-4">
         <div className="mb-2 flex items-center gap-2">
@@ -855,8 +911,11 @@ function BubbleView({
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium">This report flags follow-up work</p>
                 <p className="mt-0.5 text-xs">
-                  A fix task starts a fresh run to deal with it. Nothing here is required —
-                  if you&apos;ve read these and they&apos;re fine, ignore this.
+                  {canConvert
+                    ? // Name the run: a pm report's follow-up goes to an agent that
+                      // implements, and a redirect the user can't see is a surprise.
+                      `A fix task starts a fresh ${fixTarget?.label} run to deal with it. Nothing here is required — if you've read these and they're fine, ignore this.`
+                    : "Nothing here is required — it's what the report left undone, in its own words."}
                 </p>
                 <ul className="mt-2 space-y-1 text-xs">
                   {reasons.map((r) => (
@@ -875,17 +934,25 @@ function BubbleView({
                     </li>
                   ))}
                 </ul>
-                <Button
-                  size="sm"
-                  variant="accent"
-                  className="mt-3"
-                  onClick={() => onConvert?.(bubble.text)}
-                  loading={converting}
-                  icon={<Wrench className="size-3.5" />}
-                  title="Create a new task that works through the follow-ups listed above"
-                >
-                  {converting ? "Creating…" : "Create fix task"}
-                </Button>
+                {canConvert && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="accent"
+                      className="mt-3"
+                      onClick={() => onConvert?.(bubble.text)}
+                      loading={isConverting}
+                      icon={<Wrench className="size-3.5" />}
+                      title={`Start a ${fixTarget?.label} run that works through the follow-ups listed above`}
+                    >
+                      {isConverting ? "Creating…" : "Create fix task"}
+                    </Button>
+                    {/* `text-danger` on this warn wash rather than repainting the callout —
+                        the failure is a line inside the offer, not a change of what the offer
+                        is. Recorded as a checked cross-tone pair in `.fe/design-system.md`. */}
+                    <ErrorAlert message={error} className="mt-2 text-xs" />
+                  </>
+                )}
               </div>
             </div>
           </div>

@@ -289,3 +289,187 @@ are the two below, and both are now answerable:
 If the goal really is *lowest tokens per outcome*, the remaining lever is not technical: run
 fewer, larger tasks (each task pays the workflow's fixed cost once), keep `effort` low on
 routine work, and let Auto pick the model rather than reaching for the expensive tier.
+
+## The after-figure (measured 2026-09-04)
+
+The note above said the real number arrives after ~20 tasks. Twenty-eight ran between
+2026-08-28 and 2026-09-04 across Award Maven and Control Center. Measured, not projected:
+
+| | Aug 21–27 | Aug 28–Sep 4 |
+|---|---|---|
+| completed `/task` runs | 17 | 20 |
+| tokens | 1,198M | **493M** |
+| cost | $626 | **$287** |
+| per task | 70.4M / $36.81 | **24.7M / $14.36** |
+
+**−65% tokens and −61% cost per task**, comfortably past the projected 30–50%. The weekly
+per-task series is monotonic: 98M (W31) → 43M → 48M → 27M → **24.8M** (W35).
+
+Decomposing tokens into *turns × context-per-turn* says which lever did it:
+
+| | turns/task | Ktok/turn | Mtok |
+|---|---|---|---|
+| W33 (pre-effort — everything ran at the SDK's xhigh default) | 564 | 85 | 48.1 |
+| W35 at `effort=high` (19 runs) | 452 | ~45 | **20.2** |
+| W35 at `effort=xhigh` (3 runs) | 834 | ~51 | 42.6 |
+
+**Effort routing is the whole win** — it cut turns ~20% *and* context-per-turn ~46%, and the
+"low confidence" row in the projection table above was the one that paid. It also says where
+the rest is: an `xhigh` run still costs what a run cost in August. Three of twenty-two runs at
+xhigh consumed 26% of the week's tokens.
+
+95.3% of tokens are now cache reads — already the 10×-discounted path, so there is no pricing
+lever left at all. The bill is `turns × context` and nothing else.
+
+## The graph nobody built (found 2026-09-04, fixed same day)
+
+The other half of the thesis — *query the code graph instead of grepping* — was not happening.
+Across the week's 28 tasks:
+
+| Tool | Calls |
+|---|---|
+| Bash | 4,079 — of which **1,951 grep/find** and **2,576 cat/sed/head** |
+| Read | 1,516 |
+| Edit | 1,098 |
+| **graphify** | **44 (1.1% of Bash)** |
+| Grep/Glob tools | 0 (everything routes through Bash) |
+
+Flat at ~1% for four straight weeks. The cause was not that agents ignored the rule — it was
+that **two of five registered projects had no graph to query**: Lumii was onboarded before the
+step existed, and noticine was onboarded *after* it and skipped it anyway. `ensure-graphify.sh`
+is fail-soft by design (exit 0 on every failure), so neither miss left a trace.
+
+Two fixes, both about removing the chance to skip:
+
+1. **The platform builds the graph, not the prose.** `runner/code-graph.ts` runs
+   `ensure-graphify.sh` before an `onboard` session starts — every member repo for a workspace,
+   fail-soft, ceiling at `CC_CODE_GRAPH_TIMEOUT_MS` (15 min default). A skill step a model may
+   skip became a launch step it cannot. The skills' own step stays for CLI-driven onboarding
+   and now checks `graphify-out/graph.json` first so it doesn't refresh a large repo twice.
+2. **The version pin was never enforced.** `ensure-tool.sh`'s fast no-op treats "the binary is
+   on PATH" as "done", so this machine sat on graphify **0.8.36 under a 0.9.29 pin for a
+   month** and every pin bump was silently a no-op. `--force` skips the no-op;
+   `ensure-graphify.sh` compares versions and uses it.
+
+**Still open:** a project onboarded *before* this lands has no graph until someone re-runs
+onboard — the platform never touches an already-onboarded project's files. And a graph that
+exists is still only advisory at query time; the 1% figure is what to re-measure to find out
+whether building it was enough.
+
+## Effort: capped, then uncapped again (2026-09-05, reverted 2026-09-06)
+
+Recorded because the reasoning was wrong in an instructive way, and the table above is what
+misled it.
+
+`MAX_EFFORT` briefly capped every run at `high`, clamping explicit picks as well as `auto`.
+The evidence looked strong: three `xhigh` runs took 26% of a week's tokens, at 834 turns and
+42.6M each against 452 and 20.2M for `high`.
+
+**The inference was backwards.** The user runs the Claude Code CLI at `xhigh` and it costs a
+*fraction* of a platform task on the same codebase. If xhigh were the problem, that could not
+be true. What the table actually shows is selection bias: `auto` routes the hardest requests to
+`xhigh` (and users pick it for the ones they already know are hard), so xhigh runs are long
+because the work is long — not long because they reason harder. Capping effort would have made
+those runs dumber at roughly the same turn count.
+
+Reverted in full. The tier table stands as it was: very-complex → `xhigh`, complex → `high`,
+simple → `medium`, mechanical commands → `low`.
+
+**The lesson for the next measurement:** effort correlates with cost, and does not cause it.
+The causal variable is **turns**, and the CLI comparison is the control that proves it — same
+model, same effort, same repo, ~10× fewer turns, because a human prunes the path that the
+workflow otherwise walks in full. Every remaining saving has to come out of turn count.
+
+### Why updating didn't help anyone but us
+
+`control-center update` swaps `~/.control-center/app/` and runs migrations. `agents/` ships
+inside that tarball, so **agent rules do propagate** — the conditional test scenarios and the
+"stop re-reading CLAUDE.md" fix reached every 0.11.1 install. What does not propagate is
+anything in a *project* folder, because the updater has no business writing there:
+
+- their `CLAUDE.md`, still whatever size the old rules grew it to
+- their `.swe/notes/`, `.fe/design-system.md`, `.pm/notes.md`, and existing test-scenario files
+- a code graph on any already-onboarded project
+
+That is not a rounding error. The single largest saving measured here was `CLAUDE.md`
+147 KB → 13 KB, worth ~25% of this project's spend — and an updating user got exactly none of
+it. Better agent behaviour, same documents, same bill.
+
+There is also a silent path where even the rules don't arrive: `discoverAgents()` prefers a
+CLI-installed plugin over the bundled copy, so anyone who installed swe/fe/pm through the
+Claude Code CLI can update the app forever and keep running last month's workflow.
+
+### What was done about it
+
+The split is between what is mechanical and what is a judgment call, and it is not arbitrary:
+
+| | Mechanical | Judgment |
+|---|---|---|
+| Missing code graph | AST extraction, no model, idempotent, gitignored output | — |
+| Oversize `CLAUDE.md` | — | deciding what survives is the onboard skill's job |
+
+So `runner/post-update.ts` builds the graphs automatically on the first boot after a version
+change (stamped in `data/last-version`, scheduled *after* the server is listening, fail-soft,
+`onlyMissing` so it never spends minutes refreshing a graph that already exists), and
+`lib/project-health.ts` + `components/ProjectHealthNudge.tsx` measure the documents against the
+budgets the rules already state and put the number in front of the user with a Re-onboard link.
+A script that truncated a `CLAUDE.md` would destroy the thing the file exists to carry.
+
+Plugin versions were bumped (swe 0.9.0, fe 0.5.0, pm 0.6.0) — the rules changed twice in
+August without one, and `tasks.agent_version` exists precisely so history can tell which
+version did the work. Bump it when the rules change, not only when the commands do.
+
+**Known limit:** the graph backfill is a courtesy, not a guarantee. The stamp is written
+*before* the pass runs, so a crash mid-build doesn't make every future boot retry it — the user
+re-onboards instead.
+
+## Going after turns instead (2026-09-06)
+
+Given that turns are the causal variable, two changes that remove turns rather than shrink them.
+
+### The plan gate is now sized to the change
+
+Phase 2 said *"Every request gets a plan — no matter how small"* and Phase 3 verifies every
+checklist item separately. Together those turn a ten-line fix into six gated build-verify
+cycles. Phase 4 had already learned this lesson — it scales the review lenses to the actual
+diff — so Phase 2 now uses the same shape: a change touching ≤2 files and ~50 lines, in none
+of the sensitive areas, with one obvious approach, gets a one-line goal, a single checklist
+item and **no gate 1**. Everything else gates as before, and **gate 2 (report) is never
+skipped** — nothing reaches a commit unreviewed.
+
+Ambiguity resolves toward gating: a needless gate costs one round trip, a needless rewrite
+costs the run. For fe there is an extra always-gate condition — a new component or token is a
+design decision whatever its line count.
+
+No platform change was needed. The proposal gate was always optional in the runner's state
+machine (`awaiting_proposal` is one status among several); only the report gate is load-bearing.
+
+### Grep sweeps are held until the graph has been asked
+
+`agents/*/hooks/guard-search.mjs`, a `PreToolUse(Bash)` hook next to the existing
+`guard-commit.mjs`. Rule 17 had told agents to query the graph since the graph existed, and the
+measured result was 44 graphify calls against 1,951 grep/find calls — 1.1%, flat for four
+weeks. Prose lost.
+
+The design constraint that shaped it: **it must be impossible to trap the agent.** A hard block
+gives blocked → graphify → no answer → same grep → blocked → forever. So it holds each
+*distinct* search once per session (keyed on session id + a hash of the command, in a temp
+file); re-run the same command and it passes. Worst case is one wasted turn per question, and
+the agent always has a way forward.
+
+Scope is deliberately narrow, since a false positive makes the agent fight its own tools:
+recursive `grep`, bare `rg`, `find -name` only, only as the *leading* stage of a pipeline (so
+`git log | grep fix` is a filter, not a sweep), and only in a repo that has
+`graphify-out/graph.json`. Fail-open on everything else. 21 cases in
+`hooks/test-guard-search.mjs`.
+
+Verified plugin hooks actually reach a platform run before building on the assumption: the SDK
+types say a local plugin contributes "commands, agents, skills, and hooks"
+(`SdkPluginConfig`), and the runner loads each agent that way. Worth checking, because the
+recorded hook events in the database are all `SessionStart` — those come from the user's own
+`~/.claude` settings, and their presence says nothing about plugin hooks either way.
+
+**What to measure next.** Re-run the tool histogram after ~20 tasks. The number that matters is
+graphify's share of Bash calls (1.1% today) and, downstream of it, turns per task (452 at
+`high`). If turns don't fall, the sweeps were not what was driving them and the next candidate
+is Phase 4's subagent review, still 23% of spend.

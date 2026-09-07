@@ -24,6 +24,7 @@ import { Chip } from "@/components/ui-cards";
 import {
   ACTIVE_STATUSES,
   MODEL_DISPLAY,
+  resolveFixTarget,
   taskDisplayTitle,
   timeAgo,
 } from "@/lib/ui";
@@ -45,7 +46,11 @@ export default async function TaskPage({
     .from(projects)
     .where(eq(projects.id, task.projectId))
     .get();
-  const agent = db.select().from(agents).where(eq(agents.id, task.agentId)).get();
+  // The whole agent list, not just this task's: the fix-task offer has to know which commands
+  // each installed agent actually has (see `resolveFixTarget`). Three rows on a normal install,
+  // so it costs less than the second query it replaces.
+  const installedAgents = db.select().from(agents).all();
+  const agent = installedAgents.find((a) => a.id === task.agentId);
 
   // Server-render the persisted transcript so a completed task always shows its
   // proposal/report, even if the live runner daemon is unreachable.
@@ -148,7 +153,12 @@ export default async function TaskPage({
           })),
         }}
         projectId={task.projectId}
-        agentId={task.agentId}
+        // Where "Create fix task" will dispatch, resolved from the agents' real command lists
+        // rather than from a literal — `/pm:task` doesn't exist, and swe/fe both have a
+        // purpose-built `fix`. Narrowed to the three fields the button needs, so the agent
+        // rows (source paths, descriptions) don't ride into the client payload. `null` when
+        // nothing installed can take it, and the callout then renders without an action.
+        fixTarget={resolveFixTarget(installedAgents, task.agentId)}
         // Whether a spec opened from this transcript can be dispatched into its own worktree
         // rather than queueing. Same helper as the project composer and the backlog, so all
         // three offer the choice on exactly the terms the dispatch will accept it. A project

@@ -25,6 +25,7 @@ set -uo pipefail
 # Pinned deliberately: `graphifyy` (double-y) is a plausible typosquat target, so we don't
 # silently track "latest". Bump this line when you want a newer graphify.
 readonly GRAPHIFY_PKG="graphifyy==0.9.29"
+readonly GRAPHIFY_VERSION="${GRAPHIFY_PKG##*==}"
 
 PROJECT_DIR="${1:-.}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,9 +34,25 @@ export PATH="$PATH:$HOME/.local/bin"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# 1. Ensure the CLI is installed (delegated — handles the no-package-manager case).
+# `graphify --version` prints "graphify X.Y.Z"; take the last field of the first line. Empty
+# if it isn't installed or the flag isn't understood, which reads as "not the pinned version".
+graphify_version() { graphify --version 2>/dev/null | awk 'NR==1 {print $NF}'; }
+
+# 1. Ensure the CLI is installed, AT THE PINNED VERSION (delegated — ensure-tool.sh handles
+#    the no-package-manager case).
+#
+#    Checking `have graphify` alone was not enough, and the gap was silent: ensure-tool.sh's
+#    fast no-op treats "the binary is on PATH" as "done", so a machine that picked up graphify
+#    once keeps that version forever and every later pin bump is a no-op. This install sat on
+#    0.8.36 under a 0.9.29 pin for a month, never once reinstalling. A version mismatch now
+#    forces the install; if the upgrade fails we keep what's there rather than losing the tool.
 if ! have graphify; then
   bash "$SCRIPT_DIR/ensure-tool.sh" graphify --pypi "$GRAPHIFY_PKG" >/dev/null || true
+elif [ "$(graphify_version)" != "$GRAPHIFY_VERSION" ]; then
+  echo "[graphify] found $(graphify_version), pin is $GRAPHIFY_VERSION — upgrading…"
+  bash "$SCRIPT_DIR/ensure-tool.sh" graphify --pypi "$GRAPHIFY_PKG" --force >/dev/null || true
+  [ "$(graphify_version)" = "$GRAPHIFY_VERSION" ] ||
+    echo "[graphify] upgrade didn't take — continuing on $(graphify_version)."
 fi
 
 if ! have graphify; then

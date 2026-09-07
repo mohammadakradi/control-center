@@ -19,7 +19,13 @@ import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Chip, EmptyState } from "@/components/ui-cards";
 import { CardSection } from "@/components/ui-cards";
-import { featureRowActions, FILE_OWNED_FEATURE_NOTE, UNGROUPED_KEY } from "@/lib/ui";
+import {
+  featureRowActions,
+  showsFeatureFilter,
+  FILE_OWNED_FEATURE_NOTE,
+  UNGROUPED_KEY,
+} from "@/lib/ui";
+import type { FeatureFilter } from "@/lib/ui";
 import type { FeatureStatus } from "@/lib/db/schema";
 
 /** Mirrors `MAX_FEATURE_NAME_LENGTH` in `lib/features.ts`. The server still enforces it; this
@@ -119,6 +125,7 @@ export function FeatureManager({
   taskPanels,
   openByDefault,
   totalTasks,
+  statusFilter,
   className = "",
 }: {
   projectId: string;
@@ -149,6 +156,25 @@ export function FeatureManager({
   openByDefault: Record<string, boolean>;
   /** The card header's total. Same owner scoping as `taskCounts`. */
   totalTasks: number;
+  /**
+   * The Active/Closed view this card is showing, or `undefined` for a host that doesn't filter.
+   *
+   * Bundled into one prop rather than four loose ones, so "not filtering" stays a single absent
+   * value and such a caller gets exactly the behaviour this card had before the filter existed.
+   *
+   * `features` holds only the rows for the current view, while the two counts describe the whole
+   * project — which is what lets the card tell "this project has no features" apart from "this
+   * *view* has none of them". That distinction is otherwise unreachable and does come up: reopen
+   * a project's last closed feature while looking at the closed view and it is legitimately
+   * empty, which must not render as "No features or tasks yet".
+   */
+  statusFilter?: {
+    /** `FeatureStatusNav`, rendered by the server host. Renders null when nothing is closed. */
+    nav: ReactNode;
+    filter: FeatureFilter;
+    activeCount: number;
+    closedCount: number;
+  };
   className?: string;
 }) {
   const router = useRouter();
@@ -258,30 +284,70 @@ export function FeatureManager({
     router.refresh();
   }
 
+  // The nav only renders once something has been closed out, and until then the header must keep
+  // saying how many features there are — so the feature count moves into the pills exactly when
+  // the pills appear, rather than being said twice side by side.
+  const filtering =
+    statusFilter !== undefined &&
+    showsFeatureFilter(statusFilter.filter, statusFilter.closedCount);
+  const viewingClosed = statusFilter?.filter === "closed";
+  const totalFeatures = statusFilter
+    ? statusFilter.activeCount + statusFilter.closedCount
+    : features.length;
+  const taskCount = `${totalTasks} task${totalTasks === 1 ? "" : "s"}`;
+
   return (
     <CardSection
       title="Features"
       className={className}
       right={
-        <div className="flex items-center gap-3">
+        // `flex-wrap` and `justify-end`: with the pills in here this row is three controls
+        // wide, which does not fit beside the heading at 390px.
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
+          {statusFilter?.nav}
           <span className="text-xs text-fg-faint">
-            {`${features.length} feature${features.length === 1 ? "" : "s"} · ${totalTasks} task${totalTasks === 1 ? "" : "s"}`}
+            {filtering
+              ? taskCount
+              : `${features.length} feature${features.length === 1 ? "" : "s"} · ${taskCount}`}
           </span>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => {
-              setAdding(true);
-              setAddError(null);
-            }}
-            icon={<Plus className="size-3.5" aria-hidden="true" />}
-          >
-            Add feature
-          </Button>
+          {/* Nothing to add while looking at the closed features: a new one is active, so it
+              would file itself into the view the reader isn't on and the click would look like
+              it did nothing. */}
+          {!viewingClosed && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setAdding(true);
+                setAddError(null);
+              }}
+              icon={<Plus className="size-3.5" aria-hidden="true" />}
+            >
+              Add feature
+            </Button>
+          )}
         </div>
       }
     >
-      {features.length === 0 ? (
+      {features.length === 0 && totalFeatures > 0 ? (
+        // The project *has* features — this view just holds none of them. Saying so beats both
+        // of the alternatives: "No features or tasks yet" would be false, and rendering the
+        // ungrouped runs bare would look like the features had been deleted. A sentence rather
+        // than an `EmptyState` because the runs below are real content, and an empty-state
+        // illustration sitting on top of a task list reads as an error.
+        <>
+          <p className="text-sm text-fg-faint">
+            {viewingClosed
+              ? "Nothing has been closed out in this project — every feature is still active."
+              : `Every feature here has been closed out. Pick “Closed” above to see ${
+                  statusFilter && statusFilter.closedCount === 1 ? "it" : "them"
+                }, or add a new one.`}
+          </p>
+          {taskPanels[UNGROUPED_KEY] && (
+            <div className="mt-4">{taskPanels[UNGROUPED_KEY]}</div>
+          )}
+        </>
+      ) : features.length === 0 ? (
         // Nothing to group by, so nothing is grouped: the runs render as the flat list they
         // always were. A single "No feature" heading over everything would add a level of
         // hierarchy that conveys nothing — the same reason `groupByFeature` answers null.

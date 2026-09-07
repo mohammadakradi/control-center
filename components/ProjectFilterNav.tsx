@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { FilterPill } from "@/components/ui/filter-pill";
 
 export type ProjectFilterOption = {
   id: string;
@@ -13,7 +13,9 @@ export type ProjectFilterOption = {
  * Links rather than buttons, for the same reasons as `SpendRangeNav`: the selection
  * lives in the URL, so the page stays a server component (no fetch, no loading flash, no
  * client JS), the filtered view is bookmarkable and reachable with the back button, and
- * `aria-current="page"` is the honest ARIA for something that navigates.
+ * `aria-current="page"` is the honest ARIA for something that navigates. The pill itself is
+ * `FilterPill` (`components/ui/filter-pill.tsx`), shared with `FeatureStatusNav` — it lived
+ * here until a second nav wanted the same treatment.
  *
  * Wrapping pills rather than that component's fixed segmented control, because the number of
  * projects is unbounded — a segmented bar would either overflow the viewport or squeeze names
@@ -74,45 +76,5 @@ export function ProjectFilterNav({
         </FilterPill>
       ))}
     </nav>
-  );
-}
-
-function FilterPill({
-  href,
-  active,
-  count,
-  unit,
-  children,
-}: {
-  href: string;
-  active: boolean;
-  count?: number;
-  unit: string;
-  children: string;
-}) {
-  return (
-    <Link
-      href={href}
-      aria-current={active ? "page" : undefined}
-      className={`inline-flex max-w-full items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-        active
-          ? "border-line-strong bg-surface-3 text-fg-strong"
-          : "border-line bg-surface-2 text-fg-faint hover:border-line-strong hover:text-fg-muted"
-      }`}
-    >
-      {/* A long project name truncates rather than pushing the pill past the viewport. */}
-      <span className="min-w-0 truncate">{children}</span>
-      {/* The bare number is ambiguous read aloud ("Platform 12"), so it's hidden and the
-          sr-only span says it in words. `fg-faint`, not `fg-ghost` — this is real text a
-          sighted user reads, and `fg-ghost` is decorative-only by contract (sub-AA). */}
-      {count !== undefined && (
-        <>
-          <span aria-hidden="true" className="shrink-0 text-fg-faint">
-            {count}
-          </span>
-          <span className="sr-only">{`, ${count} ${unit}${count === 1 ? "" : "s"}`}</span>
-        </>
-      )}
-    </Link>
   );
 }
