@@ -245,3 +245,48 @@ one it started. If something was already listening it attaches instead, so a ser
 from a terminal survives quitting the window. `applicationWillTerminate` runs `control-center
 stop` **synchronously**: macOS gives a terminating app a short grace period, and a detached stop
 would lose that race and leave the server running.
+
+## The in-app update that couldn't build (2026-09-07)
+
+Updating 0.11.1 → 0.12.0 from the app's own Update button failed at the build step with
+`Cannot find module '@tailwindcss/postcss'`, rolled back, and left the install on 0.11.1. The
+same update run as `control-center update` in a terminal succeeded. Both facts are the clue.
+
+The chain is entirely environmental, which is why every gate passed and a user found it first:
+
+1. `app/api/updates/apply/route.ts` spawns `control-center update` with `env: {...process.env}`.
+2. That env belongs to the Next.js server, which `start_process` launches with
+   `NODE_ENV=production` — correct for `next start`.
+3. `pnpm install --frozen-lockfile` inherits it, prints *`devDependencies: skipped because
+   NODE_ENV is set to production`*, and **exits 0**.
+4. `next build`, two steps later, cannot resolve `@tailwindcss/postcss` — a devDependency.
+
+The logs distinguish the two paths precisely: the failing run installed **300 packages** and
+carries the `=== control-center update started ===` header the API route writes; the successful
+terminal run installed **595** and has no header.
+
+**This app has no meaningful "production install".** `tsx`, `typescript`, `tailwindcss` and
+`@tailwindcss/postcss` are all devDependencies, and `control-center` starts the runner with
+`./node_modules/.bin/tsx runner/server.ts` and builds with next. A prod-only tree cannot build
+*and* cannot run. Nothing should ever install this package without devDependencies.
+
+### Why the fix is in two places
+
+`--prod=false` on the install command in `control-center.sh` and `install.sh` is the explicit
+fix at the call site — but **the script that performs an update is the OLD installed one**, so
+on its own it would only take effect from the *next* update. Every install already out there
+would stay broken, with no in-app route to the version that fixes it.
+
+So the release also ships a root `.npmrc` carrying `production=false`. pnpm reads `.npmrc` from
+the project directory it is installing — which is the freshly unpacked *new* app — so the fix
+is applied by whatever updater unpacks it, however old. Verified end to end: old command, no
+flag, `NODE_ENV=production`, tarball with `.npmrc` → devDependencies installed and the build
+passes.
+
+**Only `production=false` works.** `prod=false`, `dev=true` and `omit=` were each tested against
+pnpm 9.12.1 with `NODE_ENV=production` and are all still skipped. `.npmrc` is on `pack.sh`'s
+**allowlist**, not an exclude list, so it had to be added there explicitly or it would silently
+never ship — a spec asserts both halves.
+
+npm prints `npm warn config production Use \`--omit=dev\` instead.` on every `npx` call now.
+Ignore it: `omit=dev` means the opposite and would restore the bug.

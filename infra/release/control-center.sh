@@ -561,7 +561,13 @@ apply_update() {
   info "Installing dependencies (a minute or two)…"
   # `npx pnpm` rather than requiring a global pnpm: the lockfile is pnpm's, and a second
   # prerequisite is exactly what this install path is trying to avoid.
-  (cd "$tmp/app" && npx --yes "pnpm@${CC_PNPM_VERSION:-9.12.1}" install --frozen-lockfile) ||
+  # `--prod=false` is load-bearing, not belt-and-braces. An in-app update is spawned by the
+  # running Next.js server (app/api/updates/apply/route.ts passes `...process.env`), and that
+  # server is started with NODE_ENV=production — so pnpm inherits it and silently skips
+  # devDependencies. The build two steps down then dies on `Cannot find module
+  # '@tailwindcss/postcss'`, which is a devDependency, and the whole update rolls back. This
+  # install must produce a tree that can BUILD, not merely one that can run.
+  (cd "$tmp/app" && npx --yes "pnpm@${CC_PNPM_VERSION:-9.12.1}" install --frozen-lockfile --prod=false) ||
     die "dependency install failed — the existing install is untouched."
 
   # The app comes down *before* the build, not after it.

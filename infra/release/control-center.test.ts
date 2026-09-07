@@ -497,3 +497,61 @@ test("the build-failure restart cannot trip `set -u` on the start path", () => {
     "no undefaulted `$was_running` comparison anywhere",
   );
 });
+
+test("both install paths force devDependencies, whatever NODE_ENV they inherit", () => {
+  // Reported 2026-09-07: updating 0.11.1 -> 0.12.0 from the in-app button failed with
+  // `Cannot find module '@tailwindcss/postcss'` and rolled back. The chain is entirely
+  // environmental, which is why nothing caught it before a user hit it:
+  //   app/api/updates/apply/route.ts spawns `control-center update` with `...process.env`
+  //   -> that env is the Next server's, which cmd_start sets NODE_ENV=production on
+  //   -> pnpm sees NODE_ENV=production and skips devDependencies, saying so and exiting 0
+  //   -> `next build`, two steps later, cannot resolve @tailwindcss/postcss (a devDependency).
+  // The installed tree has to be able to BUILD, not merely run: `next build` happens on every
+  // update and on any start with no .next/BUILD_ID. `--prod=false` is pnpm's override and
+  // beats the inherited variable; the same command runs from install.sh, where a user's own
+  // exported NODE_ENV would do the same thing.
+  for (const file of ["control-center.sh", "install.sh"]) {
+    const body = readFileSync(join(dirname(SCRIPT), file), "utf8");
+    const installs = body
+      .split("\n")
+      .filter((l) => /pnpm@\$\{CC_PNPM_VERSION/.test(l) && /\binstall\b/.test(l));
+
+    assert.equal(installs.length, 1, `${file}: expected exactly one pnpm install line`);
+    assert.match(
+      installs[0],
+      /--prod=false/,
+      `${file}: the install must force devDependencies — without it an in-app update ` +
+        `inherits NODE_ENV=production and the build dies on @tailwindcss/postcss`,
+    );
+  }
+});
+
+test("the tarball carries an .npmrc that forces devDependencies", () => {
+  // The half of the fix that reaches installs already out there. `--prod=false` on the install
+  // command only helps from the *next* update onward, because the script performing an update
+  // is the OLD installed one — a user on a broken version would never receive it. pnpm reads
+  // `.npmrc` from the project directory it is installing, which is the freshly unpacked new
+  // app, so shipping it inside the tarball is what makes the fix travel backwards.
+  //
+  // `production=false` and not `prod=false`: only that spelling actually beats NODE_ENV
+  // (verified against pnpm 9.12.1; `prod=false`, `dev=true` and `omit=` all still skipped).
+  const root = join(dirname(SCRIPT), "..", "..");
+  const npmrc = readFileSync(join(root, ".npmrc"), "utf8");
+  assert.match(npmrc, /^production=false$/m, ".npmrc must force devDependencies");
+
+  const pack = readFileSync(join(dirname(SCRIPT), "pack.sh"), "utf8");
+  const paths = pack.slice(pack.indexOf('PATHS="'), pack.indexOf('"', pack.indexOf('PATHS="') + 8));
+  assert.match(
+    paths,
+    /^\.npmrc$/m,
+    "pack.sh ships an allowlist, so .npmrc must be listed or it silently never ships",
+  );
+});
+
+test("the app is still started with NODE_ENV=production — the fix is scoped to installing", () => {
+  // The counterpart to the spec above: `next start` genuinely needs production mode, so the
+  // fix must not have been "stop setting NODE_ENV". Only the dependency install opts out.
+  const body = readFileSync(SCRIPT, "utf8");
+  assert.match(body, /NODE_ENV=production \\\n\s+NEXT_TELEMETRY_DISABLED=1/, "start_process");
+  assert.match(body, /NODE_ENV=production \.\/node_modules\/\.bin\/next build/, "build step");
+});
