@@ -63,6 +63,13 @@ echo "-- contract: idempotent no-op for a tool already present --"
 # `sh` is guaranteed on any POSIX machine, so this exercises the preinstalled fast path.
 run_case "already-installed tool (sh)"        true  sh
 
+# --force skips that fast path, which is how a caller pins a *version* rather than a name:
+# "the binary is on PATH" says nothing about which version is on PATH, and ensure-graphify.sh
+# sat on an outdated graphify for a month because of exactly that gap. Forcing must not cost
+# the tool that's already there, and must stay fail-soft with nothing to install from.
+run_case "--force keeps a preinstalled tool"  true  sh --force
+run_case "--force on an uninstallable tool"   false definitely-not-a-real-tool --force
+
 echo
 echo "-- network cases (skipped if PyPI is unreachable) --"
 if curl -fsS --max-time 10 -o /dev/null https://pypi.org/simple/ 2>/dev/null; then

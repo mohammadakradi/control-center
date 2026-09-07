@@ -48,17 +48,24 @@ If a command is slow or needs credentials you don't have, note that instead of f
 ### 4b. Build the code graph (graphify)
 Set up the project's **code knowledge graph** so future tasks can understand structure and
 relationships by querying a graph instead of brute-force reading/grepping (far fewer tokens).
-Run the idempotent installer/builder:
+**Check first — it may already be built.** When this onboarding was dispatched from the
+Control Center app, the platform ran the builder before your session started (you'll see
+`🕸️ Building the code graph…` at the top of the run), because a graph nobody built is a graph
+nobody can query. Skip the rebuild if it's there:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-graphify.sh" .
+ls graphify-out/graph.json 2>/dev/null || bash "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-graphify.sh" .
 ```
 
-This installs the `graphify` CLI if missing — via `ensure-tool.sh`, which bootstraps `uv` when
-the machine has no `pip`/`pipx`/`uv` at all — then builds `graphify-out/graph.json` (code-only
-AST extraction, no API key needed), refreshes it on re-runs (no LLM), and adds `graphify-out/`
-to `.gitignore`. It is **fail-soft**: if it can't install or build, it prints the reason and you
-simply fall back to normal search. Note in your report whether the graph is available.
+Driven from the CLI instead, there is no platform step and the script is what builds it.
+
+The script installs the `graphify` CLI if missing — via `ensure-tool.sh`, which bootstraps `uv`
+when the machine has no `pip`/`pipx`/`uv` at all — then builds `graphify-out/graph.json`
+(code-only AST extraction, no API key needed) and adds `graphify-out/` to `.gitignore`. Running
+it again refreshes rather than rebuilds, so it is safe to re-run — just slow on a large repo,
+which is why you check first. It is **fail-soft**: if it can't install or build, it prints the
+reason and you simply fall back to normal search. Note in your report whether the graph is
+available.
 
 Afterwards, **query it with a PATH prefix** (`$HOME/.local/bin` isn't on PATH and an `export`
 doesn't survive between Bash calls — see rule 19):

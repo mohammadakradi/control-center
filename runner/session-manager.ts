@@ -21,6 +21,7 @@ import {
   remainingTaskBudgetUsd,
 } from "../lib/config";
 import { classifyTurnEnd, type PauseReason } from "./completion";
+import { ensureCodeGraph } from "./code-graph";
 import { GATE_PROMPT } from "./gate-prompt";
 import {
   makePlatformServer,
@@ -239,12 +240,18 @@ export function makeInputChannel(graceMs: number = SEAL_INPUT_GRACE_MS) {
             graceUsed = true;
             // Interruptible: a message pushed during the grace (the user's answer to a gate
             // that re-opened the run) must not wait out the timer.
+            // NOT unref'd. The grace exists precisely to hold this stream open for a
+            // moment, and an unref'd timer holds nothing: with no other handle keeping the
+            // loop alive, Node winds down and the await never settles ("Promise resolution
+            // is still pending but the event loop has already resolved"). The runner never
+            // hits that — its HTTP server is always listening — but the test suite does,
+            // and it took four specs with it. 15s of liveness, once per close, is the cost
+            // of the feature working at all.
             await new Promise<void>((r) => {
               const timer = setTimeout(() => {
                 wake = null;
                 r();
               }, graceMs);
-              timer.unref?.();
               wake = () => {
                 clearTimeout(timer);
                 r();
@@ -967,6 +974,19 @@ function runTask(
   // Resolve the model (triage for "auto"), start the session, consume the output stream.
   (async () => {
     try {
+      // Onboarding is where a project's code graph gets built, and the platform does it
+      // rather than trusting the skill's prose step: a graph that was never built can't be
+      // queried, and two of this install's five projects had none (runner/code-graph.ts).
+      // Fresh launches only — a continued or resumed onboard already has one, and rebuilding
+      // it would just delay the session. Fail-soft: it can't fail the task.
+      if (!resume && task.command === "onboard") {
+        await ensureCodeGraph({
+          project,
+          agentSourcePath: agent.sourcePath,
+          env,
+          onLog: (message) => record(handle, "log", { message }),
+        });
+      }
       // On resume, task.model is already a concrete label → resolveModel returns it as-is.
       const choice = (task.model as ModelChoice) || "auto";
       const chosen = await resolveModel(

@@ -31,6 +31,7 @@ import { allowedModels } from "@/lib/agent-policy";
 import { ProjectName } from "@/components/ProjectName";
 import { ProjectActions } from "@/components/ProjectActions";
 import { TokenNudge } from "@/components/TokenNudge";
+import { ProjectHealthNudge } from "@/components/ProjectHealthNudge";
 import { CardSection, Chip } from "@/components/ui-cards";
 import { buttonClasses } from "@/components/ui/button";
 import {
@@ -72,6 +73,9 @@ export default async function ProjectDetail({
     version: a.version,
     description: a.description,
     commands: a.commands,
+    // Carried for ProjectHealthNudge: a CLI-installed plugin outranks the bundled copy, so
+    // "which scope is this?" is what tells us whether app updates reach its rules at all.
+    scope: a.scope,
   }));
 
   const history = db
@@ -271,8 +275,13 @@ export default async function ProjectDetail({
         </div>
       </div>
 
-      <div className="mt-6">
+      <div className="mt-6 space-y-3">
         <TokenNudge />
+        {/* Only for an onboarded project: an un-onboarded one has no documents to be over
+            budget and gets a graph the first time it is onboarded. */}
+        {project.onboarded && (
+          <ProjectHealthNudge projectPath={project.path} agents={agents} />
+        )}
       </div>
 
       <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">

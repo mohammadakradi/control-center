@@ -140,3 +140,24 @@ export const AUTO_COMPACT_WINDOW = taskCap(
   process.env.CC_AUTO_COMPACT_WINDOW,
   200_000,
 );
+
+/**
+ * How long the platform will wait for a project's code graph to build before giving up and
+ * starting the onboarding session anyway (see `runner/code-graph.ts`).
+ *
+ * The graph is what lets later tasks answer "where is X / what uses Y" with one query instead
+ * of a grep-then-read sweep. Measured on this install over the week of 2026-08-28: 4,079 Bash
+ * calls across 28 tasks, of which 1,951 were grep/find and 2,576 were cat/sed/head — and only
+ * 44 (1.1%) were `graphify`. Two of five registered projects had no graph at all, so the agent
+ * *couldn't* have queried one. Building it is therefore part of onboarding, not a suggestion
+ * inside a skill the model may skip.
+ *
+ * Generous on purpose: extraction is AST-only (no LLM, no API key) but walks the whole tree,
+ * and this blocks exactly one command — `onboard` — which already runs for tens of minutes.
+ * A timeout is not a failure: the build is killed, the run continues, and the agent falls back
+ * to ordinary search. `0` disables the pre-build entirely.
+ */
+export const CODE_GRAPH_TIMEOUT_MS = taskCap(
+  process.env.CC_CODE_GRAPH_TIMEOUT_MS,
+  15 * 60_000,
+);

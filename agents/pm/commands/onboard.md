@@ -11,10 +11,12 @@ Steps:
 1. **Read context.** `CLAUDE.md` (stack, conventions, architecture) is already in your context
    if it exists — don't read it back. Note
    the stacks present (backend/frontend/services/devops/data) and how they're laid out.
-2. **Ensure the code graph.** Run
-   `bash ${CLAUDE_PLUGIN_ROOT}/scripts/ensure-graphify.sh .` to install graphify (if missing)
-   and build/refresh `graphify-out/graph.json`. It is fail-soft. Skim
-   `graphify-out/GRAPH_REPORT.md` for the high-level map.
+2. **Ensure the code graph.** Dispatched from the Control Center app, the platform already
+   built it before your session started (`🕸️ Building the code graph…` at the top of the run),
+   so check before spending minutes refreshing a large repo:
+   `ls graphify-out/graph.json 2>/dev/null || bash ${CLAUDE_PLUGIN_ROOT}/scripts/ensure-graphify.sh .`
+   — that installs graphify (if missing) and builds `graphify-out/graph.json`. Fail-soft either
+   way. Skim `graphify-out/GRAPH_REPORT.md` for the high-level map.
 3. **Initialize the planning journal.** If `.pm/notes.md` doesn't exist, create it as an
    **index** (pm rule 9) — the notes themselves live in `.pm/notes/<topic>.md`, and the index
    stays under 8 KB:
