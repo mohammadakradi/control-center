@@ -7,7 +7,7 @@
 # knows how to get a tool, so callers never have to duplicate install fallbacks.
 #
 # Usage:
-#   ensure-tool.sh <cli> [--pypi PKG] [--npm PKG] [--brew FORMULA] [--go MODULE] [--quiet]
+#   ensure-tool.sh <cli> [--pypi PKG] [--npm PKG] [--brew FORMULA] [--go MODULE] [--quiet] [--force]
 #
 # Examples:
 #   ensure-tool.sh graphify --pypi 'graphifyy==0.9.29'
@@ -15,7 +15,9 @@
 #   ensure-tool.sh gitleaks --brew gitleaks --go github.com/gitleaks/gitleaks/v8@v8.21.2
 #
 # Contract:
-#   - Idempotent: a fast no-op when the tool is already available.
+#   - Idempotent: a fast no-op when the tool is already available. `--force` skips that
+#     no-op and (re)installs anyway — how a caller pins a *version* rather than a name,
+#     since "present" says nothing about which version is present.
 #   - FAIL-SOFT: always exits 0, and never hangs (every network step is time-bounded). On
 #     failure the agent just falls back to other means (grep/read instead of the graph,
 #     manual review instead of a scanner).
@@ -76,13 +78,14 @@ NPM=""
 BREW=""
 GO=""
 QUIET=0
+FORCE=0
 VIA=""
 
 have() { command -v "$1" >/dev/null 2>&1; }
 log()  { [ "$QUIET" -eq 1 ] || printf '[ensure-tool] %s\n' "$*" >&2; }
 
 usage() {
-  printf 'usage: ensure-tool.sh <cli> [--pypi PKG] [--npm PKG] [--brew FORMULA] [--go MODULE] [--quiet]\n' >&2
+  printf 'usage: ensure-tool.sh <cli> [--pypi PKG] [--npm PKG] [--brew FORMULA] [--go MODULE] [--quiet] [--force]\n' >&2
 }
 
 emit() {  # emit <tool> <available> <path> <via>
@@ -108,6 +111,7 @@ while [ $# -gt 0 ]; do
     --brew) need_value "$1" "$#" "${2:-}" || break; BREW="$2"; shift 2 ;;
     --go)   need_value "$1" "$#" "${2:-}" || break; GO="$2";   shift 2 ;;
     --quiet) QUIET=1; shift ;;
+    --force) FORCE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     -*) log "ignoring unknown option: $1"; shift ;;
     *)  if [ -z "$CLI" ]; then CLI="$1"; fi; shift ;;
@@ -139,8 +143,12 @@ report() {
   emit "$CLI" false "" ""
 }
 
-# Already there? Fast no-op.
-have "$CLI" && report "preinstalled"
+# Already there? Fast no-op — unless the caller asked for a specific version and found a
+# different one on PATH (--force). "Installed" and "installed at the pinned version" are
+# not the same claim, and only the caller knows which it needed.
+if [ "$FORCE" -eq 0 ] && have "$CLI"; then
+  report "preinstalled"
+fi
 
 log "$CLI not found — attempting install…"
 mkdir -p "$BIN_DIR" 2>/dev/null || true

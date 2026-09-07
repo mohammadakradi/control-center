@@ -1,6 +1,6 @@
 {
   "name": "fe",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A portable frontend-engineer agent: onboards itself to any UI project (scanning framework, styling system, design tokens & color palette), then builds, restyles, audits, and ships frontend changes — favoring component reuse, design-token fidelity, accessibility, and theme consistency.",
   "author": {
     "name": "mohammad"

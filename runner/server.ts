@@ -30,6 +30,7 @@ import {
   type StreamEvent,
 } from "./session-manager";
 import { usageSnapshot } from "./usage-snapshot";
+import { schedulePostUpdateChores } from "./post-update";
 
 // No CORS on purpose: the browser never calls the runner. Only the Next.js server
 // does (same host), via the session-gated /api/tasks/[id]/* proxy routes.
@@ -281,4 +282,7 @@ serve({ fetch: app.fetch, port: RUNNER_PORT, hostname: RUNNER_HOST }, (info) => 
     console.log(`[runner] reconciled ${orphaned.length} orphaned task(s)`);
   if (sweptWorktrees > 0)
     console.log(`[runner] swept ${sweptWorktrees} stale task worktree(s)`);
+  // After the server is listening, never before: an update's remediation pass can spend
+  // minutes building code graphs, and nothing about it should delay serving a request.
+  schedulePostUpdateChores();
 });

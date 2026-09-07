@@ -78,11 +78,13 @@ Two controls on every dispatch, both stored on the task and both resolved by
 - **Model** — `auto` or a concrete label. `auto` triages the request into
   simple/complex/very-complex and maps it through the agent's tier table.
 - **Effort** — `auto` or `low|medium|high|xhigh` (the SDK's `Options.effort`). `auto` reuses
-  the tier the model triage already classified, so it costs no extra round-trip; mechanical
-  commands (`ship`/`review`/`security`/`onboard`/`workspace`/`audit`) drop to `low`. Claude
-  Code's own default is `xhigh`, which is why every run used to reason as hard as the hardest
-  task. `max` exists in the SDK and is deliberately not offered — this control is for
-  spending less.
+  the tier the model triage already classified, so it costs no extra round-trip:
+  very-complex → `xhigh`, complex → `high`, simple → `medium`; mechanical commands
+  (`ship`/`review`/`security`/`onboard`/`workspace`/`audit`) drop to `low`. `max` exists in
+  the SDK and is deliberately not offered.
+  **Do not cap this at `high`** — tried 2026-09-05, reverted the same day. Effort is not where
+  the excess is: a CLI session on `xhigh` costs a fraction of a platform task, so the driver is
+  turn count, not how hard a turn thinks (`.swe/notes/cost-and-context.md`).
 
 **`agent_model_policies` gates both** (Settings → Agent models, `lib/agent-policy.ts`).
 Install-wide, keyed by namespace, and **Fable 5 is denied for every agent by default** — it is
@@ -93,6 +95,19 @@ decoration any API caller could bypass), and the router **clamps** its own choic
 ladder, so `auto` can never select a denied model and a task being continued after a policy
 change degrades instead of failing. `lib/models.ts` owns the vocabulary — never add a second
 copy of the model list.
+
+## What an app update does *not* fix
+`control-center update` swaps `~/.control-center/app/` and migrates the DB. It never touches a
+project folder, so every document the agents wrote under older rules survives untouched — and
+the largest saving ever measured here was `CLAUDE.md` 147 KB → 13 KB. Two halves:
+- **Mechanical → automatic.** `runner/post-update.ts` runs once per version on runner boot and
+  builds code graphs for onboarded projects that have none. Fail-soft, after the server is
+  listening, stamped in `data/last-version`.
+- **Judgment → surfaced, not done.** `lib/project-health.ts` measures each project against the
+  budgets the agent rules state (CLAUDE.md 20 KB, design-system 25 KB, journal index 8 KB, note
+  30 KB) and flags a stale CLI-installed plugin, which outranks the bundled copy and so never
+  gets updated by the app. `components/ProjectHealthNudge.tsx` shows it with the token cost and
+  points at Re-onboard. Shrinking a CLAUDE.md is the onboard skill's call, never a script's.
 
 ## Where the detail lives (`.swe/notes/`)
 This file is an **orientation map under a 20 KB budget** (engineering rule 7): it is auto-loaded
@@ -156,6 +171,15 @@ query it instead of brute-force reading/grepping (far fewer tokens):
   `graphify affected "<component>"` (blast radius). Overview: `graphify-out/GRAPH_REPORT.md`.
 - Refresh after structural changes: `graphify update .` (no LLM). Rebuild if missing:
   `graphify extract . --no-cluster`.
+- **Every project gets one at onboard**: `runner/code-graph.ts` runs the agents'
+  `ensure-graphify.sh` before an `onboard` session starts (each member repo for a workspace),
+  fail-soft under `CC_CODE_GRAPH_TIMEOUT_MS`. It is a launch step, not a skill step, because
+  the prose version was skipped on 2 of 5 projects — see `.swe/notes/cost-and-context.md`.
+- **Querying it is enforced too**: each agent ships a `PreToolUse` hook
+  (`agents/*/hooks/guard-search.mjs`) that holds a tree-wide `grep -r`/`rg`/`find -name` once
+  per distinct search, in repos that have a graph, and names the graphify command instead.
+  Re-running the same command passes, so it can nudge but never trap. Targeted reads and
+  pipeline filters are untouched. Test it with `node agents/swe/hooks/test-guard-search.mjs`.
 - **Caveat (found 2026-08-04):** a no-LLM `graphify update .` re-extracts structure but strips
   `community_name` from every node — the human-readable cluster names `query`/`explain` lean on.
   It backs the curated graph up to `graphify-out/<date>/` first. Either set `GEMINI_API_KEY`
@@ -172,7 +196,7 @@ query it instead of brute-force reading/grepping (far fewer tokens):
 ## Agent operating rules
 This project is worked on by the fe-agent (frontend specialist). For each request it follows
 a workflow with two approval gates:
-**investigate → plan & decompose 🚦(you approve) → build task-by-task (reuse + tokens + a11y, verify visually) → independent review (design + frontend audit) → report + test scenario 🚦(you approve) → commit**.
+**investigate → plan & decompose 🚦(you approve — skipped for a small, self-contained change with no new component/token) → build task-by-task (reuse + tokens + a11y, verify visually) → independent review (design + frontend audit) → report + test scenario 🚦(you approve) → commit**.
 Pushing/opening a PR is separate (`/fe:ship`). Project-wide consistency sweeps: `/fe:audit`.
 
 Core rules: 1. Onboard before acting. 2. Match the project's design language. 3. Reuse before
@@ -182,7 +206,8 @@ styling, but match the project's existing system if it has one. 5. Standard, acc
 (WCAG AA), responsive by default. 6. Git is gated — commit only after you approve; never the
 default branch. 7. Keep CLAUDE.md + `.fe/design-system.md` current. 8. Ask only when
 genuinely blocked. 9. Be honest about scope/uncertainty. 10. Read/update `.fe/notes.md`.
-11. Plan & decompose every request. 12. Verify — build, lint, and look. 13. Two review
+11. Plan & decompose every request, sized to it — a
+small self-contained change skips gate 1 (never gate 2). 12. Verify — build, lint, and look. 13. Two review
 lenses (`design-reviewer` + `frontend-auditor`). 14. Nutshell + `.fe/test-scenarios/` doc.
 15. Project-wide consistency via `/fe:audit`. 16. Long-horizon work runs on a `.fe/epics/`
 plan. 17. Use the `graphify` code graph (`graphify-out/`) to understand structure/

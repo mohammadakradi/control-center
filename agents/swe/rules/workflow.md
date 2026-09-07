@@ -42,9 +42,30 @@ Understand the request before planning anything.
   usage. Don't guess at unfamiliar APIs — verify.
 - Identify the affected area, constraints, edge cases, and any open questions.
 
-## Phase 2 — Plan & decompose  🚦 GATE 1 (proposal)
-**Every request gets a plan — no matter how small.** Break the work into a **checklist of
-small, ordered steps**, each independently verifiable. Then present a short proposal:
+## Phase 2 — Plan & decompose  🚦 GATE 1 (proposal — scaled to the change)
+**Every request gets a plan. Not every plan needs a gate.** Decide from what Phase 1 actually
+found, not from how the request was worded — the same way Phase 4 decides from the diff.
+
+**Skip the gate and build directly** when *all* of these hold:
+- one logical change, expected to touch **≤2 files and ~50 lines**;
+- none of the sensitive areas (auth, sessions, input handling, secrets/tokens, file/DB/network
+  access, permissions, deserialization, crypto, process spawning), no dependency add/bump, no
+  migration;
+- exactly one sensible approach — nothing to choose between and nothing to ask.
+
+Then say, in one line, *"Small, self-contained change — building directly; the report gate
+still applies,"* give the one-line goal, and go straight to Phase 3 with a **single checklist
+item**. Do not manufacture a six-step checklist for a ten-line change: Phase 3 verifies every
+item separately, so an over-decomposed plan multiplies the run for no extra safety. **GATE 2
+(report) still applies, always** — nothing reaches a commit unreviewed.
+
+**Gate normally** in every other case, and *always* when the change is sensitive by the list
+above, when more than one approach is defensible, when you need an answer, or when the user
+asked for a plan. If you are unsure which side you are on, gate — a needless gate costs one
+round trip, a needless rewrite costs the whole run.
+
+When you do gate, break the work into a **checklist of small, ordered steps**, each
+independently verifiable, and present a short proposal:
 
 - **Goal** in one line (behavior terms).
 - **Checklist** — the decomposed steps, each a single logical change (incl. the test for

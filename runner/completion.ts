@@ -10,11 +10,18 @@
  * workflow — first, investigation. Let me read the workflow rules…" rendered as the
  * report card with the task marked Done, before any work existed.
  *
- * So classify the text before trusting it. The bias is deliberately conservative: only a
- * POSITIVE signal of continuation ("…and then I'll", a trailing colon, waiting on
- * subagents, no text at all) counts as a pause. Ambiguous prose is still treated as a
- * final report, which keeps commands that legitimately end with a plain summary and no
- * marker (e.g. `onboard`) working exactly as before.
+ * So classify the text before trusting it — and make **sealing** the side that needs
+ * evidence. The first version asked "is there a positive signal of continuation?" and
+ * sealed whenever there wasn't; that let a short tool-call preamble through whenever it
+ * named no dispatched work and used no announcing verb. Reproduced on `task_2ad6afb5`,
+ * sealed `done` on *"Smoking gun found. Let me confirm the reconciler's status coverage."*
+ * while the session kept running. Now a turn seals only when its closing text actually
+ * **looks like a report** (`looksLikeReport`): structured, or long enough to carry one,
+ * or saying that work was completed. Anything else is "the agent stopped mid-work".
+ *
+ * The cost of that inversion is a possible extra nudge turn for a terse, marker-less
+ * summary — deliberately preferred over sealing a task that isn't finished, since the
+ * agent's contract is to end on a report gate or `[[DONE]]` anyway.
  */
 
 export type PauseReason =
@@ -23,7 +30,9 @@ export type PauseReason =
   /** Ended the turn announcing its next action instead of reporting a result. */
   | "narration"
   /** Ended the turn with no prose at all (e.g. right after a tool call). */
-  | "no-text";
+  | "no-text"
+  /** Ended on prose that carries no report — a step along the way, not a result. */
+  | "unfinished";
 
 export type TurnEnd = { kind: "final" } | { kind: "paused"; reason: PauseReason };
 
@@ -64,7 +73,23 @@ const PREAMBLE =
 /** First-person announcements of the NEXT action — the tell for narration that was
  *  meant to be followed by tool calls, not read as a conclusion. */
 const INTENT_RE = new RegExp(
-  `^${PREAMBLE}(?:let(?:'|’)?s\\b|let me\\b|i(?:'|’)?ll\\b|i will\\b|i(?:'|’)?m (?:going to|about to|gonna)\\b|i am (?:going to|about to)\\b|going to\\b|time to\\b)`,
+  `^${PREAMBLE}(?:let(?:'|’)?s\\b|let me\\b(?!\\s+know\\b)|i(?:'|’)?ll\\b|i will\\b|i(?:'|’)?m (?:going to|about to|gonna)\\b|i am (?:going to|about to)\\b|going to\\b|time to\\b)`,
+  "i",
+);
+
+/**
+ * The subset of `INTENT_RE` that announces a *next action* so plainly it is narration
+ * wherever it sits — including at the end of a long, structured message, which is the hole
+ * `looksStructured` opened: an analysis with bullet points that signs off "Let me confirm
+ * the reconciler's status coverage." used to seal the task.
+ *
+ * A bare "I'll …" is deliberately NOT here: "I'll wait for your approval to push" and
+ * "I'll hold off on committing" are how finished reports end. Only the shapes that name a
+ * step the agent is about to take — "let me / let's / next I'll / now I'll / I'm going to /
+ * time to". "Let me know" is excluded in both patterns: it closes reports, not preambles.
+ */
+const NEXT_ACTION_RE = new RegExp(
+  `^${PREAMBLE}(?:let(?:'|’)?s\\b|let me\\b(?!\\s+know\\b)|i(?:'|’)?m (?:going to|about to|gonna)\\b|i am (?:going to|about to)\\b|going to\\b|time to\\b|(?:next|now|then|first)\\b[\\s,]*i(?:'|’)?(?:ll|m)\\b|i(?:'|’)?ll now\\b)`,
   "i",
 );
 
@@ -85,6 +110,30 @@ function looksStructured(text: string): boolean {
   if (text.length < STRUCTURE_MIN_LEN) return false;
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
   return lines.filter((l) => LIST_LINE.test(l)).length >= 2;
+}
+
+/** Says that work was *carried out*, which is what a report says and a preamble doesn't.
+ *  Investigation verbs ("found", "confirmed", "checked") are deliberately absent: they are
+ *  exactly what mid-work narration says. */
+const REPORTED_WORK_RE =
+  /\b(?:complete[ds]?|finished|fixed|resolved|implemented|refactored|migrated|committed|merged|shipped|reverted|verified|tests? (?:pass|passed|passing)|passes|passing|all green|no (?:outstanding|remaining|blocking|further) \w+|nothing (?:else )?(?:was )?(?:touched|changed)|is now|are now|now (?:does|has|shows|renders|returns))\b/i;
+
+/** Enough text around a completion phrase to be a report rather than a status blip —
+ *  "The tests pass now." is something an agent says mid-work. */
+const REPORT_MIN_LEN = 60;
+/** Prose long enough that it cannot be a tool-call preamble, even with no completion
+ *  vocabulary in it at all. The safety valve for reports written in an unusual register. */
+const PROSE_MIN_LEN = 500;
+
+/**
+ * Positive evidence that this text IS the turn's report. Checked only after the pause
+ * signals have had their say, so a message that announces a next step can't buy its way
+ * back with a stray "fixed".
+ */
+export function looksLikeReport(body: string): boolean {
+  if (looksStructured(body)) return true;
+  if (body.length >= REPORT_MIN_LEN && REPORTED_WORK_RE.test(body)) return true;
+  return body.length >= PROSE_MIN_LEN;
 }
 
 /** The last sentence of the last non-empty line, with list/quote markers removed. */
@@ -122,7 +171,11 @@ export function classifyTurnEnd(text: string): TurnEnd {
   // Nobody ends a final report on a colon; it introduces the tool call that follows.
   if (/[:：]\s*$/.test(body)) return { kind: "paused", reason: "narration" };
   const tail = lastSentence(body);
-  if (INTENT_RE.test(tail) && !looksStructured(body))
+  // "Let me confirm the reconciler's status coverage." — narration however long or
+  // well-formatted the message around it is (see NEXT_ACTION_RE).
+  if (NEXT_ACTION_RE.test(tail)) return { kind: "paused", reason: "narration" };
+  const structured = looksStructured(body);
+  if (INTENT_RE.test(tail) && !structured)
     return { kind: "paused", reason: "narration" };
   if (
     GERUND_RE.test(tail) &&
@@ -130,5 +183,9 @@ export function classifyTurnEnd(text: string): TurnEnd {
     !body.includes("\n")
   )
     return { kind: "paused", reason: "narration" };
-  return { kind: "final" };
+  // Nothing above says "pause" — but that is not enough to seal a task. The turn ends the
+  // run only if the text positively reads as a report; otherwise the agent stopped
+  // mid-work on prose that happened to name no next step ("Smoking gun found.").
+  if (looksLikeReport(body)) return { kind: "final" };
+  return { kind: "paused", reason: "unfinished" };
 }

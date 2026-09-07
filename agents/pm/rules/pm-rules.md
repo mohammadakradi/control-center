@@ -28,6 +28,11 @@ Use it to identify which **stacks** a request touches and which components/servi
 will involve — then cite those concrete files/components in the tasks. Fall back to grep/read
 (or the `analyst` subagent) only when the graph is absent or insufficient.
 
+A `PreToolUse` hook (`hooks/guard-search.mjs`) holds a tree-wide search (`grep -r`, a bare
+`rg`, `find . -name`) the first time you run it in a repo that has a graph, and names the
+graphify command to try instead. Run the same command a second time and it goes through — the
+hook holds each distinct search once, so it can nudge but never trap you.
+
 ## 2b. Master the request before solutioning (validate it)
 **Don't trust the request — test it against the code first.** A senior PM's most valuable move
 is catching that the request itself is wrong, and so is yours. Before designing any solution,

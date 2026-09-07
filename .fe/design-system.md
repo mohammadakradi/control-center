@@ -105,6 +105,14 @@ blocking step for the explanatory sentence under a warn-toned heading. Only ever
 matching `bg-{t}-soft`, and only for a supporting line; a *primary* string in a toned block
 stays at full `text-{t}`.
 
+**A `danger` line inside a `warn` block is an allowed cross-tone pair.** The table's guarantee
+is same-tone (`text-{t}` on `bg-{t}-soft`), but a failure that happens *inside* an already-toned
+block shouldn't repaint the block — the report card's follow-up callout keeps its warn wash and
+puts the refused dispatch on it as `text-danger` (`ErrorAlert` inside `TaskLiveView`'s callout),
+the same way `UpdateBanner` puts a danger button on a warn bar. Measured: `#b91c1c` on `#fffbeb`
+≈ 6.3:1 light, and `#fca5a5` over `amber-500/15` on `surface-2` ≈ 7.2:1 dark — both AA. Only
+`danger` on `warn`/`info` has been checked; any other crossing needs measuring before use.
+
 ### Syntax highlighting (`--syn-*`)
 The one place in the app where colour is applied by **class name** rather than a Tailwind
 utility. `lib/highlight.ts` returns highlight.js' own scope names (`hljs-keyword`,
@@ -272,6 +280,14 @@ are what make `<Link>` prefetch do anything. See `.fe/notes.md` for the measurem
   - the *field-shaped button* in `PaletteTrigger`'s default branch, which restates
     `border-line-strong bg-surface-2` rather than calling `fieldClasses("md")` — that helper
     forces `w-full` and an input-tuned focus ring onto what is a `<button>`.
+- **`SpendRangeNav` still hand-rolls its own markup, and that is not pill drift** (2026-09-04).
+  The wrapping filter pill was extracted to `FilterPill` when `FeatureStatusNav` became its
+  second user, and `/usage`'s range filter was deliberately left out: it is a segmented *track*
+  (bordered container, `rounded-md` tabs, `shadow-sm` on the active one) for a fixed set of
+  three, not free-floating `rounded-full` pills for an unbounded one. Folding them together
+  buys a variant flag that makes one component render two unrelated looks. If `/usage` ever
+  *should* look like the others, that is a design decision to take deliberately, not a
+  refactor to fall into.
 - `AgentAvatar`'s initials fallback uses one colour for every namespace, so agents without a
   photo are visually indistinguishable in a contributor stack.
 - Keyboard navigation is reasoned about but not formally tested end-to-end (no a11y test

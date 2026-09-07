@@ -342,8 +342,11 @@ export type DeleteFeatureResult =
  * Delete a feature, handing its tasks and backlog items back to "no feature".
  *
  * Deletion is the honest verb for "we don't need this group any more" — closing a feature out
- * (`status: done`) keeps it on screen forever as a collapsed heading, which is right for
- * finished work and wrong for a group created by mistake. Four things make it safe:
+ * (`status: done`) is the record that it *shipped*, which is right for finished work and wrong
+ * for a group created by mistake. (Closing out no longer keeps it on screen: since 2026-09-04
+ * both feature surfaces show active features by default and put the rest behind `?features=`.
+ * The row is one click away, not gone, so this is still not a substitute for deleting.)
+ * Four things make deletion safe:
  *
  * - **Nothing is destroyed.** Both FKs are `set null` (and `foreign_keys` is ON, see
  *   `lib/db/index.ts`), so tasks and backlog items survive the row that grouped them. Closing
