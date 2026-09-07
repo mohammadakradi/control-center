@@ -3,6 +3,7 @@ import { Gauge } from "lucide-react";
 import { buttonClasses } from "@/components/ui/button";
 import { discoverBundledAgents } from "@/lib/discovery/agents";
 import { scanProjectHealth, healthSummary } from "@/lib/project-health";
+import { COMPOSE_PARAM } from "@/lib/ui";
 
 /**
  * What this project's own documents cost per run, and the one action that fixes them.
@@ -61,10 +62,16 @@ export function ProjectHealthNudge({
             <p className="mt-0.5 text-xs text-warn/80">{summary}</p>
           </div>
         </div>
-        {/* Links rather than dispatches: the composer already owns the re-onboard control
-            (and the model/effort choices that go with it), and a second way to start the same
-            run is a second thing to keep correct. */}
-        <Link href="#new-task" className={buttonClasses("secondary", "sm")}>
+        {/* Hands the composer over with `onboard` already picked, rather than dispatching
+            here. The composer owns the model/effort choices that go with a run, so a second
+            way to start one is a second thing to keep correct — but a bare `#new-task` anchor
+            was worse: this card sits directly above the composer, so the scroll went nowhere
+            visible and the button read as broken (reported 2026-09-07). Arriving with the
+            command chosen is the difference. */}
+        <Link
+          href={`?${COMPOSE_PARAM}=onboard#new-task`}
+          className={buttonClasses("secondary", "sm")}
+        >
           Re-onboard
         </Link>
       </div>

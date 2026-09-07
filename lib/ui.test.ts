@@ -9,33 +9,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  ACTIVE_STATUSES,
   BACKLOG_STATUS_LABEL,
+  FILE_OWNED_FEATURE_NOTE,
+  MERGE_STATE_LABEL,
+  MERGE_STATE_TITLE,
   backlogStatusDot,
   dispatchErrorAction,
+  featureFilterHref,
   featureGroupDefaultOpen,
   featureMergeSummary,
   featureOptions,
   featureRowActions,
   featureRowDefaultOpen,
   featureWorkRows,
-  FILE_OWNED_FEATURE_NOTE,
   fixTaskReasons,
   groupByFeature,
   hasMergeSummary,
   isOpenBacklogStatus,
   isOpenFeatureStatus,
-  splitFeaturesByStatus,
-  parseFeatureFilter,
-  featureFilterHref,
-  showsFeatureFilter,
-  ACTIVE_STATUSES,
-  MERGE_STATE_LABEL,
-  MERGE_STATE_TITLE,
   mergeChipProps,
   mergeChipView,
   mergeStateTone,
   orderSkills,
+  parseComposeOnboard,
+  parseFeatureFilter,
   resolveFixTarget,
+  showsFeatureFilter,
+  splitFeaturesByStatus,
   statusColor,
   taskChangesView,
   taskDisplayTitle,
@@ -1059,4 +1060,30 @@ test("featureFilterHref encodes and preserves repeated params", () => {
     featureFilterHref("/backlog", { tag: ["x", "y"] }, "active"),
     "/backlog?tag=x&tag=y",
   );
+});
+
+test("parseComposeOnboard only opens the composer on onboard for the exact value", () => {
+  // The health nudge links here. Lenient like `parseFeatureFilter`: a repeated param arrives as
+  // an array, and an unknown value is a stale bookmark — neither should do anything surprising
+  // to a form the user is about to dispatch from.
+  assert.equal(parseComposeOnboard("onboard"), true);
+  assert.equal(parseComposeOnboard(undefined), false);
+  assert.equal(parseComposeOnboard(""), false);
+  assert.equal(parseComposeOnboard("task"), false);
+  assert.equal(parseComposeOnboard("Onboard"), false);
+  assert.equal(parseComposeOnboard(["onboard", "task"]), false);
+});
+
+test("orderSkills puts onboard first whenever it is shown — what seeds the composer", () => {
+  // NewTaskForm seeds only `reonboard` from `?compose=onboard` and lets the command initialiser
+  // fall out of this ordering. If onboard ever stopped being first, the button would silently
+  // go back to selecting the wrong command, with nothing else failing.
+  const commands = [
+    { name: "task", full: "/swe:task" },
+    { name: "onboard", full: "/swe:onboard" },
+    { name: "fix", full: "/swe:fix" },
+  ];
+  assert.equal(orderSkills("swe", commands, false)[0].name, "onboard");
+  // ...and it is dropped entirely once onboarding is done and no re-onboard was asked for.
+  assert.ok(!orderSkills("swe", commands, true).some((c) => c.name === "onboard"));
 });
