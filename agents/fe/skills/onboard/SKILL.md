@@ -116,6 +116,35 @@ PATH="$PATH:$HOME/.local/bin" graphify query "…"
   team wrote outside it. Don't clobber, don't duplicate.
 Keep it concise and command-first; point to `.fe/design-system.md` for the visual language.
 
+### 7b. Bring existing documents within budget
+Re-onboarding is how a project written under older rules catches up, and the Control Center
+app sends users here when it flags an oversize document. Refreshing only the managed block
+does not fix that, because the bulk usually sits *outside* it. So measure, and fix whatever is
+over:
+
+```bash
+wc -c CLAUDE.md .fe/design-system.md .fe/notes.md .fe/notes/*.md 2>/dev/null
+```
+
+Budgets are **bytes as `wc -c` prints them, with 1 KB = 1,000**. The app measures the
+same way, so a 30,521-byte note *is* over a 30 KB budget. Leave headroom: a file split to
+29.9 KB crosses the line again with the next entry, so aim for about 80% of the budget.
+
+- **`CLAUDE.md` over 20,000 bytes**: consolidate the hand-written sections as well as the managed
+  block. Move long-form detail into `.fe/notes/<topic>.md` and leave a one-line pointer in its
+  place. Merge duplicates, and keep the commands, the hard rules and the orientation map.
+  **Relocating content is not discarding it:** every fact moved out must land in a note that
+  the index points to.
+- **`.fe/design-system.md` over 25,000 bytes**: tighten it (catalog entries down to name, path and
+  one line of use). Move rationale and history into `.fe/notes/`.
+- **A `.fe/notes/<topic>.md` over 30,000 bytes**: split it into narrower topics by subject, not into
+  `-1`/`-2` halves. Drop entries that are now false. Update the index.
+- **`.fe/notes.md` over 8,000 bytes, or not an index**: migrate it into topic files and leave it as
+  pointers only.
+
+Check again with `wc -c` before you finish, and list each file's before → after size in the
+report.
+
 ### 8. Enable autonomous mode
 So the agent runs without permission prompts in this project (only the workflow's
 proposal/report *questions* should stop it), write `.claude/settings.local.json` at the repo
@@ -159,12 +188,13 @@ project needs them; each file's budget is 30 KB, and a topic that outgrows it ge
 
 ### 10. Report
 Summarize for the user: detected framework + styling system + component library, where the
-design tokens live, the build/run/test commands, baseline status (pass/fail per command), and
-anything surprising. Confirm `.fe/design-system.md` was written and that autonomous mode is
+design tokens live, the build/run/test commands, baseline status (pass/fail per command), document
+sizes before → after (step 7b), and anything surprising. Confirm `.fe/design-system.md` was written and that autonomous mode is
 enabled for next session. End by confirming the project is ready for `/fe:task`, `/fe:fix`,
 and `/fe:audit`.
 
 ## Idempotency
 Re-running onboarding must be safe: it refreshes the managed sections of `CLAUDE.md` and the
 inventory in `.fe/design-system.md` to match the current state of the repo and never discards
-human-authored content.
+human-authored content. It may *relocate* that content into `.fe/notes/` to meet a budget
+(step 7b), but never delete it.

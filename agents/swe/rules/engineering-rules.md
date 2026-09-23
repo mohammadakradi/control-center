@@ -47,7 +47,9 @@ auto-loaded into every session on the project, so it sits in the prompt of *ever
 that every future task makes — at 150 KB it is ~38k tokens re-sent thousands of times per
 task. It is the most expensive file in the repo, and nothing warns you when it grows.
 
-Check it with `wc -c CLAUDE.md` before you finish. If your edit would push it over budget,
+Check it with `wc -c CLAUDE.md` before you finish. Every budget in these rules is bytes as
+`wc -c` prints them, with 1 KB = 1,000 (20 KB = 20,000 bytes). The Control Center app
+measures the same way. If your edit would push it over budget,
 you are over budget and must **consolidate, not append**:
 - Merge duplicated explanations, and cut the story of *how* a decision was reached down to
   the decision plus one line of why.

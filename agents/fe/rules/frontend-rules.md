@@ -91,7 +91,8 @@ introduces or changes a token, color, or shared component, update the relevant `
 section **and** `.fe/design-system.md` in the same task. Treat a stale design inventory as a
 bug: it's what keeps future work consistent.
 
-**Both files have hard budgets: `CLAUDE.md` 20 KB, `.fe/design-system.md` 25 KB.** Exceeding
+**Both files have hard budgets: `CLAUDE.md` 20 KB, `.fe/design-system.md` 25 KB** (bytes as
+`wc -c` prints them, 1 KB = 1,000, which is how the Control Center app measures). Exceeding
 one is also a bug. `CLAUDE.md` is auto-loaded into every session on the project, so it sits in
 the prompt of *every* model call every future task makes; `design-system.md` gets read at the
 start of most of them. At 150 KB a `CLAUDE.md` is ~38k tokens re-sent thousands of times per

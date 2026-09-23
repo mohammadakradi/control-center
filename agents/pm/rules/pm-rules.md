@@ -109,8 +109,8 @@ recurring stack conventions — and read it before planning. Stored as **an inde
 files**, because a flat journal grows without bound and then gets read in full every time:
 
 - **`.pm/notes.md` is an index, budget 8 KB** — one line per topic, with the path to its file.
-- **`.pm/notes/<topic>.md` holds the notes, budget 30 KB each.** Split a topic that outgrows
-  its budget rather than letting it run.
+- **`.pm/notes/<topic>.md` holds the notes, budget 30 KB each** (30,000 bytes as `wc -c`
+  counts). Split a topic that outgrows its budget rather than letting it run.
 
 Read the index, then open **only** the topics the request touches (`grep -ril '<term>'
 .pm/notes/` finds one by keyword). Never read the whole journal for context. Keep entries short
