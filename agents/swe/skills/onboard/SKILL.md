@@ -84,6 +84,36 @@ nodes; AST mode still captures files, symbols, methods, and imports.)
   everything the team wrote outside it. Don't clobber, don't duplicate.
 Keep it concise and command-first.
 
+### 5b. Bring existing documents within budget
+Re-onboarding is how a project written under older rules catches up, and the Control Center
+app sends users here when it flags an oversize document. Refreshing only the managed block
+does not fix that, because the bulk usually sits *outside* it, in hand-written sections. So
+measure, and fix whatever is over:
+
+```bash
+wc -c CLAUDE.md .swe/notes.md .swe/notes/*.md 2>/dev/null
+```
+
+Budgets are **bytes as `wc -c` prints them, with 1 KB = 1,000**. The app measures the
+same way, so a 30,521-byte note *is* over a 30 KB budget. Leave headroom: a file split to
+29.9 KB crosses the line again with the next entry, so aim for about 80% of the budget.
+
+- **`CLAUDE.md` over 20,000 bytes** (engineering rule 7): consolidate the hand-written
+  sections as well as the managed block. Move long-form detail (architecture write-ups, decision
+  histories, service catalogues, long gotcha lists) into `.swe/notes/<topic>.md` and leave a
+  one-line pointer in its place. Merge duplicates, and cut each decision's backstory down to
+  the decision plus one line of why. Keep the commands, the hard rules and the orientation map
+  in `CLAUDE.md`. **Relocating content is not discarding it:** every fact moved out must land
+  in a note that the index points to.
+- **A `.swe/notes/<topic>.md` over 30,000 bytes** (rule 10): split it into narrower topics by
+  subject, not into `-1`/`-2` halves. Drop entries that are now false. Update the index rows to
+  match.
+- **`.swe/notes.md` over 8,000 bytes, or not an index** (for example an old flat journal):
+  migrate it into topic files as rule 10 describes, and leave it as pointers only.
+
+Check again with `wc -c` before you finish, and list each file's before → after size in the
+report. In a workspace, do this for the root and for each member.
+
 ### 6. Enable autonomous mode
 So the agent runs without permission prompts in this project (only the workflow's
 proposal/commit *questions* should stop it), write `.claude/settings.local.json` at the
@@ -132,9 +162,10 @@ member repo for repo-specific ones.
 
 ### 8. Report
 Summarize for the user: detected stack, the build/test/run commands, baseline status
-(pass/fail per command), and anything surprising. Mention that autonomous mode is enabled
+(pass/fail per command), document sizes before → after (step 5b), and anything surprising. Mention that autonomous mode is enabled
 for next session. End by confirming the project is ready for `/swe:task` and `/swe:fix`.
 
 ## Idempotency
 Re-running onboarding must be safe: it refreshes the managed sections to match the current
-state of the repo and never discards human-authored content.
+state of the repo and never discards human-authored content. It may *relocate* that content
+from `CLAUDE.md` into `.swe/notes/` to meet the budget (step 5b), but never delete it.

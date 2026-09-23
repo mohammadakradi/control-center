@@ -38,5 +38,12 @@ Steps:
 
    Create `.pm/notes/decisions.md` and `.pm/notes/constraints.md` alongside it and seed them
    with the stacks you found and anything notable. Each topic file's budget is 30 KB.
-4. **Report** the detected stacks, whether the code graph is available, and confirm the
-   project is ready for `/pm:plan`.
+
+   **If the journal already exists**, bring it within budget. Re-onboarding is how a project
+   written under older rules catches up. Run `wc -c .pm/notes.md .pm/notes/*.md`, then:
+   - split any topic over 30,000 bytes (as `wc -c` counts; aim for ~24 KB) into narrower
+     topics by subject (not `-1`/`-2` halves);
+   - turn an index over 8,000 bytes, or an old flat journal, back into pointers only.
+   Move content; don't delete it, except entries that are now false.
+4. **Report** the detected stacks, whether the code graph is available, any journal sizes
+   before → after, and confirm the project is ready for `/pm:plan`.

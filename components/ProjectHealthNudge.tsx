@@ -83,8 +83,9 @@ export function ProjectHealthNudge({
         ))}
       </ul>
       <p className="mt-2 pl-7 text-xs text-warn/70">
-        Re-onboarding rewrites the managed sections against the current rules and keeps
-        everything written by hand. It also builds the code graph.
+        Re-onboarding rewrites the managed sections against the current rules, moves
+        over-budget detail into the notes journal (nothing written by hand is deleted), and
+        splits oversize notes. It also builds the code graph.
       </p>
     </div>
   );
