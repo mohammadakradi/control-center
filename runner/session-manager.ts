@@ -22,7 +22,7 @@ import {
 } from "../lib/config";
 import { classifyTurnEnd, type PauseReason } from "./completion";
 import { ensureCodeGraph } from "./code-graph";
-import { GATE_PROMPT } from "./gate-prompt";
+import { gatePromptFor } from "./gate-prompt";
 import {
   makePlatformServer,
   type GateDecision,
@@ -283,7 +283,20 @@ function userMessage(text: string): SDKUserMessage {
  *  matching them anywhere would misfire when the agent quotes the marker in prose
  *  (e.g. "tasks that finish without `[[DONE]]`…"). */
 const DONE_AT_END = /\[\[DONE\]\]\s*$/;
-const GATE_AT_END = /\[\[GATE:(PROPOSAL|REPORT)\]\]\s*$/;
+const GATE_AT_END = /\[\[GATE:(PROPOSAL|REPORT|QUESTION)\]\]\s*$/;
+
+/** The status a run sits in while a gate of this kind waits, and the one it resumes into. A
+ *  question isn't an approval, so it has its own wait state and simply goes back to running. */
+const GATE_WAIT_STATUS = {
+  proposal: "awaiting_proposal",
+  report: "awaiting_report",
+  question: "awaiting_input",
+} as const satisfies Record<GateKind, TaskStatus>;
+const GATE_RESUME_STATUS = {
+  proposal: "building",
+  report: "committing",
+  question: "running",
+} as const satisfies Record<GateKind, TaskStatus>;
 
 /** Cap auto-continue nudges so a stuck agent can't loop forever. */
 const MAX_AUTO_CONTINUE = 3;
@@ -880,12 +893,14 @@ function runTask(
     }
     if (gate === "report") producedReport = true;
     record(handle, "gate", { gate, summary });
-    setStatus(handle, gate === "proposal" ? "awaiting_proposal" : "awaiting_report");
+    setStatus(handle, GATE_WAIT_STATUS[gate]);
     return new Promise<GateDecision>((resolve) => {
       handle.pendingApproval = (decision) => {
         handle.pendingApproval = undefined;
-        if (decision.allow) {
-          setStatus(handle, gate === "proposal" ? "building" : "committing");
+        // A "no" to a question still resumes the run — the agent carries on without it —
+        // whereas a rejected proposal/report stays put until the agent presents again.
+        if (decision.allow || gate === "question") {
+          setStatus(handle, GATE_RESUME_STATUS[gate]);
         }
         resolve(decision);
       };
@@ -1058,7 +1073,7 @@ function runTask(
             ? { settings: { autoCompactWindow: AUTO_COMPACT_WINDOW } }
             : {}),
           permissionMode: "bypassPermissions",
-          systemPrompt: { type: "preset", preset: "claude_code", append: GATE_PROMPT },
+          systemPrompt: { type: "preset", preset: "claude_code", append: gatePromptFor(agent.namespace) },
           includePartialMessages: true,
           mcpServers: {
             "swe-platform": makePlatformServer({
@@ -1200,15 +1215,12 @@ function runTask(
             // Prose-gate fallback: the agent signalled a gate via the marker
             // instead of the approval tool. Surface it so it stays actionable
             // (respond() pushes the decision back as a reply) rather than stuck.
-            const kind = gate![1] === "PROPOSAL" ? "proposal" : "report";
+            const kind = gate![1].toLowerCase() as GateKind;
             const summary = lastAssistantText
               .replace(/\[\[(DONE|GATE:[A-Z]+)\]\]/g, "")
               .trim();
             record(handle, "gate", { gate: kind, summary });
-            setStatus(
-              handle,
-              kind === "proposal" ? "awaiting_proposal" : "awaiting_report",
-            );
+            setStatus(handle, GATE_WAIT_STATUS[kind]);
           } else if (action === "nudge") {
             // The agent ended the turn mid-workflow — it dispatched review subagents and
             // said it would resume, or it just announced its next step ("Let me read the

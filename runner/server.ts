@@ -194,6 +194,7 @@ const ACTIVE: TaskStatus[] = [
   "awaiting_proposal",
   "building",
   "awaiting_report",
+  "awaiting_input",
   "committing",
 ];
 const orphaned = db

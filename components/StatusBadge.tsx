@@ -13,6 +13,7 @@ const ICON: Record<string, LucideIcon> = {
   committing: Loader2,
   awaiting_proposal: CircleDashed,
   awaiting_report: CircleDashed,
+  awaiting_input: CircleDashed,
 };
 
 const SPINNING = new Set(["running", "building", "committing"]);

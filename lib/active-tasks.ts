@@ -152,10 +152,11 @@ export function sameActiveState(a: ActiveTasksState, b: ActiveTasksState): boole
 // part that turns these into toasts.
 // ---------------------------------------------------------------------------
 
-/** The two statuses where a run has stopped and is waiting on a person. */
+/** The statuses where a run has stopped and is waiting on a person. */
 export const GATE_STATUSES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   "awaiting_proposal",
   "awaiting_report",
+  "awaiting_input",
 ]);
 
 /**

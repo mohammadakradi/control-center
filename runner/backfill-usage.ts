@@ -36,6 +36,7 @@ const ACTIVE: ReadonlyArray<TaskStatus> = [
   "awaiting_proposal",
   "building",
   "awaiting_report",
+  "awaiting_input",
   "committing",
 ];
 

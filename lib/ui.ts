@@ -14,6 +14,7 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
   awaiting_proposal: "Awaiting proposal approval",
   building: "Building & testing",
   awaiting_report: "Awaiting change approval",
+  awaiting_input: "Waiting for your answer",
   committing: "Committing",
   done: "Done",
   failed: "Failed",
@@ -44,6 +45,7 @@ export function statusTone(status: string): StatusTone {
     case "committing":
     case "awaiting_proposal":
     case "awaiting_report":
+    case "awaiting_input":
       return "warn";
     default:
       return "info";
@@ -747,6 +749,7 @@ export const ACTIVE_STATUSES = new Set([
   "awaiting_proposal",
   "building",
   "awaiting_report",
+  "awaiting_input",
   "committing",
 ]);
 

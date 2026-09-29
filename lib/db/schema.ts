@@ -213,6 +213,8 @@ export type TaskStatus =
   | "awaiting_proposal"
   | "building"
   | "awaiting_report"
+  /** The qa agent asked the user something (a `question` gate) and is waiting on the answer. */
+  | "awaiting_input"
   | "committing"
   | "done"
   | "failed"
