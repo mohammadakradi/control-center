@@ -345,6 +345,35 @@ test("is registered on the platform MCP server alongside the gate tool", async (
   assert.equal(server.name, "swe-platform");
 });
 
+test("the gate tool takes a question, and answers it as an answer rather than an approval", async () => {
+  // The qa agent's only gate (runner/gate-prompt.ts). Its result must read as the user's
+  // words: when a "blocked, may I…?" went through the report gate, "User APPROVED. Proceed."
+  // was read as licence to install packages outside the project (2026-09-29).
+  const { platformTools, gateResultText } = await import("./platform-mcp");
+  const seen: string[] = [];
+  const [gateTool] = platformTools({
+    onGate: async (gate) => {
+      seen.push(gate);
+      return { allow: true, feedback: "use the staging URL" };
+    },
+    backlog: { projectId: "p1" },
+    testScenarios: { projectId: "p1", projectPath: "/tmp/p1", taskId: "t1" },
+  });
+  const res = (await gateTool.handler(
+    { gate: "question", summary: "Which environment?" } as never,
+    undefined,
+  )) as { content: { text: string }[] };
+  assert.deepEqual(seen, ["question"]);
+  assert.equal(res.content[0].text, "User answered: use the staging URL");
+
+  assert.equal(gateResultText("question", { allow: true }), "User answered: yes, go ahead.");
+  const no = gateResultText("question", { allow: false });
+  assert.match(no, /^User answered NO/);
+  assert.doesNotMatch(no, /call request_approval again/, "a no is not a revise-and-retry");
+  // Approval gates keep their wording.
+  assert.equal(gateResultText("report", { allow: true }), "User APPROVED. Proceed.");
+});
+
 test("a transcript line that fails neither fails the add nor escapes the handler", async () => {
   // `onLog` is `record()`, which writes to the database, so it can fail on its own. Two things
   // must not happen: the caller being told the add failed when the row is committed, and the

@@ -8,6 +8,7 @@ import {
   Flag,
   ImageIcon,
   ListTree,
+  MessageCircleQuestion,
   MessageSquare,
   RotateCcw,
   Send,
@@ -27,7 +28,9 @@ import { Markdown } from "@/components/Markdown";
 import { FileModal } from "@/components/FileModal";
 
 type StreamEvent = { id?: number; type: string; payload: unknown; ts: number };
-type Gate = { gate: "proposal" | "report"; summary: string };
+/** `question` is the qa agent's only gate: it is blocked on something only the user can answer
+ *  or do, so it gets an answer box and Yes/No, never Approve/Reject (runner/gate-prompt.ts). */
+type Gate = { gate: "proposal" | "report" | "question"; summary: string };
 
 type Block = {
   type: string;
@@ -413,11 +416,16 @@ export function TaskLiveView({
     const filesNote = files.length
       ? ` (+${files.length} file${files.length === 1 ? "" : "s"})`
       : "";
-    const note = allow
-      ? fb
-        ? `Approved with changes: ${fb}${filesNote}`
-        : `Approved${filesNote}`
-      : `Rejected${fb ? `: ${fb}` : " — revise and present again"}${filesNote}`;
+    const note =
+      answered?.gate === "question"
+        ? allow
+          ? `${fb ? `Answered: ${fb}` : "Yes, go ahead"}${filesNote}`
+          : `No${fb ? `: ${fb}` : ""}${filesNote}`
+        : allow
+          ? fb
+            ? `Approved with changes: ${fb}${filesNote}`
+            : `Approved${filesNote}`
+          : `Rejected${fb ? `: ${fb}` : " — revise and present again"}${filesNote}`;
     const decision: Bubble = { kind: "decision", text: note, allow };
     setBubbles((prev) => [...prev, decision]);
     // Multipart only when there are files: an empty FormData is a body with nothing in it,
@@ -780,6 +788,48 @@ function GateCard({
   setFiles: (f: File[]) => void;
   onRespond: (allow: boolean) => void;
 }) {
+  if (gate.gate === "question") {
+    const answer = feedback.trim();
+    return (
+      // Info, not warn: nothing is being approved. Still ringed, because the run is stopped
+      // until this is answered.
+      <div className="rounded-lg border border-info-line bg-info-soft p-4 ring-1 ring-info-line">
+        <div className="mb-2 flex items-center gap-2 text-sm font-medium text-info">
+          <MessageCircleQuestion className="size-4 shrink-0" aria-hidden="true" />
+          Question — the agent is waiting for your answer
+        </div>
+        <div className="mb-3 max-h-72 overflow-auto rounded-lg bg-sunken p-3">
+          <Markdown>{gate.summary}</Markdown>
+        </div>
+        <FileDropZone
+          files={files}
+          setFiles={setFiles}
+          className="mb-2 overflow-hidden rounded-lg border bg-surface-2 focus-within:border-info focus-within:ring-2 focus-within:ring-info-line"
+        >
+          <textarea
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            placeholder="Type an answer, or just pick Yes / No"
+            aria-label="Your answer"
+            rows={2}
+            className="w-full resize-y bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-fg-faint"
+          />
+          <div className="border-t border-line px-3 py-2">
+            <AttachmentPicker files={files} setFiles={setFiles} hint="or drop a screenshot here" />
+          </div>
+        </FileDropZone>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="primary" onClick={() => onRespond(true)}>
+            <Send className="size-3.5" aria-hidden="true" />
+            {answer || files.length ? "Send answer" : "Yes, go ahead"}
+          </Button>
+          <Button variant="secondary" onClick={() => onRespond(false)}>
+            No
+          </Button>
+        </div>
+      </div>
+    );
+  }
   return (
     // A *pending* gate is the one thing the user must act on, so it gets a louder
     // border + ring than the resolved gate bubbles further up the transcript.
@@ -975,6 +1025,18 @@ function BubbleView({
           <X className="mt-0.5 size-3.5 shrink-0" />
         )}
         <span className="min-w-0 break-words">{bubble.text}</span>
+      </div>
+    );
+  if (bubble.kind === "gate" && bubble.gate.gate === "question")
+    return (
+      <div className="rounded-lg border border-info-line bg-info-soft p-3">
+        <div className="mb-1.5 flex items-center gap-2 text-sm font-medium text-info">
+          <MessageCircleQuestion className="size-3.5 shrink-0" aria-hidden="true" />
+          Question
+        </div>
+        <div className="max-h-72 overflow-auto">
+          <Markdown>{bubble.gate.summary}</Markdown>
+        </div>
       </div>
     );
   if (bubble.kind === "gate")

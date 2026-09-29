@@ -216,3 +216,24 @@ in `components/TaskLiveView.tsx` renders it.
 - **A rejected `fetch` must be caught in the composer.** `NewTaskForm` didn't, so a network
   error left the button spinning on "Dispatching…" for good with nothing said — from the user's
   side, indistinguishable from the app ignoring them.
+
+## The qa agent asks questions; it never asks for approval (2026-09-29)
+fe/swe/pm have two approvals — a proposal, then a change report. A QA run has nothing to
+approve: it ends in a verdict. Giving the qa agent the same `GATE_PROMPT` made it push "I'm
+blocked, may I install Playwright into the plugin folder?" through the **report** gate. The UI
+drew Approve/Reject, and `User APPROVED. Proceed.` came back — so it went ahead and installed
+packages outside the project.
+- A third gate kind, **`question`** (`runner/platform-mcp.ts`), with its own wait status
+  `awaiting_input` ("Waiting for your answer") that resumes into `running`, **including on a
+  "no"**. `gateResultText` phrases the result as the user's answer, and a no says "don't do it",
+  never "revise and call again".
+- `gatePromptFor(namespace)` (`runner/gate-prompt.ts`): qa gets `QA_GATE_PROMPT` — ask only
+  for real blockers, never change anything outside the project without an explicit yes, and
+  the test report is not a gate (it ends with `[[DONE]]` and renders as the normal Report card,
+  fix-task offer included). The `[[GATE:QUESTION]]` marker is the prose fallback.
+- `TaskLiveView` renders a pending question in the info tone with an answer box and
+  **Yes, go ahead / No** — no Approve/Reject.
+- Adding a status means every list in step: `lib/ui.ts` (label, tone, `ACTIVE_STATUSES`),
+  `StatusBadge`, `lib/active-tasks.ts` `GATE_STATUSES`, `runner/server.ts` and
+  `runner/backfill-usage.ts` `ACTIVE`, and the respond route's `GATE_STATUSES`. The column is
+  plain text, so no migration.

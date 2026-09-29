@@ -14,11 +14,11 @@ import {
 
 export const dynamic = "force-dynamic";
 
-/** The two statuses in which a gate is suspended waiting for an answer. The runner records the
+/** The statuses in which a gate is suspended waiting for an answer. The runner records the
  *  gate event and sets the status in the same synchronous step (`onGate` in
  *  `runner/session-manager.ts`), so a client that has *received* a gate always sees one of
  *  these on the row. */
-const GATE_STATUSES = new Set(["awaiting_proposal", "awaiting_report"]);
+const GATE_STATUSES = new Set(["awaiting_proposal", "awaiting_report", "awaiting_input"]);
 
 // POST /api/tasks/:id/respond — approve/reject a gate (authenticated proxy to the runner).
 // Accepts JSON { allow, feedback } OR multipart/form-data with the same fields plus `files`:

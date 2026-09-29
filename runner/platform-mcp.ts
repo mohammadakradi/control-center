@@ -19,7 +19,15 @@ import {
   type TestScenarioToolContext,
 } from "./test-scenario-tool";
 
-export type GateKind = "proposal" | "report";
+/**
+ * `proposal` and `report` are the fe/swe/pm workflow's two approvals: a plan, then a diff.
+ * `question` is neither — the agent is blocked on something only the user can decide or do
+ * (log in, choose a URL, allow an install). It exists because the qa agent has nothing to
+ * approve: a test run produces a verdict, not a change, and forcing its "I'm stuck, may I…?"
+ * through the change-report gate put Approve/Reject on a question (reported 2026-09-29).
+ */
+export type GateKind = "proposal" | "report" | "question";
+export const GATE_KINDS = ["proposal", "report", "question"] as const satisfies readonly GateKind[];
 export type GateDecision = { allow: boolean; feedback?: string };
 
 export type PlatformServerOptions = {
@@ -43,8 +51,8 @@ export type PlatformServerOptions = {
 function makeApprovalTool(onGate: PlatformServerOptions["onGate"]) {
   return tool(
     "request_approval",
-    "Request the user's approval at a workflow gate (proposal or change report). Blocks until the user responds in the platform UI. Returns their decision.",
-    { gate: z.enum(["proposal", "report"]), summary: z.string() },
+    "Pause for the user at a workflow gate and wait for their answer in the platform UI. gate=\"proposal\" or \"report\" asks them to approve a plan or a change report; gate=\"question\" asks them something only they can answer or do (put the question in summary). Returns their answer.",
+    { gate: z.enum(GATE_KINDS), summary: z.string() },
     async (args) => {
       let decision: GateDecision;
       try {
@@ -59,14 +67,28 @@ function makeApprovalTool(onGate: PlatformServerOptions["onGate"]) {
           isError: true,
         };
       }
-      const text = decision.allow
-        ? decision.feedback
-          ? `User APPROVED with changes: ${decision.feedback}. Proceed, incorporating the feedback.`
-          : "User APPROVED. Proceed."
-        : `User did NOT approve. Feedback: ${decision.feedback ?? "(none given)"}. Revise and call request_approval again.`;
+      const text = gateResultText(args.gate, decision);
       return { content: [{ type: "text" as const, text }] };
     },
   );
+}
+
+/** What the agent reads back from a gate. A question is answered, not approved — so its result
+ *  carries the user's words as the answer, and a "no" is a no rather than "revise and retry". */
+export function gateResultText(gate: GateKind, decision: GateDecision): string {
+  if (gate === "question") {
+    if (decision.allow) {
+      return decision.feedback
+        ? `User answered: ${decision.feedback}`
+        : "User answered: yes, go ahead.";
+    }
+    return `User answered NO${decision.feedback ? `: ${decision.feedback}` : ""}. Do not do what you asked about; report where that leaves the run.`;
+  }
+  return decision.allow
+    ? decision.feedback
+      ? `User APPROVED with changes: ${decision.feedback}. Proceed, incorporating the feedback.`
+      : "User APPROVED. Proceed."
+    : `User did NOT approve. Feedback: ${decision.feedback ?? "(none given)"}. Revise and call request_approval again.`;
 }
 
 /**

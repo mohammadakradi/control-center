@@ -1,6 +1,6 @@
 {
   "name": "qa",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A portable QA-engineer agent: drives a real browser through a written test scenario, judges each step against its expected result, captures evidence on failure, files bugs as tasks the swe/fe agents can pick up, and leaves behind a Playwright spec so the scenario re-runs for free.",
   "author": {
     "name": "mohammad"

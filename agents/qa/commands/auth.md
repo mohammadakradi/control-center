@@ -28,8 +28,15 @@ context, and you never ask for them (rule 11).
      "<login-url>" --wait-for-selector "<sel>" --timeout 180
    ```
 
-   Then tell the user, in one line, that a browser window is open and waiting for them to log
-   in. Don't narrate further while it waits.
+   The first run on a machine installs `playwright-core` into `~/.cache/qa-agent` (the script
+   says so on stderr); that is expected and needs network. Never install Playwright anywhere
+   yourself — not in the project, not in the plugin folder.
+
+   **Before telling the user anything, read the script's output** and look for
+   `[qa] A browser window is open`. Only once that line is there, tell them in one line that
+   the window is open and waiting for them to log in, and don't narrate further while it waits.
+   If the script exited instead (exit 3 = Playwright couldn't be installed, or a crash), no
+   window exists: say so plainly with the error, and do not claim otherwise.
 
 4. **Confirm the capture.** On success the script prints JSON with the cookie count and the
    origins stored. Zero cookies means the login didn't take — report that rather than claiming

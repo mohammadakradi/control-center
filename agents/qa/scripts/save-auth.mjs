@@ -13,10 +13,50 @@
 //     --timeout <seconds>              default: 180
 //     --browser <channel>              default: chrome
 //
-// Exits 0 on success with a one-line JSON summary on stdout, 1 on timeout.
-import { chromium } from 'playwright';
+// Exits 0 on success with a one-line JSON summary on stdout, 1 on timeout, 3 when Playwright
+// could not be installed.
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+
+// The plugin ships as plain files — inside the Control Center tarball, or a Claude Code plugin
+// cache — so there is no install step that could have put Playwright next to it. A bare
+// `import 'playwright'` therefore failed on every machine but one that happened to have it.
+// Resolve it instead: a copy the host already has, else `playwright-core` installed once into
+// a per-user cache (never into the plugin folder, which an app update replaces, nor the
+// project, which isn't ours). `-core` is enough: it drives the installed Chrome and downloads
+// no browsers.
+const PLAYWRIGHT_CORE = '1.63.0';
+const cacheDir = process.env.QA_CACHE_DIR || join(homedir(), '.cache', 'qa-agent');
+
+function loadChromium() {
+  const here = createRequire(import.meta.url);
+  const cached = createRequire(join(cacheDir, 'noop.js'));
+  for (const [req, name] of [[here, 'playwright'], [here, 'playwright-core'], [cached, 'playwright-core']]) {
+    try {
+      return req(name).chromium;
+    } catch {
+      /* not there — try the next place */
+    }
+  }
+  console.error(`[qa] One-time setup: installing playwright-core@${PLAYWRIGHT_CORE} into ${cacheDir}…`);
+  mkdirSync(cacheDir, { recursive: true });
+  try {
+    execFileSync(
+      'npm',
+      ['install', '--prefix', cacheDir, '--no-audit', '--no-fund', '--no-save', `playwright-core@${PLAYWRIGHT_CORE}`],
+      { stdio: ['ignore', 'ignore', 'inherit'] },
+    );
+    return cached('playwright-core').chromium;
+  } catch {
+    console.error('[qa] Could not install playwright-core (is npm on PATH, and is the network up?). Nothing was captured.');
+    process.exit(3);
+  }
+}
+
+const chromium = loadChromium();
 
 const argv = process.argv.slice(2);
 const loginUrl = argv.find((a) => !a.startsWith('--'));
