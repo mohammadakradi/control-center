@@ -25,7 +25,7 @@ context, and you never ask for them (rule 11).
 
    ```bash
    QA_PROJECT_DIR="$PWD" node "${CLAUDE_PLUGIN_ROOT}/scripts/save-auth.mjs" \
-     "<login-url>" --wait-for-selector "<sel>" --timeout 180
+     "<login-url>" --wait-for-selector "<sel>" --timeout 300
    ```
 
    The first run on a machine installs `playwright-core` into `~/.cache/qa-agent` (the script
@@ -34,7 +34,9 @@ context, and you never ask for them (rule 11).
 
    **Before telling the user anything, read the script's output** and look for
    `[qa] A browser window is open`. Only once that line is there, tell them in one line that
-   the window is open and waiting for them to log in, and don't narrate further while it waits.
+   the window is open and waiting for them to log in — and that it is a **separate Chrome
+   window** (a second Chrome icon in the Dock) that may have opened behind their other windows.
+   Don't narrate further while it waits.
    If the script exited instead (exit 3 = Playwright couldn't be installed, or a crash), no
    window exists: say so plainly with the error, and do not claim otherwise.
 

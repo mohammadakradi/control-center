@@ -22,7 +22,7 @@ import {
 } from "../lib/config";
 import { classifyTurnEnd, type PauseReason } from "./completion";
 import { ensureCodeGraph } from "./code-graph";
-import { gatePromptFor } from "./gate-prompt";
+import { gatePromptFor, questionOnlyGates } from "./gate-prompt";
 import {
   makePlatformServer,
   type GateDecision,
@@ -907,6 +907,19 @@ function runTask(
     });
   };
 
+  // An agent with nothing to approve (qa) that calls the proposal/report gate anyway: its
+  // summary is the run's report, recorded the way a `[[DONE]]` summary is — so the UI shows the
+  // ordinary Report card, never Approve/Reject on a test run (see ./platform-mcp).
+  const onFinalReport = questionOnlyGates(agent.namespace)
+    ? (summary: string) => {
+        producedReport = true;
+        record(handle, "message", {
+          type: "assistant",
+          message: { content: [{ type: "text", text: `${summary.trim()}\n\n[[DONE]]` }] },
+        });
+      }
+    : undefined;
+
   const canResume = resume && Boolean(task.sessionId);
   // Files/photos to point the agent at so it Reads them (Read renders images visually and
   // parses PDFs/docs). On the initial run that's the request's attachments; on a follow-up
@@ -1078,6 +1091,7 @@ function runTask(
           mcpServers: {
             "swe-platform": makePlatformServer({
               onGate,
+              onFinalReport,
               backlog: {
                 // Taken from the task's own row, never from the agent's arguments: backlogs
                 // are shared install-wide, so a project id an agent could supply would let

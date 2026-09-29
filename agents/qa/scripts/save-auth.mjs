@@ -10,7 +10,7 @@
 //     --wait-for-url <substring>       done when the URL contains this (default: it changes)
 //     --wait-for-selector <selector>   done when this appears (e.g. '[data-testid=avatar]')
 //     --out <path>                     default: <project>/.qa/auth/storageState.json
-//     --timeout <seconds>              default: 180
+//     --timeout <seconds>              default: 300
 //     --browser <channel>              default: chrome
 //
 // Exits 0 on success with a one-line JSON summary on stdout, 1 on timeout, 3 when Playwright
@@ -72,7 +72,7 @@ if (!loginUrl) {
 
 const projectDir = process.env.QA_PROJECT_DIR || process.cwd();
 const out = resolve(flag('out', `${projectDir}/.qa/auth/storageState.json`));
-const timeoutMs = Number(flag('timeout', '180')) * 1000;
+const timeoutMs = Number(flag('timeout', '300')) * 1000;
 const waitUrl = flag('wait-for-url', null);
 const waitSelector = flag('wait-for-selector', null);
 
@@ -80,8 +80,13 @@ const browser = await chromium.launch({ headless: false, channel: flag('browser'
 const context = await browser.newContext();
 const page = await context.newPage();
 await page.goto(loginUrl, { waitUntil: 'domcontentloaded' });
+// Launched from a background process (the platform runner, a backgrounded Bash), Chrome opens
+// *behind* whatever the user is looking at — the window existed, nobody saw it, and the wait
+// ran out (2026-09-29). Ask it to come forward; best-effort, since the OS may still refuse.
+await page.bringToFront().catch(() => {});
 
 console.error(`[qa] A browser window is open at ${loginUrl}.`);
+console.error('[qa] It is a separate Chrome window (a second Chrome icon in the Dock) and may be behind other windows.');
 console.error(`[qa] Log in there. Waiting up to ${timeoutMs / 1000}s for the session to establish.`);
 
 try {
