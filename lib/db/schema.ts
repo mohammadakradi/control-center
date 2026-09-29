@@ -359,6 +359,86 @@ export const backlogItems = sqliteTable(
   (t) => [uniqueIndex("backlog_source_path_unq").on(t.projectId, t.sourcePath)],
 );
 
+/** Which agent's directory a scenario was found in. Not "who should run it" — every scenario
+ *  runs through `/qa:test`; this is provenance, and it is what the UI shows when a scenario has
+ *  no feature to group under. */
+export type TestScenarioOrigin = "fe" | "swe" | "qa";
+
+/**
+ * Where a scenario is in its life.
+ *
+ * - "open"   — on disk and not yet answered for. The default, and the only thing the scan writes.
+ * - "passed" — a `/qa:test` run exercised it and every step passed. Written by the qa agent
+ *              through `complete_test_scenario` (runner/test-scenario-tool.ts), never inferred
+ *              from a task exiting 0: a run can finish cleanly having failed half its steps.
+ * - "closed" — a person dismissed it. Nothing automatic ever writes this.
+ */
+export type TestScenarioStatus = "open" | "passed" | "closed";
+
+/**
+ * A manual test scenario found in a project — the artifact the fe/swe agents already write at
+ * their report gate (`.fe/test-scenarios/`, `.swe/test-scenarios/`) and the qa agent authors
+ * (`.qa/scenarios/`). Before this table they were markdown nobody ever went back to.
+ *
+ * Mirrors `backlog_items` deliberately, because it is the same shape of problem: files on disk
+ * are the source of truth for *content*, rows are the source of truth for *state*. Keyed on the
+ * project-relative path so re-scanning is a no-op rather than a pile of duplicates, and status
+ * is never re-derived from disk.
+ *
+ * Project-scoped and shared, like the project and its backlog: a scenario describes a folder's
+ * verification work, not one person's view of it.
+ */
+export const testScenarios = sqliteTable(
+  "test_scenarios",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    // The file verbatim, so a run doesn't depend on it still being readable — and so an
+    // archived scenario can still be read and re-run. Same reasoning as `backlog_items.description`.
+    body: text("body").notNull().default(""),
+    // Project-relative, `/`-separated, always the ORIGINAL location even after archiving:
+    // it is the sync key, and it is what makes re-appearing on disk resolve to this row
+    // rather than a second one.
+    sourcePath: text("source_path").notNull(),
+    origin: text("origin").notNull().$type<TestScenarioOrigin>(),
+    // The feature it groups under; null means Ungrouped. Derived by the scan from the
+    // scenario's `feature:` front matter, else by matching its slug against the project's
+    // features. `set null` so closing out a feature never deletes the verification work.
+    featureId: text("feature_id").references(() => features.id, { onDelete: "set null" }),
+    // The feature name as the file stated it, kept even when no feature row matched. Without
+    // it, a scenario naming a feature that doesn't exist yet would be permanently ungrouped —
+    // with it, the grouping resolves for free the moment that feature is created.
+    featureHint: text("feature_hint"),
+    status: text("status").notNull().$type<TestScenarioStatus>().default("open"),
+    // Set once a human chooses a status explicitly. A later passing run refuses to move the
+    // row after that, same precedence as `backlog_items.status_override`: a person saying
+    // "this is closed" outranks a run that happened to go green.
+    statusOverride: integer("status_override", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    // Project-relative path the markdown was moved to when the scenario left `open`. Null
+    // while it is live. Kept so the move is reversible — reopening puts the file back.
+    archivedPath: text("archived_path"),
+    // The run that last exercised this scenario. `set null` so deleting task history doesn't
+    // take the scenario with it.
+    lastTaskId: text("last_task_id").references(() => tasks.id, { onDelete: "set null" }),
+    lastRunAt: integer("last_run_at", { mode: "timestamp" }),
+    // Counts from the last recorded run. Zero until one happens.
+    lastPassed: integer("last_passed").notNull().default(0),
+    lastFailed: integer("last_failed").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+    updatedAt: integer("updated_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => [uniqueIndex("test_scenario_source_path_unq").on(t.projectId, t.sourcePath)],
+);
+
 export type TaskEventType =
   | "message"
   | "partial"
@@ -387,5 +467,6 @@ export type Feature = typeof features.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskEvent = typeof taskEvents.$inferSelect;
+export type TestScenario = typeof testScenarios.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;

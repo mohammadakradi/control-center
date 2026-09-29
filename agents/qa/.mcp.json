@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "bash",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/qa-mcp.sh"],
+      "env": {
+        "QA_PROJECT_DIR": "${CLAUDE_PROJECT_DIR}",
+        "QA_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}"
+      }
+    }
+  }
+}

@@ -40,12 +40,12 @@ Full reference, with the reasoning behind each gotcha: **`.swe/notes/build-and-e
   `pnpm dev:local` native · `pnpm dev:clean` after a dependency change
 - Build: `pnpm build` · Lint: `pnpm lint` · Typecheck: `npx tsc --noEmit`
 - Test: `pnpm test` — **run it in the container with `RUNNER_HOST` unset**:
-  `docker exec platform env -u RUNNER_HOST pnpm test`. Baseline ✅ 692 tests. On the host it dies
+  `docker exec platform env -u RUNNER_HOST pnpm test`. Baseline ✅ 814 tests. On the host it dies
   with an esbuild platform error: `node_modules` is the container's Linux build.
 - Schema changes: `pnpm db:generate` then `pnpm db:migrate` — **review the generated SQL** and
   commit it with the schema change. `pnpm db:push` is dev-only and is not the migration path.
 - Backfills: `pnpm db:backfill-titles` · `pnpm db:backfill-usage`
-- Refresh the vendored agents: `pnpm agents:sync` (edit `../{swe,fe,pm}-agent`, never `agents/`)
+- Refresh the vendored agents: `pnpm agents:sync` (edit `../{swe,fe,pm,qa}-agent`, never `agents/`)
 - Release tarball: `pnpm release:pack` → `dist/` · Regenerate icons: `pnpm icons` (macOS only)
 
 Three traps worth knowing before you touch the dev loop, all detailed in the note:
@@ -121,6 +121,7 @@ lives in the journal. Read the topic you need, not the whole directory.
 | Topic | What is in it |
 |---|---|
 | [`features.md`](.swe/notes/features.md) | The `features` entity, branch naming, the merge-back lifecycle in the runner, managing groups, the grouped UI |
+| [`test-scenarios.md`](.swe/notes/test-scenarios.md) | The scenario scan, the three grouping tiers and why each is conservative, who may mark one passed, the archive move |
 | [`backlog.md`](.swe/notes/backlog.md) | The `.pm/tasks/` spec sync, status precedence, the caps, agent-filed items and their nonce fence, parallel runs |
 | [`file-reads-and-git.md`](.swe/notes/file-reads-and-git.md) | `lib/safe-read.ts` containment, every `lib/git.ts` hardening decision, and **two CRITICAL holes reproduced and knowingly left open** |
 | [`releases-and-data.md`](.swe/notes/releases-and-data.md) | The release workflow, `install.sh`, the update lock, export/import, Settings → Data |
@@ -139,7 +140,7 @@ Older dated entries (decisions, gotchas) are in `.swe/notes/decisions.md` and
 Full annotated map, with the reasoning attached to each entry:
 **`.swe/notes/architecture-map.md`**.
 
-- `agents/` — the vendored swe/fe/pm plugins, shipped in the release tarball. Read by
+- `agents/` — the vendored swe/fe/pm/qa plugins, shipped in the release tarball. Read by
   `lib/discovery/agents.ts`, never imported as code. **Edit the source checkouts, then
   `pnpm agents:sync`.**
 - `app/` — Next.js App Router pages and API routes (dashboard, agents, projects,

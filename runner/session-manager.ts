@@ -1076,6 +1076,18 @@ function runTask(
                 // export archives — so it gets the same scrubbing explicitly.
                 redact: (text) => String(redactPayload(text, handle.secrets)),
               },
+              testScenarios: {
+                // Same reasoning as the backlog's project id: scenarios are shared
+                // install-wide, so this comes from the task's own row and never from an
+                // argument the agent supplies.
+                projectId: project.id,
+                // The project checkout, not the task's worktree. A scenario's markdown lives
+                // in the repo and its archive has to land there too — archiving into a
+                // worktree that gets cleaned up after a clean `done` would lose the file.
+                projectPath: project.path,
+                taskId: task.id,
+                onLog: (message) => record(handle, "log", { message }),
+              },
             }),
           },
           ...(canResume ? { resume: task.sessionId! } : {}),

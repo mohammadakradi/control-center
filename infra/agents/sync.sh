@@ -5,14 +5,14 @@
 # when the machine has no Claude Code marketplace entries — so it must not drift from the
 # sources. Run this after changing an agent, then commit the result.
 #
-# Sources default to siblings of the repo (../swe-agent, ../fe-agent, ../pm-agent);
+# Sources default to siblings of the repo (../swe-agent, ../fe-agent, ../pm-agent, ../qa-agent);
 # CC_AGENT_SRC points somewhere else.
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 src_root=${CC_AGENT_SRC:-$(dirname "${root}")}
 
-for name in swe fe pm; do
+for name in swe fe pm qa; do
   src="${src_root}/${name}-agent"
   [ -d "${src}" ] || {
     printf 'error: %s not found. Set CC_AGENT_SRC to the directory holding the agent checkouts.\n' "${src}" >&2

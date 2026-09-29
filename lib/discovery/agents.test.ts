@@ -10,7 +10,7 @@
  * Runs against a throwaway SQLite file built from the real schema — never `data/platform.db`.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { after, before } from "node:test";
@@ -79,11 +79,11 @@ before(async () => {
 
 after(() => rmSync(dir, { recursive: true, force: true }));
 
-test("the shipped bundle carries swe, fe and pm with their commands", () => {
+test("the shipped bundle carries swe, fe, pm and qa with their commands", () => {
   const found = discoverBundledAgents(join(repoRoot, "agents"));
   const byNamespace = new Map(found.map((a) => [a.namespace, a]));
 
-  assert.deepEqual([...byNamespace.keys()].sort(), ["fe", "pm", "swe"]);
+  assert.deepEqual([...byNamespace.keys()].sort(), ["fe", "pm", "qa", "swe"]);
   for (const [namespace, agent] of byNamespace) {
     assert.equal(agent.id, `${namespace}@bundled`);
     assert.equal(agent.sourcePath, join(repoRoot, "agents", namespace));
@@ -93,6 +93,23 @@ test("the shipped bundle carries swe, fe and pm with their commands", () => {
       (agent.commands ?? []).some((c) => c.full === `/${namespace}:task`) ||
         (agent.commands ?? []).length > 0,
       `${namespace} exposes no commands`,
+    );
+  }
+});
+
+test("every bundled agent is one the platform actually surfaces", () => {
+  // `discoverAgents` filters the user's CLI registry through SURFACED, and the bundle is the
+  // fallback for a machine with no marketplace entries. A namespace shipped in `agents/` but
+  // missing from that set would work on a fresh install and vanish the moment the user
+  // installed the same plugin through the CLI — which is the confusing half of a bug, not the
+  // loud half. Asserted against the bundle so adding an agent to `agents/` forces the choice.
+  const bundled = discoverBundledAgents(join(repoRoot, "agents")).map((a) => a.namespace);
+  const source = readFileSync(join(repoRoot, "lib/discovery/agents.ts"), "utf8");
+  const surfaced = source.match(/const SURFACED = new Set\(\[([^\]]*)\]\)/)?.[1] ?? "";
+  for (const namespace of bundled) {
+    assert.ok(
+      surfaced.includes(`"${namespace}"`),
+      `${namespace} ships in agents/ but is not in SURFACED`,
     );
   }
 });

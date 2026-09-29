@@ -192,7 +192,11 @@ test("gateAction: refuses when honouring the gate could not work — or would un
  */
 const gateTool = async (onGate: () => Promise<{ allow: boolean; feedback?: string }>) => {
   const { platformTools } = await import("./platform-mcp");
-  const def = platformTools({ onGate, backlog: { projectId: "p1" } })[0];
+  const def = platformTools({
+    onGate,
+    backlog: { projectId: "p1" },
+    testScenarios: { projectId: "p1", projectPath: "/tmp/p1", taskId: "t1" },
+  })[0];
   assert.equal(def.name, "request_approval");
   return (args: Record<string, unknown>) =>
     def.handler(args as never, undefined) as Promise<{

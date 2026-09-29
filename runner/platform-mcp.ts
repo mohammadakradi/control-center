@@ -2,15 +2,22 @@
  * The in-process `swe-platform` MCP server: the tools an agent gets *because* it is running
  * under this platform rather than at a terminal.
  *
- * Two of them today. `request_approval` blocks the agent's turn until the user answers a
+ * Four of them today. `request_approval` blocks the agent's turn until the user answers a
  * workflow gate in the UI — there is no stdin to read, so a gate has to be a tool call.
  * `add_backlog_item` (./backlog-tool) files follow-up work into the project's backlog, since an
- * agent's own report is not somewhere anyone goes looking later. Both are handed to every
- * session in ./session-manager.
+ * agent's own report is not somewhere anyone goes looking later. `list_test_scenarios` and
+ * `complete_test_scenario` (./test-scenario-tool) do the same job for verification work: the
+ * scenarios the fe/swe agents write at their report gate were markdown nobody went back to, and
+ * the second tool is the only thing that marks one passed. All are handed to every session in
+ * ./session-manager.
  */
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { makeBacklogTool, type BacklogToolContext } from "./backlog-tool";
+import {
+  testScenarioTools,
+  type TestScenarioToolContext,
+} from "./test-scenario-tool";
 
 export type GateKind = "proposal" | "report";
 export type GateDecision = { allow: boolean; feedback?: string };
@@ -22,6 +29,10 @@ export type PlatformServerOptions = {
   onGate: (gate: GateKind, summary: string) => Promise<GateDecision>;
   /** Which project this session may file backlog items against, and where to log them. */
   backlog: BacklogToolContext;
+  /** Which project's test scenarios this session may read and complete. Separate from
+   *  `backlog` because it additionally needs the project's path (to archive a scenario's
+   *  markdown) and the task id (to record which run produced a result). */
+  testScenarios: TestScenarioToolContext;
 };
 
 /**
@@ -64,13 +75,17 @@ function makeApprovalTool(onGate: PlatformServerOptions["onGate"]) {
  * agent tries to call it mid-task.
  */
 export function platformTools(opts: PlatformServerOptions) {
-  return [makeApprovalTool(opts.onGate), makeBacklogTool(opts.backlog)];
+  return [
+    makeApprovalTool(opts.onGate),
+    makeBacklogTool(opts.backlog),
+    ...testScenarioTools(opts.testScenarios),
+  ];
 }
 
 export function makePlatformServer(opts: PlatformServerOptions) {
   return createSdkMcpServer({
     name: "swe-platform",
-    version: "0.2.0",
+    version: "0.3.0",
     tools: platformTools(opts),
   });
 }

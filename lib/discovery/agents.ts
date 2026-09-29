@@ -62,8 +62,8 @@ export type DiscoveredAgent = typeof agents.$inferInsert;
 
 type PluginManifest = { name?: string; description?: string; version?: string };
 
-/** This platform surfaces the locally-built agents (swe, fe, pm), not every installed plugin. */
-const SURFACED = new Set(["swe", "fe", "pm"]);
+/** This platform surfaces the locally-built agents (swe, fe, pm, qa), not every installed plugin. */
+const SURFACED = new Set(["swe", "fe", "pm", "qa"]);
 
 /** Read installed Claude Code plugins and turn them into agent records. */
 function discoverRegistryAgents(): DiscoveredAgent[] {

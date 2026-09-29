@@ -3,6 +3,8 @@ import type {
   FeatureStatus,
   TaskMergeState,
   TaskStatus,
+  TestScenarioOrigin,
+  TestScenarioStatus,
 } from "@/lib/db/schema";
 import { MODEL_CATALOG } from "./models";
 
@@ -101,6 +103,38 @@ export const BACKLOG_STATUS_LABEL: Record<BacklogStatus, string> = {
  * project whose cap says "full" while the page shows an empty Open section.
  */
 export const CLOSED_BACKLOG_STATUSES = ["done", "cancelled"] as const;
+
+/**
+ * A test scenario's status, in words and as a dot.
+ *
+ * Here rather than in the component for the reason every other vocabulary in this file is: a
+ * chip is forever tempted toward a shorter word ("Done" for passed), and that is exactly how
+ * one state acquires two names across two surfaces. "Completed" is the user-facing word for
+ * `passed` — a scenario passes its steps, and the work of verifying it is what completes.
+ */
+export const SCENARIO_STATUS_LABEL: Record<TestScenarioStatus, string> = {
+  open: "Open",
+  passed: "Completed",
+  closed: "Closed",
+};
+
+export function scenarioStatusDot(status: TestScenarioStatus): string {
+  switch (status) {
+    case "passed":
+      return "bg-ok";
+    case "closed":
+      return "bg-muted";
+    default:
+      return "bg-info";
+  }
+}
+
+/** Which agent wrote a scenario, for the provenance chip. */
+export const SCENARIO_ORIGIN_LABEL: Record<TestScenarioOrigin, string> = {
+  qa: "qa",
+  fe: "fe",
+  swe: "swe",
+};
 
 
 export const isOpenBacklogStatus = (status: BacklogStatus): boolean =>
