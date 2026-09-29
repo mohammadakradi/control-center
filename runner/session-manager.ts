@@ -35,6 +35,7 @@ import {
   type ModelChoice,
 } from "./model-router";
 import { buildTaskEnv, sensitiveEnvValues, type TaskEnv } from "./user-env";
+import { effortForModel } from "../lib/models";
 import {
   ensureFeatureBranch,
   ensureTaskWorktree,
@@ -998,7 +999,19 @@ function runTask(
       );
       // Effort reuses the tier the model triage already classified (see resolveEffort), so
       // this costs no extra round-trip. On resume `task.effort` is already concrete.
-      const effort = resolveEffort(task.command, task.effort || "auto", chosen.reason);
+      const requested = resolveEffort(task.command, task.effort || "auto", chosen.reason);
+      // Not every model takes every level: the 4.6 generation predates `xhigh`, and Haiku 4.5
+      // has no effort control at all — sending one is a 400, so it is omitted, not clamped.
+      const sdkEffort = effortForModel(chosen.label, requested.level);
+      const effort =
+        sdkEffort === requested.level
+          ? requested
+          : {
+              level: sdkEffort ?? requested.level,
+              reason: sdkEffort
+                ? `${requested.reason} — ${chosen.label} tops out at ${sdkEffort}`
+                : `${requested.reason} — not sent, ${chosen.label} has no effort control`,
+            };
       db.update(tasks)
         .set({
           model: chosen.label,
@@ -1025,7 +1038,7 @@ function runTask(
           // How hard the agent reasons, and how much it does per turn. Lower effort produces
           // fewer, more consolidated tool calls — a shorter transcript, which is where the
           // cost actually is (lib/models.ts).
-          effort: effort.level,
+          ...(sdkEffort ? { effort: sdkEffort } : {}),
           // Runaway guards. The SDK ends the query with `error_max_turns` /
           // `error_max_budget_usd`, which the stream loop below already turns into a failed
           // task carrying the reason. Spread conditionally so "no cap" omits the key rather

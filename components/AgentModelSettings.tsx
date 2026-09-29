@@ -3,16 +3,14 @@
 import { useState } from "react";
 import { Check, TriangleAlert } from "lucide-react";
 import { CardSection } from "@/components/ui-cards";
-import { MODEL_DISPLAY } from "@/lib/ui";
+import { MODEL_CATALOG, modelInfo } from "@/lib/models";
 
-/** Relative price per model, so the reason a model is off by default is on screen rather than
- *  in a commit message. Kept as prose, not numbers pulled from an API — it only has to convey
- *  the ordering that makes the decision obvious. */
-const PRICE_NOTE: Record<string, string> = {
-  "sonnet-5": "cheapest",
-  "opus-5": "mid",
-  "fable-5": "2× Opus 5",
-};
+/** Per-token price, so the reason a model is off by default is on screen rather than in a
+ *  commit message — Fable at 2× Opus 5 explains itself. */
+function priceNote(label: string): string {
+  const m = modelInfo(label);
+  return m ? `$${m.input} / $${m.output}` : "";
+}
 
 export type AgentModelPolicy = {
   models: string[];
@@ -26,9 +24,10 @@ export type AgentModelPolicy = {
  * plugin, not one person's setting. The dispatcher enforces this independently, so a stale tab
  * can only ever produce a clear refusal, never a run on a denied model.
  *
- * **Fable 5 starts denied for every agent.** It costs about twice what Opus 5 does, and when it
- * was auto-routed here 17 runs cost $389 with no sign the escalation was needed. Turning that
- * back on should be a decision someone makes on purpose, per agent.
+ * **Only the Sonnet 5 / Opus 5 generations start allowed.** Fable costs about twice what Opus 5
+ * does, and when it was auto-routed here 17 runs cost $389 with no sign the escalation was
+ * needed; a model added to the catalog later starts off too. Turning one on should be a
+ * decision someone makes on purpose, per agent.
  */
 export function AgentModelSettings({ initial }: { initial: AgentModelPolicy }) {
   const [policies, setPolicies] = useState(initial.policies);
@@ -77,11 +76,19 @@ export function AgentModelSettings({ initial }: { initial: AgentModelPolicy }) {
     }
   }
 
+  // Grouped by family so eleven models read as four decisions, cheapest family first — the
+  // same order the router clamps in.
+  const families = [...new Set(MODEL_CATALOG.map((m) => m.family))].map((family) => ({
+    family,
+    models: initial.models.filter((m) => modelInfo(m)?.family === family),
+  }));
+
   return (
     <CardSection title="Agent models">
       <p className="text-sm text-fg-subtle">
-        Which models each agent is allowed to run on. This applies to an explicit pick and to
-        Auto — Auto only ever chooses from what you allow here.
+        Every Claude model this install can run, and which ones each agent may use. This applies
+        to an explicit pick and to Auto — Auto only ever chooses from what you allow here. Prices
+        are per million input / output tokens.
       </p>
 
       {namespaces.length === 0 ? (
@@ -89,41 +96,71 @@ export function AgentModelSettings({ initial }: { initial: AgentModelPolicy }) {
           No agents discovered yet. Install a Claude Code plugin first.
         </p>
       ) : (
-        <div className="mt-4 space-y-4">
-          {namespaces.map((ns) => {
-            const allowed = policies[ns] ?? [];
-            return (
-              <div key={ns} className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                <span className="w-14 shrink-0 font-mono text-sm text-fg-strong">/{ns}</span>
-                <div className="flex flex-wrap gap-2">
-                  {initial.models.map((m) => {
-                    const on = allowed.includes(m);
-                    const pending = busy === `${ns}:${m}`;
-                    return (
-                      <button
-                        key={m}
-                        type="button"
-                        onClick={() => toggle(ns, m)}
-                        disabled={pending}
-                        aria-pressed={on}
-                        className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors disabled:opacity-50 ${
-                          on
-                            ? "border-ok-line bg-ok-soft text-ok"
-                            : "border-line bg-sunken text-fg-muted hover:text-fg-subtle"
-                        }`}
-                      >
-                        {/* The check is redundant with colour on purpose — state must not be
-                            conveyed by hue alone. `aria-pressed` carries it for assistive tech. */}
-                        {on && <Check className="size-3" aria-hidden />}
-                        {MODEL_DISPLAY[m] ?? m}
-                        <span className="text-fg-faint">· {PRICE_NOTE[m] ?? ""}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
+        // Scrolls inside the card, never the page, when three agent columns don't fit a phone.
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full min-w-[22rem] border-collapse text-sm">
+            <caption className="sr-only">Models allowed per agent</caption>
+            <thead>
+              <tr className="border-b border-line text-left text-xs text-fg-faint">
+                <th scope="col" className="py-2 pr-3 font-medium">Model</th>
+                <th scope="col" className="py-2 pr-3 font-medium">Price</th>
+                {namespaces.map((ns) => (
+                  <th key={ns} scope="col" className="px-1 py-2 text-center font-mono font-medium">
+                    /{ns}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            {families.map(({ family, models }) => (
+              <tbody key={family}>
+                <tr>
+                  <th
+                    scope="rowgroup"
+                    colSpan={2 + namespaces.length}
+                    className="pb-1 pt-4 text-left text-xs font-medium uppercase tracking-wide text-fg-faint"
+                  >
+                    {family}
+                  </th>
+                </tr>
+                {models.map((m) => (
+                  <tr key={m} className="border-b border-line last:border-b-0">
+                    <th scope="row" className="py-2 pr-3 text-left font-normal text-fg-strong">
+                      {modelInfo(m)?.name ?? m}
+                    </th>
+                    <td className="py-2 pr-3 whitespace-nowrap font-mono text-xs text-fg-faint">
+                      {priceNote(m)}
+                    </td>
+                    {namespaces.map((ns) => {
+                      const on = (policies[ns] ?? []).includes(m);
+                      const pending = busy === `${ns}:${m}`;
+                      return (
+                        <td key={ns} className="px-1 py-1.5 text-center">
+                          <button
+                            type="button"
+                            onClick={() => toggle(ns, m)}
+                            disabled={pending}
+                            aria-pressed={on}
+                            aria-label={`${modelInfo(m)?.name ?? m} for /${ns}`}
+                            className={`inline-flex min-w-14 items-center justify-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors disabled:opacity-50 ${
+                              on
+                                ? "border-ok-line bg-ok-soft text-ok"
+                                : "border-line bg-sunken text-fg-muted hover:text-fg-subtle"
+                            }`}
+                          >
+                            {/* The check is redundant with colour on purpose — state must not
+                                be conveyed by hue alone. `aria-pressed` carries it for
+                                assistive tech. */}
+                            {on && <Check className="size-3" aria-hidden />}
+                            {on ? "On" : "Off"}
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            ))}
+          </table>
         </div>
       )}
 

@@ -3,35 +3,34 @@ import type { TaskEnv } from "./user-env";
 import { allowedModels } from "../lib/agent-policy";
 import {
   EFFORT_LEVELS,
+  LEGACY_MODEL_ALIASES,
+  MODEL_CATALOG,
+  MODEL_LABELS,
+  modelInfo,
   normalizeEffortChoice,
   type EffortChoice,
   type EffortLevel,
+  type ModelLabel,
 } from "../lib/models";
 
-/** Model labels (stored on the task) → SDK model ids. Opus 4.8 stays resolvable
- *  (legacy/explicit) but auto-routing never selects it — Opus 5 replaced it. */
-export const MODELS = {
-  "sonnet-5": "claude-sonnet-5",
-  "opus-5": "claude-opus-5",
-  "opus-4.8": "claude-opus-4-8",
-  "fable-5": "claude-fable-5",
-} as const;
+export type { ModelLabel };
 
-export type ModelLabel = keyof typeof MODELS;
-export type ModelChoice = "auto" | ModelLabel | "sonnet" | "opus" | "sonnet-4.6"; // last three: legacy stored labels
+/** Model labels (stored on the task) → SDK model ids, from the one catalog in `lib/models.ts`.
+ *  Every label resolves; only the tier table below decides what `auto` reaches for. */
+export const MODELS = Object.fromEntries(MODEL_CATALOG.map((m) => [m.label, m.id])) as Record<
+  ModelLabel,
+  string
+>;
+
+export type ModelChoice = "auto" | ModelLabel | keyof typeof LEGACY_MODEL_ALIASES;
 export type ResolvedModel = {
   id: string; // SDK model id
   label: ModelLabel;
   reason: string;
 };
 
-// Legacy labels still stored on old tasks. Sonnet 4.6 is retired — anything that
-// used it (or the bare aliases) now runs on the current tier equivalents.
-const LEGACY: Record<string, ModelLabel> = {
-  sonnet: "sonnet-5",
-  "sonnet-4.6": "sonnet-5",
-  opus: "opus-4.8",
-};
+// Bare aliases still stored on old tasks, mapped to what they run on now.
+const LEGACY: Record<string, ModelLabel> = LEGACY_MODEL_ALIASES;
 
 /**
  * Complexity tiers, mapped to models per agent.
@@ -73,10 +72,8 @@ function clampToPolicy(
   if (allowed.includes(wanted)) return pick(wanted, reason);
 
   const denied = `${reason} — ${wanted} not allowed for :${namespace}`;
-  // Walk *down* from the wanted model. A retired label (`opus-4.8`) isn't on the ladder, so
-  // `indexOf` gives -1 and the slice is empty — it falls through to the cheapest allowed
-  // model, which is the right answer for a policy that no longer permits what it ran on.
-  const below = MODEL_ORDER.slice(0, Math.max(MODEL_ORDER.indexOf(wanted as never), 0));
+  // Walk *down* from the wanted model — never up, so a denial can only make a run cheaper.
+  const below = MODEL_ORDER.slice(0, Math.max(MODEL_ORDER.indexOf(wanted), 0));
   for (let i = below.length - 1; i >= 0; i--) {
     if (allowed.includes(below[i])) return pick(below[i], denied);
   }
@@ -85,9 +82,8 @@ function clampToPolicy(
   return pick(allowed[0] as ModelLabel, denied);
 }
 
-/** Cheapest-first ladder, used only for clamping. Retired labels are deliberately absent:
- *  they are never auto-selected, so they only appear here as a `wanted` that falls through. */
-const MODEL_ORDER = ["sonnet-5", "opus-5", "fable-5"] as const;
+/** Cheapest-first ladder, used only for clamping: the catalog order, which is by price. */
+const MODEL_ORDER: readonly ModelLabel[] = MODEL_LABELS;
 
 // Cheapest/fastest model — used for tiny side calls (naming a task) where quality
 // of prose doesn't matter and latency/cost do.
@@ -218,8 +214,8 @@ Request: ${base.slice(0, 1500)}`;
 
 /**
  * Decide which model a task should run on.
- * - explicit user choice (a concrete model) wins — legacy labels ("sonnet",
- *   "sonnet-4.6", "opus") map to their current equivalents
+ * - explicit user choice (a concrete model) wins, clamped to the policy — the bare legacy
+ *   aliases ("sonnet", "opus") map to their current equivalents
  * - mechanical commands → the simple tier
  * - "auto" → triage the request into simple/complex/very-complex and map it
  *   through the agent's tier table (for `plan` the floor is "complex"):
@@ -240,7 +236,7 @@ export async function resolveModel(
     // Clamped, not trusted. Dispatch already refuses a disallowed pick, so reaching here
     // means the row predates a policy change (a task being continued after someone switched
     // a model off) — downgrade it rather than failing a run that was legal when it started.
-    if (label in MODELS) return clampToPolicy(namespace, label, "selected by user");
+    if (modelInfo(label)) return clampToPolicy(namespace, label, "selected by user");
   }
   if (MECHANICAL.has(command))
     return clampToPolicy(namespace, tiers.simple, `mechanical command :${command}`);

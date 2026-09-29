@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -20,10 +20,12 @@ import { Button } from "@/components/ui/button";
 import { ErrorAlert, type ErrorAction } from "@/components/ui/error-alert";
 import { Select } from "@/components/ui/select";
 import { materializeFiles } from "@/lib/attachments";
+import { MODEL_CATALOG } from "@/lib/models";
 import {
   dispatchErrorAction,
   featureOptions,
   orderSkills,
+  REONBOARD_EVENT,
   type FeatureChoice,
 } from "@/lib/ui";
 
@@ -42,11 +44,11 @@ type AgentLite = {
   commands: Cmd[];
 };
 
+/** Most capable first — the catalog is cheapest-first for the router's clamping ladder, and a
+ *  picker reads better the other way round. Settings → Agent models narrows it per agent. */
 const MODELS = [
   { value: "auto", label: "Auto (smart)" },
-  { value: "fable-5", label: "Fable 5" },
-  { value: "opus-5", label: "Opus 5" },
-  { value: "sonnet-5", label: "Sonnet 5" },
+  ...[...MODEL_CATALOG].reverse().map((m) => ({ value: m.label as string, label: m.name })),
 ];
 
 /** Reasoning effort. Lower does less per turn — fewer, more consolidated tool calls and less
@@ -73,8 +75,8 @@ function autoHint(namespace: string | undefined, fableAllowed: boolean): string 
       ? "Auto picks Opus 5 for very complex planning, otherwise Sonnet 5."
       : "Auto picks Opus 5 for complex work and Sonnet 5 for simple changes.";
   return fableAllowed
-    ? `${base} Pick Fable 5 yourself if you want it.`
-    : `${base} Fable 5 is off for this agent — enable it in Settings → Agent models.`;
+    ? `${base} Pick Fable yourself if you want it.`
+    : `${base} Fable is off for this agent — enable it in Settings → Agent models.`;
 }
 
 // Per-namespace presentation for the agent cards. Falls back gracefully for
@@ -203,6 +205,25 @@ export function NewTaskForm({
   const resolved = agent
     ? `/${agent.namespace}:${command || "…"} on ${modelLabel} · ${effortLabel} effort`
     : "";
+
+  // The health nudge's Re-onboard button, clicked while this form is already mounted (see
+  // REONBOARD_EVENT). Stays on the chosen agent when it can onboard, else takes the first that
+  // can — then puts the cursor in the request box, so the click visibly lands somewhere.
+  const requestRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    function onReonboard() {
+      const current = agents.find((a) => a.id === agentId);
+      const canOnboard = (a?: AgentLite) => (a?.commands ?? []).some((c) => c.name === "onboard");
+      const target = canOnboard(current) ? current : agents.find((a) => canOnboard(a));
+      if (!target) return;
+      setAgentId(target.id);
+      setReonboard(true);
+      setCommand("onboard");
+      requestRef.current?.focus({ preventScroll: true });
+    }
+    window.addEventListener(REONBOARD_EVENT, onReonboard);
+    return () => window.removeEventListener(REONBOARD_EVENT, onReonboard);
+  }, [agents, agentId]);
 
   if (agents.length === 0) {
     return (
@@ -392,6 +413,7 @@ export function NewTaskForm({
             ❯
           </span>
           <textarea
+            ref={requestRef}
             value={requestText}
             onChange={(e) => setRequestText(e.target.value)}
             placeholder={
@@ -440,7 +462,7 @@ export function NewTaskForm({
       </FileDropZone>
       {effectiveModel === "auto" && (
         <p className="mt-2 text-xs text-fg-faint">
-          {autoHint(agent?.namespace, modelChoices.some((m) => m.value === "fable-5"))}
+          {autoHint(agent?.namespace, modelChoices.some((m) => m.value.startsWith("fable-")))}
         </p>
       )}
 

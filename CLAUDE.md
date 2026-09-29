@@ -87,14 +87,17 @@ Two controls on every dispatch, both stored on the task and both resolved by
   turn count, not how hard a turn thinks (`.swe/notes/cost-and-context.md`).
 
 **`agent_model_policies` gates both** (Settings → Agent models, `lib/agent-policy.ts`).
-Install-wide, keyed by namespace, and **Fable 5 is denied for every agent by default** — it is
-2× Opus 5's price. A missing row means the defaults, never "everything allowed", so a fresh
-install cannot auto-route onto the dearest model. Enforcement is in two places on purpose:
+Install-wide, keyed by namespace. **Only Sonnet 5/5.5 and Opus 5/5.5 are allowed by default**
+(an allowlist, so a newly catalogued model starts off); Fable 5/5.1 are 2× Opus 5's price. A
+missing row means the defaults, never "everything allowed", so a fresh install cannot
+auto-route onto the dearest model. Enforcement is in two places on purpose:
 `lib/dispatch.ts` **refuses** an explicitly denied pick (a filtered dropdown alone would be
 decoration any API caller could bypass), and the router **clamps** its own choice down the
 ladder, so `auto` can never select a denied model and a task being continued after a policy
-change degrades instead of failing. `lib/models.ts` owns the vocabulary — never add a second
-copy of the model list.
+change degrades instead of failing. `lib/models.ts` owns the vocabulary — `MODEL_CATALOG`
+(id, name, price, supported efforts, cheapest-first) feeds the picker, Settings, the router's
+clamping ladder and the display names. Adding a model is one entry there; never add a second
+copy of the list.
 
 ## What an app update does *not* fix
 `control-center update` swaps `~/.control-center/app/` and migrates the DB. It never touches a
