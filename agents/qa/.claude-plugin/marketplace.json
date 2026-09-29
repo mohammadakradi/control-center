@@ -1,0 +1,14 @@
+{
+  "name": "qa-agent-local",
+  "owner": {
+    "name": "mohammad"
+  },
+  "plugins": [
+    {
+      "name": "qa",
+      "source": "./",
+      "description": "Portable QA-engineer agent \u2014 onboard, auth, scenario, test, regress."
+    }
+  ],
+  "description": "Portable QA-engineer agent \u2014 browser-driven scenario testing, evidence capture, bug filing, and regression specs."
+}

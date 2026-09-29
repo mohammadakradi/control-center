@@ -17,7 +17,9 @@ import { tasks } from "@/lib/db/schema";
 import { backlogItemCount } from "@/lib/backlog";
 import { parallelOffer } from "@/lib/dispatch";
 import { backlogCountsByFeature, listFeatures } from "@/lib/features";
+import { projectScenarioView } from "@/lib/test-scenarios";
 import { FeatureManager } from "@/components/FeatureManager";
+import { TestScenarioList } from "@/components/TestScenarioList";
 import { TaskList } from "@/components/TaskList";
 import { syncAgents } from "@/lib/discovery/agents";
 import { isAgentOnboarded, refreshProject } from "@/lib/discovery/projects";
@@ -145,6 +147,28 @@ export default async function ProjectDetail({
   // (`featureWorkRows`), rather than by resolving each task's `featureId` through a lookup —
   // which is also what lets a feature nothing has run against still get a row.
   const featureList = listFeatures(project.id);
+
+  // The scenario folders are re-scanned on every load, exactly as the backlog's are — so a
+  // scenario an agent wrote seconds ago is on the page without a sync button to remember.
+  // `projectScenarioView` also re-resolves groupings whose feature didn't exist at scan time.
+  const { sync: scenarioSync, groups: scenarioGroups } = projectScenarioView(project);
+  // Keyed by id so the shared feature heading can show the branch chip. Built from the full
+  // list, not `visibleFeatures`: a scenario's group must not vanish because the page is
+  // filtered to closed features.
+  const scenarioFeatures = Object.fromEntries(
+    featureList.map((f) => [f.id, { id: f.id, name: f.name, branch: f.branch, status: f.status }]),
+  );
+  const scenarioWarnings = [
+    ...(scenarioSync.skipped > 0
+      ? [
+          `${scenarioSync.skipped} file(s) in the scenario folders were skipped — not plain regular files, or unreadable.`,
+        ]
+      : []),
+    ...(scenarioSync.truncated
+      ? ["Some scenarios on disk are not shown: the scan hit its size cap."]
+      : []),
+  ];
+  const openScenarios = scenarioGroups.reduce((n, g) => n + g.openCount, 0);
 
   // Closed features are hidden by default and brought back with `?features=closed`. Splitting
   // here rather than in the card keeps it off the client entirely: `FeatureManager` is a client
@@ -371,6 +395,49 @@ export default async function ProjectDetail({
           }}
           className="lg:col-span-2"
         />
+
+        {/* Test scenarios — the verification half of the same work the card above plans.
+            Grouped by feature with the same heading component, so a feature reads as one
+            thing across the page rather than as two unrelated lists that happen to share a
+            name. */}
+        <CardSection
+          title="Test scenarios"
+          id="test-scenarios"
+          className="lg:col-span-2"
+          right={
+            <span className="text-xs text-fg-faint">
+              {openScenarios === 0
+                ? "nothing open"
+                : `${openScenarios} open`}
+            </span>
+          }
+        >
+          <TestScenarioList
+            projectId={project.id}
+            groups={scenarioGroups.map((g) => ({
+              featureId: g.featureId,
+              featureName: g.featureName,
+              openCount: g.openCount,
+              passedCount: g.passedCount,
+              closedCount: g.closedCount,
+              // Projected, not spread: a scenario's `body` is up to 128 kB of markdown and
+              // has no business crossing the wire for a list.
+              scenarios: g.scenarios.map((s) => ({
+                id: s.id,
+                title: s.title,
+                status: s.status,
+                origin: s.origin,
+                sourcePath: s.sourcePath,
+                archivedPath: s.archivedPath,
+                statusOverride: s.statusOverride,
+                lastPassed: s.lastPassed,
+                lastFailed: s.lastFailed,
+              })),
+            }))}
+            features={scenarioFeatures}
+            warnings={scenarioWarnings}
+          />
+        </CardSection>
       </div>
     </div>
   );

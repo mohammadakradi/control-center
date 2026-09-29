@@ -326,11 +326,17 @@ test("is registered on the platform MCP server alongside the gate tool", async (
   const opts = {
     onGate: async () => ({ allow: true }),
     backlog: { projectId: "p1" },
+    testScenarios: { projectId: "p1", projectPath: "/tmp/p1", taskId: "t1" },
   };
 
   assert.deepEqual(
     platformTools(opts).map((t) => t.name),
-    ["request_approval", "add_backlog_item"],
+    [
+      "request_approval",
+      "add_backlog_item",
+      "list_test_scenarios",
+      "complete_test_scenario",
+    ],
   );
   // And the SDK accepts the pair: a malformed tool definition throws here, at server
   // construction, not at the point the definition was built.

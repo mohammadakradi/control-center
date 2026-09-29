@@ -40,12 +40,12 @@ Full reference, with the reasoning behind each gotcha: **`.swe/notes/build-and-e
   `pnpm dev:local` native · `pnpm dev:clean` after a dependency change
 - Build: `pnpm build` · Lint: `pnpm lint` · Typecheck: `npx tsc --noEmit`
 - Test: `pnpm test` — **run it in the container with `RUNNER_HOST` unset**:
-  `docker exec platform env -u RUNNER_HOST pnpm test`. Baseline ✅ 692 tests. On the host it dies
+  `docker exec platform env -u RUNNER_HOST pnpm test`. Baseline ✅ 814 tests. On the host it dies
   with an esbuild platform error: `node_modules` is the container's Linux build.
 - Schema changes: `pnpm db:generate` then `pnpm db:migrate` — **review the generated SQL** and
   commit it with the schema change. `pnpm db:push` is dev-only and is not the migration path.
 - Backfills: `pnpm db:backfill-titles` · `pnpm db:backfill-usage`
-- Refresh the vendored agents: `pnpm agents:sync` (edit `../{swe,fe,pm}-agent`, never `agents/`)
+- Refresh the vendored agents: `pnpm agents:sync` (edit `../{swe,fe,pm,qa}-agent`, never `agents/`)
 - Release tarball: `pnpm release:pack` → `dist/` · Regenerate icons: `pnpm icons` (macOS only)
 
 Three traps worth knowing before you touch the dev loop, all detailed in the note:
@@ -87,14 +87,17 @@ Two controls on every dispatch, both stored on the task and both resolved by
   turn count, not how hard a turn thinks (`.swe/notes/cost-and-context.md`).
 
 **`agent_model_policies` gates both** (Settings → Agent models, `lib/agent-policy.ts`).
-Install-wide, keyed by namespace, and **Fable 5 is denied for every agent by default** — it is
-2× Opus 5's price. A missing row means the defaults, never "everything allowed", so a fresh
-install cannot auto-route onto the dearest model. Enforcement is in two places on purpose:
+Install-wide, keyed by namespace. **Only Sonnet 5/5.5 and Opus 5/5.5 are allowed by default**
+(an allowlist, so a newly catalogued model starts off); Fable 5/5.1 are 2× Opus 5's price. A
+missing row means the defaults, never "everything allowed", so a fresh install cannot
+auto-route onto the dearest model. Enforcement is in two places on purpose:
 `lib/dispatch.ts` **refuses** an explicitly denied pick (a filtered dropdown alone would be
 decoration any API caller could bypass), and the router **clamps** its own choice down the
 ladder, so `auto` can never select a denied model and a task being continued after a policy
-change degrades instead of failing. `lib/models.ts` owns the vocabulary — never add a second
-copy of the model list.
+change degrades instead of failing. `lib/models.ts` owns the vocabulary — `MODEL_CATALOG`
+(id, name, price, supported efforts, cheapest-first) feeds the picker, Settings, the router's
+clamping ladder and the display names. Adding a model is one entry there; never add a second
+copy of the list.
 
 ## What an app update does *not* fix
 `control-center update` swaps `~/.control-center/app/` and migrates the DB. It never touches a
@@ -118,6 +121,7 @@ lives in the journal. Read the topic you need, not the whole directory.
 | Topic | What is in it |
 |---|---|
 | [`features.md`](.swe/notes/features.md) | The `features` entity, branch naming, the merge-back lifecycle in the runner, managing groups, the grouped UI |
+| [`test-scenarios.md`](.swe/notes/test-scenarios.md) | The scenario scan, the three grouping tiers and why each is conservative, who may mark one passed, the archive move |
 | [`backlog.md`](.swe/notes/backlog.md) | The `.pm/tasks/` spec sync, status precedence, the caps, agent-filed items and their nonce fence, parallel runs |
 | [`file-reads-and-git.md`](.swe/notes/file-reads-and-git.md) | `lib/safe-read.ts` containment, every `lib/git.ts` hardening decision, and **two CRITICAL holes reproduced and knowingly left open** |
 | [`releases-and-data.md`](.swe/notes/releases-and-data.md) | The release workflow, `install.sh`, the update lock, export/import, Settings → Data |
@@ -136,7 +140,7 @@ Older dated entries (decisions, gotchas) are in `.swe/notes/decisions.md` and
 Full annotated map, with the reasoning attached to each entry:
 **`.swe/notes/architecture-map.md`**.
 
-- `agents/` — the vendored swe/fe/pm plugins, shipped in the release tarball. Read by
+- `agents/` — the vendored swe/fe/pm/qa plugins, shipped in the release tarball. Read by
   `lib/discovery/agents.ts`, never imported as code. **Edit the source checkouts, then
   `pnpm agents:sync`.**
 - `app/` — Next.js App Router pages and API routes (dashboard, agents, projects,

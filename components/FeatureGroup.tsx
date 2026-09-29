@@ -57,6 +57,7 @@ export function FeatureGroup({
   count,
   unit,
   mergeStates = [],
+  action,
   children,
 }: {
   /** Null renders the ungrouped bucket — see `groupByFeature`, which only ever puts it last. */
@@ -69,6 +70,12 @@ export function FeatureGroup({
    *  backlog item's linked run) and `featureMergeSummary` is the one thing that must not differ
    *  between them — notably that it never counts `pending`. */
   mergeStates?: readonly (TaskMergeState | null | undefined)[];
+  /** An optional control for the group as a whole — the test-scenario list puts "Close all"
+   *  here. Rendered after the count, outside the disclosure button, for the same reason the
+   *  chips are: folding a second interactive element into the toggle's accessible name would
+   *  make the heading read as one confused control and put a destructive action one stray
+   *  Enter away from a keyboard user trying to expand the group. */
+  action?: ReactNode;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(() => featureGroupDefaultOpen(feature));
@@ -173,6 +180,7 @@ export function FeatureGroup({
         <span className="ml-auto shrink-0 text-xs text-fg-faint">
           {`${count} ${unit}${count === 1 ? "" : "s"}`}
         </span>
+        {action && <span className="shrink-0">{action}</span>}
       </div>
       <div id={bodyId} hidden={!open}>
         {children}

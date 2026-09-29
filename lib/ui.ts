@@ -3,7 +3,10 @@ import type {
   FeatureStatus,
   TaskMergeState,
   TaskStatus,
+  TestScenarioOrigin,
+  TestScenarioStatus,
 } from "@/lib/db/schema";
+import { MODEL_CATALOG } from "./models";
 
 export const STATUS_LABEL: Record<TaskStatus, string> = {
   queued: "Queued",
@@ -101,6 +104,39 @@ export const BACKLOG_STATUS_LABEL: Record<BacklogStatus, string> = {
  */
 export const CLOSED_BACKLOG_STATUSES = ["done", "cancelled"] as const;
 
+/**
+ * A test scenario's status, in words and as a dot.
+ *
+ * Here rather than in the component for the reason every other vocabulary in this file is: a
+ * chip is forever tempted toward a shorter word ("Done" for passed), and that is exactly how
+ * one state acquires two names across two surfaces. "Completed" is the user-facing word for
+ * `passed` — a scenario passes its steps, and the work of verifying it is what completes.
+ */
+export const SCENARIO_STATUS_LABEL: Record<TestScenarioStatus, string> = {
+  open: "Open",
+  passed: "Completed",
+  closed: "Closed",
+};
+
+export function scenarioStatusDot(status: TestScenarioStatus): string {
+  switch (status) {
+    case "passed":
+      return "bg-ok";
+    case "closed":
+      return "bg-muted";
+    default:
+      return "bg-info";
+  }
+}
+
+/** Which agent wrote a scenario, for the provenance chip. */
+export const SCENARIO_ORIGIN_LABEL: Record<TestScenarioOrigin, string> = {
+  qa: "qa",
+  fe: "fe",
+  swe: "swe",
+};
+
+
 export const isOpenBacklogStatus = (status: BacklogStatus): boolean =>
   !CLOSED_BACKLOG_STATUSES.includes(status as (typeof CLOSED_BACKLOG_STATUSES)[number]);
 
@@ -147,6 +183,16 @@ export const FEATURE_FILTER_PARAM = "features";
 
 /** `?compose=onboard` — what `ProjectHealthNudge`'s Re-onboard button links to. */
 export const COMPOSE_PARAM = "compose";
+
+/**
+ * Window event the Re-onboard button fires at a composer that is already on screen.
+ *
+ * The `?compose=onboard` link alone never worked in practice (reported again 2026-09-29): it is
+ * a client-side navigation to the *same* page, so `NewTaskForm` stays mounted and its
+ * `useState(composeOnboard)` initialiser never re-runs — the URL changed and nothing else did.
+ * The param still seeds a fresh load (a reload, a pasted link); this covers the click.
+ */
+export const REONBOARD_EVENT = "cc:reonboard";
 
 /**
  * Should the composer open with `onboard` already selected?
@@ -679,14 +725,10 @@ export function featureRowDefaultOpen(row: {
   return row.feature === null || row.feature.status === "active";
 }
 
-/** Stored model label → display name. "sonnet"/"opus" are legacy labels from
- *  before the per-agent tiering (kept so old tasks render correctly). */
+/** Stored model label → display name, from the catalog. "sonnet"/"opus" are legacy aliases
+ *  from before the per-agent tiering (kept so old tasks render correctly). */
 export const MODEL_DISPLAY: Record<string, string> = {
-  "sonnet-4.6": "Sonnet 4.6",
-  "opus-4.8": "Opus 4.8",
-  "opus-5": "Opus 5",
-  "sonnet-5": "Sonnet 5",
-  "fable-5": "Fable 5",
+  ...Object.fromEntries(MODEL_CATALOG.map((m) => [m.label, m.name])),
   sonnet: "Sonnet 4.6",
   opus: "Opus 4.8",
 };

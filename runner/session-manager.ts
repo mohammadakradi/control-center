@@ -35,6 +35,7 @@ import {
   type ModelChoice,
 } from "./model-router";
 import { buildTaskEnv, sensitiveEnvValues, type TaskEnv } from "./user-env";
+import { effortForModel } from "../lib/models";
 import {
   ensureFeatureBranch,
   ensureTaskWorktree,
@@ -998,7 +999,19 @@ function runTask(
       );
       // Effort reuses the tier the model triage already classified (see resolveEffort), so
       // this costs no extra round-trip. On resume `task.effort` is already concrete.
-      const effort = resolveEffort(task.command, task.effort || "auto", chosen.reason);
+      const requested = resolveEffort(task.command, task.effort || "auto", chosen.reason);
+      // Not every model takes every level: the 4.6 generation predates `xhigh`, and Haiku 4.5
+      // has no effort control at all — sending one is a 400, so it is omitted, not clamped.
+      const sdkEffort = effortForModel(chosen.label, requested.level);
+      const effort =
+        sdkEffort === requested.level
+          ? requested
+          : {
+              level: sdkEffort ?? requested.level,
+              reason: sdkEffort
+                ? `${requested.reason} — ${chosen.label} tops out at ${sdkEffort}`
+                : `${requested.reason} — not sent, ${chosen.label} has no effort control`,
+            };
       db.update(tasks)
         .set({
           model: chosen.label,
@@ -1025,7 +1038,7 @@ function runTask(
           // How hard the agent reasons, and how much it does per turn. Lower effort produces
           // fewer, more consolidated tool calls — a shorter transcript, which is where the
           // cost actually is (lib/models.ts).
-          effort: effort.level,
+          ...(sdkEffort ? { effort: sdkEffort } : {}),
           // Runaway guards. The SDK ends the query with `error_max_turns` /
           // `error_max_budget_usd`, which the stream loop below already turns into a failed
           // task carrying the reason. Spread conditionally so "no cap" omits the key rather
@@ -1062,6 +1075,18 @@ function runTask(
                 // than a transcript — every workspace can read a backlog, and it travels in
                 // export archives — so it gets the same scrubbing explicitly.
                 redact: (text) => String(redactPayload(text, handle.secrets)),
+              },
+              testScenarios: {
+                // Same reasoning as the backlog's project id: scenarios are shared
+                // install-wide, so this comes from the task's own row and never from an
+                // argument the agent supplies.
+                projectId: project.id,
+                // The project checkout, not the task's worktree. A scenario's markdown lives
+                // in the repo and its archive has to land there too — archiving into a
+                // worktree that gets cleaned up after a clean `done` would lose the file.
+                projectPath: project.path,
+                taskId: task.id,
+                onLog: (message) => record(handle, "log", { message }),
               },
             }),
           },
