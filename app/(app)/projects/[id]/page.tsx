@@ -24,7 +24,7 @@ import { TaskList } from "@/components/TaskList";
 import { syncAgents } from "@/lib/discovery/agents";
 import { isAgentOnboarded, refreshProject } from "@/lib/discovery/projects";
 import { gitBranchInfo, gitChanges } from "@/lib/git";
-import { resolveMembers } from "@/lib/workspace";
+import { resolveMemberSlot, resolveMembers } from "@/lib/workspace";
 import { AgentContributors } from "@/components/AgentContributors";
 import { AtAGlance } from "@/components/AtAGlance";
 import { SourceControl } from "@/components/SourceControl";
@@ -46,6 +46,7 @@ import {
   COMPOSE_PARAM,
   FEATURE_FILTER_PARAM,
   UNGROUPED_KEY,
+  memberOptions,
 } from "@/lib/ui";
 import { FeatureStatusNav } from "@/components/FeatureStatusNav";
 
@@ -330,6 +331,12 @@ export default async function ProjectDetail({
             agents={agents}
             onboardedByAgent={onboardedByAgent}
             parallelOffer={offerParallel}
+            // Only members dispatch would accept — a declared entry that isn't its own repo,
+            // or sits outside the workspace's folder, would just be a refusal to click.
+            members={memberOptions({
+              ...project,
+              members: project.members.filter((m) => resolveMemberSlot(project, m.path).ok),
+            })}
             // The **full** list, not `visibleFeatures` — this is the composer's picker, and a
             // form's options must not change with the page's view setting. `featureOptions`
             // already narrows it to active features, so the closed view would otherwise leave

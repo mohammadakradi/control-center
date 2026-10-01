@@ -57,6 +57,13 @@
       "when": 1790686271393,
       "tag": "0007_wooden_the_spike",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1790845569353,
+      "tag": "0008_rare_galactus",
+      "breakpoints": true
     }
   ]
 }

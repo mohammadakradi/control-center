@@ -9,6 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  memberOptions,
   ACTIVE_STATUSES,
   BACKLOG_STATUS_LABEL,
   FILE_OWNED_FEATURE_NOTE,
@@ -1086,4 +1087,33 @@ test("orderSkills puts onboard first whenever it is shown — what seeds the com
   assert.equal(orderSkills("swe", commands, false)[0].name, "onboard");
   // ...and it is dropped entirely once onboarding is done and no re-onboard was asked for.
   assert.ok(!orderSkills("swe", commands, true).some((c) => c.name === "onboard"));
+});
+
+test("memberOptions: whole workspace first, then each member by its declared path", () => {
+  const opts = memberOptions({
+    path: "/Users/x/AW-Maven/portal",
+    isWorkspace: true,
+    members: [
+      { path: ".", role: "Laravel API" },
+      { path: "../portal-frontend", role: "Vue app" },
+      { path: "../am-workers/" },
+    ],
+  });
+  assert.deepEqual(
+    opts.map((o) => [o.value, o.label]),
+    [
+      ["", "Whole workspace"],
+      [".", "portal"],
+      ["../portal-frontend", "portal-frontend"],
+      ["../am-workers/", "am-workers"],
+    ],
+  );
+  // The value is the declared path verbatim — the dispatch matches it exactly.
+  assert.equal(opts[2].description, "Vue app");
+  assert.equal(opts[3].description, "../am-workers/", "no role: the path explains itself");
+});
+
+test("memberOptions: nothing to choose outside a workspace", () => {
+  assert.deepEqual(memberOptions({ path: "/p", isWorkspace: false, members: [] }), []);
+  assert.deepEqual(memberOptions({ path: "/p", isWorkspace: true, members: [] }), []);
 });

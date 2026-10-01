@@ -36,6 +36,7 @@ let replyAction: typeof import("./session-manager").replyAction;
 let recordAllowed: typeof import("./session-manager").recordAllowed;
 let nudgePrompt: typeof import("./session-manager").nudgePrompt;
 let makeInputChannel: typeof import("./session-manager").makeInputChannel;
+let memberPreamble: typeof import("./session-manager").memberPreamble;
 
 before(async () => {
   execFileSync(
@@ -66,6 +67,7 @@ before(async () => {
     recordAllowed,
     nudgePrompt,
     makeInputChannel,
+    memberPreamble,
   } = await import("./session-manager"));
 
   const { projects } = await import("../lib/db/schema");
@@ -89,6 +91,17 @@ test("degrades to silence when the feature is gone", () => {
   // between the delete and that update landing. Naming a branch that no longer means
   // anything would be worse than saying nothing.
   assert.equal(featureBranchPreamble("f_does_not_exist"), "");
+});
+
+test("a member-scoped run is told its repo, that siblings may be busy, and where the workspace is", () => {
+  const text = memberPreamble(
+    { name: "Award Maven", path: "/w/portal" },
+    "/w/portal-frontend",
+  );
+  assert.match(text, /`portal-frontend` repo \(\/w\/portal-frontend\)/);
+  assert.match(text, /"Award Maven" workspace/);
+  assert.match(text, /inside this repo only/);
+  assert.match(text, /shared context .* is at \/w\/portal\./);
 });
 
 // ---------------------------------------------------------------- resultAction

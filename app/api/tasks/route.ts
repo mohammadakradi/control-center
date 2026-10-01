@@ -37,6 +37,8 @@ type TaskFields = {
   /** Which feature the run belongs to. Refused unless it names one of `projectId`'s features —
    *  an id from anywhere else is an error, never a silently dropped link. */
   featureId?: string | null;
+  /** Workspace only: the member repo to scope the run to (see lib/dispatch). */
+  member?: string | null;
 };
 
 // POST /api/tasks — create and dispatch a task.
@@ -79,6 +81,8 @@ export async function POST(request: Request) {
       parallel: form.get("parallel")?.toString() === "1",
       // An absent field and an empty one both mean "no feature"; a form can't send null.
       featureId: form.get("featureId")?.toString() || null,
+      // Same: empty means "the whole workspace".
+      member: form.get("member")?.toString() || null,
     };
     const files = form.getAll("files").filter((f): f is File => f instanceof File);
     attachments = await saveAttachments(id, files);
@@ -99,6 +103,13 @@ export async function POST(request: Request) {
   const feature = parseFeatureRef(fields.projectId, fields.featureId);
   if (!feature.ok) return NextResponse.json({ error: feature.error }, { status: 400 });
 
+  // A non-string member is a 400, not a coercion — dropping it would silently run the task
+  // across the whole workspace, queued behind everything, which is the opposite of what the
+  // caller asked for.
+  if (fields.member !== undefined && fields.member !== null && typeof fields.member !== "string") {
+    return NextResponse.json({ error: "member must be a string" }, { status: 400 });
+  }
+
   const outcome = await createAndStartTask({
     taskId: id, // already used to name the upload folder
     projectId: fields.projectId,
@@ -111,6 +122,7 @@ export async function POST(request: Request) {
     attachments,
     parallel: fields.parallel === true,
     featureId: feature.value ?? null,
+    member: fields.member || null,
   });
 
   if (!outcome.ok) {

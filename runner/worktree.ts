@@ -37,7 +37,7 @@ import {
   rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { DATA_DIR } from "../lib/config";
 import {
   gitMerge,
@@ -90,6 +90,62 @@ export function launchMode(opts: {
   )
     return "isolate";
   return opts.busy ? "queue" : "run";
+}
+
+/**
+ * Do two checkout-bound runs of the same project need the same working tree?
+ *
+ * A slot is a workspace member's **real path** (`resolveMemberSlot` in lib/workspace.ts —
+ * never the declared string, or "." and "./" would be two slots over one checkout) or null
+ * for the whole project. Non-workspace tasks are always null, so for them this is plain
+ * "yes" — the one-job-per-checkout rule unchanged. A whole-workspace run can reach every
+ * member, so it conflicts with everything; two members conflict when one directory contains
+ * the other (a nested repo sits inside its parent's tree, which a session there can reach).
+ * Pure for the same reason `launchMode` is: this decides whether two sessions ever share a
+ * checkout.
+ */
+export function slotsConflict(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return true;
+  const within = (p: string, c: string) => c === p || c.startsWith(p.endsWith(sep) ? p : p + sep);
+  return within(a, b) || within(b, a);
+}
+
+/**
+ * Ceiling on checkout sessions live at once in one workspace. Slots come from the project's
+ * own `.swe/workspace.json`, which has no length limit, and the dispatch route is reachable
+ * unauthenticated over loopback — without a cap, a long member list is an unbounded
+ * concurrent-session primitive (the same finding that gave worktrees `MAX_WORKTREES`). Past
+ * it, runs simply queue.
+ */
+export const MAX_WORKSPACE_SESSIONS = 6;
+
+/**
+ * Which queued checkout runs can start now, oldest first. `queued` must be in dispatch order;
+ * `live` is the slot of every session currently running in a checkout of this project.
+ *
+ * A queued run starts when its slot conflicts with nothing live **and with nothing queued
+ * ahead of it** — the older waiter reserves its slot. Without the reservation a queued
+ * whole-workspace run would starve behind an endless stream of member runs, each of which
+ * fits beside the one before it. For a non-workspace project every slot is null, so this is
+ * "the oldest queued job, if the checkout is free" — exactly the old FIFO.
+ */
+export function runnableQueued(
+  queued: { id: string; member: string | null }[],
+  live: (string | null)[],
+  limit = Infinity,
+): string[] {
+  const occupied = [...live];
+  let running = live.length;
+  const ready: string[] = [];
+  for (const q of queued) {
+    if (running < limit && !occupied.some((s) => slotsConflict(s, q.member))) {
+      ready.push(q.id);
+      running++;
+    }
+    // Started or still waiting, it holds its slot against everything behind it.
+    occupied.push(q.member);
+  }
+  return ready;
 }
 
 /**
