@@ -53,3 +53,7 @@ graphify-out/
 
 # Release tarballs built by infra/release/pack.sh
 dist
+
+# QA browser sessions + secrets (/qa:auth) and run evidence — local only
+.qa/auth/
+.qa/artifacts/
