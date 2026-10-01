@@ -122,6 +122,7 @@ lives in the journal. Read the topic you need, not the whole directory.
 |---|---|
 | [`features.md`](.swe/notes/features.md) | The `features` entity, branch naming, the merge-back lifecycle in the runner, managing groups, the grouped UI |
 | [`test-scenarios.md`](.swe/notes/test-scenarios.md) | The scenario scan, the three grouping tiers and why each is conservative, who may mark one passed, the archive move |
+| [`workspace-runs.md`](.swe/notes/workspace-runs.md) | Workspace tasks scoped to one member repo: per-member slots, the fair queue, the file-tool guard |
 | [`backlog.md`](.swe/notes/backlog.md) | The `.pm/tasks/` spec sync, status precedence, the caps, agent-filed items and their nonce fence, parallel runs |
 | [`file-reads-and-git.md`](.swe/notes/file-reads-and-git.md) | `lib/safe-read.ts` containment, every `lib/git.ts` hardening decision, and **two CRITICAL holes reproduced and knowingly left open** |
 | [`releases-and-data.md`](.swe/notes/releases-and-data.md) | The release workflow, `install.sh`, the update lock, export/import, Settings → Data |

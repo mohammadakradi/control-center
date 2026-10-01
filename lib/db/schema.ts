@@ -281,13 +281,18 @@ export const tasks = sqliteTable("tasks", {
   branch: text("branch"),
   // Opt-in from dispatch: if the project is busy when this task launches, run it in an
   // isolated git worktree instead of queueing. Meaningless for non-git/workspace projects
-  // (dispatch refuses the flag there).
+  // (dispatch refuses the flag there; a workspace runs side by side via `member`).
   parallel: integer("parallel", { mode: "boolean" }).notNull().default(false),
   // Where the run actually executed when it was isolated: an absolute path under
   // data/worktrees/. Null = the project checkout. Task-scoped reads (file/diff views)
   // resolve against this, not the project path. The dir may be cleaned up after a clean
   // `done` — the branch column is what stays authoritative for committed content.
   workdir: text("workdir"),
+  // Workspace projects only: the member repo this run is scoped to, as declared in the
+  // workspace's members (e.g. "../portal-frontend"). Null = the whole workspace. Runs on
+  // different members hold separate slots and execute concurrently (`slotsConflict` in
+  // runner/worktree.ts); dispatch refuses any value that isn't a declared member.
+  member: text("member"),
   error: text("error"),
   // What this task cost to run, accumulated over every SDK turn it took — including
   // continues/resumes, which each spawn a fresh subprocess whose own counters restart

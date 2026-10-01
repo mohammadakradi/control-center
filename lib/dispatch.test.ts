@@ -13,7 +13,7 @@
  */
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -272,6 +272,99 @@ test("the parallel flag is refused where no worktree can exist, before any row i
     rows,
     "a refused parallel dispatch must not leave a task row behind",
   );
+});
+
+// -------------------------------------------------- scoping a workspace run to one member
+
+/** A real workspace on disk: a root repo and a sibling repo, both with `.git`. */
+function makeWorkspace(name: string): string {
+  const base = join(root, name);
+  for (const d of ["portal/.git", "frontend/.git"]) mkdirSync(join(base, d), { recursive: true });
+  return join(base, "portal");
+}
+
+test("memberRefusal accepts only a declared member that resolves to a repo of its own", () => {
+  const ws = {
+    path: makeWorkspace("refusal-ws"),
+    isWorkspace: true,
+    members: [{ path: "." }, { path: "../frontend" }, { path: "/etc" }],
+  };
+  assert.equal(dispatch.memberRefusal(ws, null), null, "null = the whole workspace");
+  assert.equal(dispatch.memberRefusal(ws, undefined), null);
+  assert.equal(dispatch.memberRefusal(ws, "."), null);
+  assert.equal(dispatch.memberRefusal(ws, "../frontend"), null);
+  // Paths that *resolve* to a member, or anywhere else, are not members.
+  for (const forged of ["./../frontend", "../frontend/", "..", ""]) {
+    assert.match(dispatch.memberRefusal(ws, forged) ?? "", /not name a repo/, forged);
+  }
+  // Declared is not enough: workspace.json is writable by anything in the tree.
+  assert.match(dispatch.memberRefusal(ws, "/etc") ?? "", /relative path/);
+  assert.match(
+    dispatch.memberRefusal({ path: "/p", isWorkspace: false, members: [] }, ".") ?? "",
+    /only meaningful on a workspace/,
+  );
+  assert.equal(dispatch.memberRefusal(undefined, "."), "project not found");
+});
+
+test("a workspace task stores its member; a bad member is refused before any row exists", async () => {
+  db.insert(schema.projects)
+    .values({
+      id: "p_ws_members",
+      name: "WS members",
+      path: makeWorkspace("ws-members"),
+      isGit: true,
+      isWorkspace: true,
+      members: [{ path: "." }, { path: "../frontend" }, { path: "../gone" }],
+    })
+    .run();
+  const rows = db.select().from(schema.tasks).all().length;
+
+  for (const [projectId, member, status] of [
+    ["p_ws_members", "../elsewhere", 400],
+    ["p_ws_members", "/etc", 400],
+    ["p_ws_members", "../gone", 400], // declared, but no such repo
+    ["p1", ".", 400], // not a workspace
+    ["p_missing", ".", 404],
+  ] as const) {
+    const out = await dispatch.createAndStartTask({
+      projectId,
+      agentId: "fe@bundled",
+      command: "task",
+      userId: "user_local",
+      member,
+    });
+    assert.equal(out.ok, false);
+    if (!out.ok) assert.equal(out.status, status, `${projectId} / ${member}`);
+  }
+  assert.equal(
+    db.select().from(schema.tasks).all().length,
+    rows,
+    "a refused member must not leave a task row behind",
+  );
+
+  const scoped = await dispatch.createAndStartTask({
+    projectId: "p_ws_members",
+    agentId: "fe@bundled",
+    command: "task",
+    userId: "user_local",
+    member: "../frontend",
+  });
+  assert.equal(scoped.ok, false); // runner unreachable; the row still exists
+  if (!scoped.ok) {
+    const row = db.select().from(schema.tasks).where(eq(schema.tasks.id, scoped.taskId!)).get()!;
+    assert.equal(row.member, "../frontend", "the runner reads the slot off the row");
+  }
+
+  const whole = await dispatch.createAndStartTask({
+    projectId: "p_ws_members",
+    agentId: "fe@bundled",
+    command: "task",
+    userId: "user_local",
+  });
+  if (!whole.ok) {
+    const row = db.select().from(schema.tasks).where(eq(schema.tasks.id, whole.taskId!)).get()!;
+    assert.equal(row.member, null, "no member = the whole workspace, as before");
+  }
 });
 
 test("the parallel flag is stored on a git project's task; the default stays false", async () => {

@@ -21,6 +21,7 @@ session. Budgets: this index 8 KB, each topic file 30 KB.
 | Topic | Covers |
 |---|---|
 | [features](notes/features.md) | The `features` entity, branch naming, merge-back lifecycle, managing groups, the grouped UI |
+| [workspace-runs](notes/workspace-runs.md) | Scoping a workspace task to one member repo — slots, the fair queue, the member write guard |
 | [backlog](notes/backlog.md) | The `.pm/tasks/` spec sync, status precedence, caps, agent-filed items + the nonce fence, parallel runs |
 | [file-reads-and-git](notes/file-reads-and-git.md) | `lib/safe-read.ts` containment and every `lib/git.ts` hardening decision — **including two CRITICAL holes reproduced and knowingly left open** |
 | [releases-and-data](notes/releases-and-data.md) | The release workflow, `install.sh`, the update lock, export/import, Settings → Data |

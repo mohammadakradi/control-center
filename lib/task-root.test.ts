@@ -75,6 +75,7 @@ const task = (over: Partial<Task> = {}): Task => ({
   branch: null,
   parallel: false,
   workdir: null,
+  member: null,
   error: null,
   usageInputTokens: 0,
   usageOutputTokens: 0,

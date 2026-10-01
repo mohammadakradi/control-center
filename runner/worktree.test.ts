@@ -137,6 +137,96 @@ test("launchMode: queueing is the default; isolation needs the opt-in AND a busy
   assert.equal(wt.launchMode({ ...base, parallel: true, isGit: false }), "run");
 });
 
+test("slotsConflict: workspace members are separate slots; the whole project is every slot", () => {
+  // Non-workspace tasks (and whole-workspace ones) carry no member — one checkout, one job.
+  assert.equal(wt.slotsConflict(null, null), true);
+  // A whole-workspace run can reach every member, so it blocks and is blocked by any of them.
+  assert.equal(wt.slotsConflict(null, "/w/portal-frontend"), true);
+  assert.equal(wt.slotsConflict("/w/portal", null), true);
+  // Same member (slots are real paths, so two spellings of one repo land here too).
+  assert.equal(wt.slotsConflict("/w/portal-frontend", "/w/portal-frontend"), true);
+  // Different members: different repos — the case that runs side by side.
+  assert.equal(wt.slotsConflict("/w/portal", "/w/portal-frontend"), false, "a shared prefix is not containment");
+  assert.equal(wt.slotsConflict("/w/am-workers", "/w/portal-frontend"), false);
+  // A nested repo sits inside its parent's tree, so the two are one conflict, either way round.
+  assert.equal(wt.slotsConflict("/w/portal", "/w/portal/docs-site"), true);
+  assert.equal(wt.slotsConflict("/w/portal/docs-site", "/w/portal"), true);
+});
+
+test("runnableQueued: the session cap holds back runs that would otherwise fit", () => {
+  const q = [
+    { id: "a", member: "/w/a" },
+    { id: "b", member: "/w/b" },
+    { id: "c", member: "/w/c" },
+  ];
+  assert.deepEqual(wt.runnableQueued(q, ["/w/x"], 3), ["a", "b"], "3 live at most, one already is");
+  assert.deepEqual(wt.runnableQueued(q, ["/w/x", "/w/y", "/w/z"], 3), []);
+  assert.deepEqual(wt.runnableQueued(q, []), ["a", "b", "c"], "no limit by default");
+  assert.ok(wt.MAX_WORKSPACE_SESSIONS > 1 && wt.MAX_WORKSPACE_SESSIONS <= 16);
+});
+
+test("runnableQueued: plain projects keep strict FIFO behind a busy checkout", () => {
+  const q = [
+    { id: "a", member: null },
+    { id: "b", member: null },
+  ];
+  assert.deepEqual(wt.runnableQueued(q, []), ["a"], "free checkout: only the oldest starts");
+  assert.deepEqual(wt.runnableQueued(q, [null]), [], "busy checkout: nothing starts");
+  assert.deepEqual(wt.runnableQueued([], []), []);
+});
+
+test("runnableQueued: workspace members start side by side, without starving an older waiter", () => {
+  const fe = "/w/portal-frontend";
+  const wk = "/w/am-workers";
+  const pt = "/w/portal";
+  // The portal is busy: queued frontend and workers runs both fit, the second portal run waits.
+  assert.deepEqual(
+    wt.runnableQueued(
+      [
+        { id: "fe1", member: fe },
+        { id: "pt2", member: pt },
+        { id: "wk1", member: wk },
+      ],
+      [pt],
+    ),
+    ["fe1", "wk1"],
+  );
+  // Two queued runs on the same free member: only the older starts.
+  assert.deepEqual(
+    wt.runnableQueued(
+      [
+        { id: "fe1", member: fe },
+        { id: "fe2", member: fe },
+      ],
+      [],
+    ),
+    ["fe1"],
+  );
+  // An older whole-workspace waiter reserves every slot: a member run queued after it must not
+  // jump ahead just because its own repo happens to be free.
+  assert.deepEqual(
+    wt.runnableQueued(
+      [
+        { id: "whole", member: null },
+        { id: "wk1", member: wk },
+      ],
+      [fe],
+    ),
+    [],
+  );
+  // ...and once the checkout is free, the whole-workspace run goes first, alone.
+  assert.deepEqual(
+    wt.runnableQueued(
+      [
+        { id: "whole", member: null },
+        { id: "wk1", member: wk },
+      ],
+      [],
+    ),
+    ["whole"],
+  );
+});
+
 test("launchMode: a feature-linked parallel run always isolates, busy or not", () => {
   const base = {
     busy: false,

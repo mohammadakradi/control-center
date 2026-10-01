@@ -599,6 +599,33 @@ export function featureOptions(
 }
 
 /**
+ * The composer's Repo choices for a workspace: "Whole workspace" (the value "", which the
+ * route reads as no member) and then each declared member, valued by its path exactly as
+ * declared — the dispatch matches it against that list verbatim. Empty for a non-workspace
+ * project, which hides the control: a single repo has no choice to make.
+ */
+export function memberOptions(project: {
+  path: string;
+  isWorkspace: boolean;
+  members: readonly { path: string; role?: string }[];
+}): { value: string; label: string; description: string }[] {
+  if (!project.isWorkspace || !project.members.length) return [];
+  const leaf = (p: string) => p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
+  return [
+    {
+      value: "",
+      label: "Whole workspace",
+      description: "Can touch every repo — waits for all other runs here",
+    },
+    ...project.members.map((m) => ({
+      value: m.path,
+      label: m.path === "." ? leaf(project.path) : leaf(m.path),
+      description: m.role ?? m.path,
+    })),
+  ];
+}
+
+/**
  * Group rows by the feature they belong to, or answer **null** when none of them do.
  *
  * That null is the whole contract of this function. Grouping a list where nothing has a feature

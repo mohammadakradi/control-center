@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   Clock,
   Cpu,
+  Folder,
   FolderGit2,
   GitBranch,
   Paperclip,
@@ -15,6 +16,7 @@ import {
 import { db } from "@/lib/db";
 import { agents, projects, taskEvents } from "@/lib/db/schema";
 import { parallelOffer } from "@/lib/dispatch";
+import { memberOptions } from "@/lib/ui";
 import { Avatar } from "@/components/AgentAvatar";
 import { TaskLiveView } from "@/components/TaskLiveView";
 import { TaskChanges } from "@/components/TaskChanges";
@@ -94,6 +96,13 @@ export default async function TaskPage({
           <div className="mt-2.5 flex flex-wrap items-center gap-2.5 text-xs">
             {project && (
               <Chip icon={<FolderGit2 className="size-3" />}>{project.name}</Chip>
+            )}
+            {project && task.member && (
+              // The repo a workspace run was scoped to — named as the composer named it.
+              <Chip icon={<Folder className="size-3" />}>
+                {memberOptions(project).find((o) => o.value === task.member)?.label ??
+                  task.member}
+              </Chip>
             )}
             {task.branch && (
               <Chip icon={<GitBranch className="size-3" />}>{task.branch}</Chip>

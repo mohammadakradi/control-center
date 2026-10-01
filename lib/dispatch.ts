@@ -20,6 +20,7 @@ import {
 } from "./db/schema";
 import { daemonStartTask } from "./daemon-client";
 import { findFeature } from "./features";
+import { resolveMemberSlot } from "./workspace";
 import { canRunTasks, secretsConfigured } from "./secrets";
 import { newId } from "./util";
 import { modelAllowed } from "./agent-policy";
@@ -120,7 +121,8 @@ export type DispatchInput = {
    * Opt in to running concurrently if the project is busy at launch: the runner then puts
    * this task in its own git worktree (own working tree + branch) instead of queueing it.
    * Only meaningful for a plain git project — refused up front for non-git projects (no
-   * worktrees to make) and workspaces (several member repos make "the" worktree ambiguous).
+   * worktrees to make) and workspaces (several member repos make "the" worktree ambiguous;
+   * a workspace runs side by side through `member` instead).
    */
   parallel?: boolean;
   /**
@@ -130,7 +132,30 @@ export type DispatchInput = {
    * grouping (and, once the runner merges onto feature branches, into another repo's branch).
    */
   featureId?: string | null;
+  /**
+   * Workspace projects only: the member repo this run is scoped to — exactly one of the
+   * project's declared `members[].path` values (e.g. "../portal-frontend"). Runs on different
+   * members execute concurrently; null/absent = the whole workspace, which queues behind
+   * everything. Refused up front for anything else: the runner makes this the session's
+   * working directory, so it must never be a path the caller made up.
+   */
+  member?: string | null;
 };
+
+/**
+ * Why `member` can't be used for this project, or null if it can. Matched exactly against
+ * the declared list (so "./../x" is refused rather than reasoned about), then held to
+ * `resolveMemberSlot`'s containment rules — the same check the runner repeats at launch.
+ */
+export function memberRefusal(
+  project: Pick<Project, "path" | "isWorkspace" | "members"> | undefined,
+  member: string | null | undefined,
+): string | null {
+  if (member === null || member === undefined) return null;
+  if (!project) return "project not found";
+  const slot = resolveMemberSlot(project, member);
+  return slot.ok ? null : slot.reason;
+}
 
 /** Titles are shown in lists and are not free-form input — cap them like the generated ones
  *  (`generateTitle` caps at 80) and drop anything that would render as a blank row. Cut by
@@ -176,9 +201,22 @@ export async function createAndStartTask(input: DispatchInput): Promise<Dispatch
         ok: false,
         status: 400,
         error: project.isWorkspace
-          ? "Parallel runs aren't available on a workspace — its member repos make the isolated worktree ambiguous. Dispatch normally to queue."
+          ? "Parallel runs in an isolated worktree aren't available on a workspace — its member repos make the worktree ambiguous. Pick a repo instead: tasks on different repos run side by side."
           : "Parallel runs need a git repository — this project isn't one. Dispatch normally to queue.",
       };
+    }
+  }
+
+  // Same stance again: a member that isn't declared would become the session's cwd.
+  if (input.member !== null && input.member !== undefined) {
+    const project = db
+      .select({ path: projects.path, isWorkspace: projects.isWorkspace, members: projects.members })
+      .from(projects)
+      .where(eq(projects.id, input.projectId))
+      .get();
+    const refusal = memberRefusal(project, input.member);
+    if (refusal) {
+      return { ok: false, status: project ? 400 : 404, error: refusal };
     }
   }
 
@@ -233,6 +271,7 @@ export async function createAndStartTask(input: DispatchInput): Promise<Dispatch
       attachments: input.attachments ?? [],
       parallel: input.parallel ?? false,
       featureId: input.featureId ?? null,
+      member: input.member ?? null,
       // "pending" the moment a feature is linked — before the runner has even decided how
       // this task will run — so a queued or checkout-bound feature task shows a state rather
       // than reading identically to one with no feature at all.

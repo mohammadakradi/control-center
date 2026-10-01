@@ -109,6 +109,7 @@ export function NewTaskForm({
   composeOnboard = false,
   parallelOffer = false,
   features = [],
+  members = [],
   modelPolicy,
 }: {
   projectId: string;
@@ -141,6 +142,12 @@ export function NewTaskForm({
    *  isolation is the default and queueing is the manual choice (2026-08-22). On a free
    *  checkout with no feature the flag is harmless — the runner just runs normally. */
   parallelOffer?: boolean;
+  /**
+   * A workspace's Repo choices (`memberOptions` in lib/ui): "Whole workspace" plus each
+   * member. Empty (the default) hides the control — a single repo has nothing to pick. Picking
+   * a member is what lets this run go side by side with runs on the other repos.
+   */
+  members?: { value: string; label: string; description: string }[];
 }) {
   const router = useRouter();
   const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
@@ -175,6 +182,8 @@ export function NewTaskForm({
   // queued into the shared checkout instead.
   const [parallel, setParallel] = useState(true);
   const [featureId, setFeatureId] = useState("");
+  // "" = the whole workspace, which is how a workspace run behaved before members existed.
+  const [member, setMember] = useState("");
   const featureChoices = useMemo(() => featureOptions(features), [features]);
   // One real choice plus "No feature" is not a choice — and a project with only closed features
   // has nothing assignable, so this counts the options rather than the rows.
@@ -272,6 +281,7 @@ export function NewTaskForm({
       // feature closed since this page rendered would be refused with a 400 the user can do
       // nothing about, and an empty value means "no feature" to the route anyway.
       if (featureId && offerFeatures) fd.set("featureId", featureId);
+      if (member && members.length) fd.set("member", member);
       for (const f of await materializeFiles(files)) fd.append("files", f);
       res = await fetch("/api/tasks", { method: "POST", body: fd });
     } catch {
@@ -485,6 +495,27 @@ export function NewTaskForm({
           />
           <span className="text-xs text-fg-faint">
             groups this run with related work on one branch
+          </span>
+        </div>
+      )}
+
+      {/* Workspace only. Its own row for the same reason as Feature: a member's role text is
+          long, and the footer already wraps at 390px. */}
+      {members.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="text-xs text-fg-faint">Repo</span>
+          <Select
+            value={member}
+            onChange={setMember}
+            options={members}
+            ariaLabel="Repo"
+            placement="up"
+            className="min-w-56"
+          />
+          <span className="text-xs text-fg-faint">
+            {member
+              ? "runs alongside tasks on the other repos"
+              : "pick one repo to run alongside tasks on the others"}
           </span>
         </div>
       )}

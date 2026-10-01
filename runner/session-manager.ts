@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { basename, resolve } from "node:path";
 import { query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "../lib/db";
@@ -10,9 +11,11 @@ import {
   tasks,
   type Attachment,
   type Feature,
+  type Project,
   type TaskStatus,
 } from "../lib/db/schema";
 import { attachmentNote } from "../lib/uploads";
+import { resolveMemberSlot } from "../lib/workspace";
 import {
   AUTO_COMPACT_WINDOW,
   MIN_LAUNCH_BUDGET_USD,
@@ -22,6 +25,7 @@ import {
 } from "../lib/config";
 import { classifyTurnEnd, type PauseReason } from "./completion";
 import { ensureCodeGraph } from "./code-graph";
+import { MEMBER_GUARD_MATCHER, memberWriteRefusal } from "./member-guard";
 import { gatePromptFor, questionOnlyGates } from "./gate-prompt";
 import {
   makePlatformServer,
@@ -40,8 +44,11 @@ import {
   ensureFeatureBranch,
   ensureTaskWorktree,
   launchMode,
+  MAX_WORKSPACE_SESSIONS,
   mergeFeatureTask,
   removeWorktreeIfClean,
+  runnableQueued,
+  slotsConflict,
   worktreeBranch,
   worktreeDirty,
 } from "./worktree";
@@ -102,6 +109,13 @@ type SessionHandle = {
    *  merge-on-done step in `finalize` — all read this rather than the row, which nothing
    *  here ever re-fetches mid-run. */
   featureId: string | null;
+  /** The workspace member this run is scoped to (tasks.member) — its slot in the project.
+   *  Always null outside a workspace. Runs on different members occupy different checkouts,
+   *  so `projectBusy` and `promoteNext` let them run side by side (`slotsConflict`). */
+  member: string | null;
+  /** The slot this run holds: the member's real path (`resolveMemberSlot`), or null for the
+   *  whole project. What `slotsConflict` compares — never the declared `member` string. */
+  slot: string | null;
   /** Set once the one automatic conflict-resolution turn has been pushed (see `mergeOnDone`).
    *  Whatever that turn achieves, there is never a second one — the bound that keeps a merge
    *  the agent can't resolve from looping the session forever. */
@@ -143,10 +157,11 @@ const sessions = new Map<string, SessionHandle>();
 
 export const getHandle = (taskId: string) => sessions.get(taskId);
 
-/** Is another job actually running (started, not finished) in this project's main checkout
- *  right now? Worktree-isolated sessions don't count: they hold their own working tree, so
- *  they neither block the checkout nor stop `promoteNext` from filling it. */
-function projectBusy(projectId: string, exceptTaskId?: string): boolean {
+/** Slots of the jobs actually running (started, not finished) in this project's checkouts
+ *  right now. Worktree-isolated sessions don't count: they hold their own working tree, so
+ *  they neither block a checkout nor stop `promoteNext` from filling it. */
+function liveSlots(projectId: string, exceptTaskId?: string): (string | null)[] {
+  const slots: (string | null)[] = [];
   for (const h of sessions.values()) {
     if (
       h.projectId === projectId &&
@@ -155,9 +170,20 @@ function projectBusy(projectId: string, exceptTaskId?: string): boolean {
       !h.worktree &&
       h.taskId !== exceptTaskId
     )
-      return true;
+      slots.push(h.slot);
   }
-  return false;
+  return slots;
+}
+
+/** Is another job running in a checkout this slot needs? `slot` null (the default) asks
+ *  about the project as a whole — any live checkout job at all — which is the only question
+ *  a non-workspace project can ask. */
+function projectBusy(
+  projectId: string,
+  exceptTaskId?: string,
+  slot: string | null = null,
+): boolean {
+  return liveSlots(projectId, exceptTaskId).some((s) => slotsConflict(s, slot));
 }
 
 /**
@@ -166,24 +192,52 @@ function projectBusy(projectId: string, exceptTaskId?: string): boolean {
  * accidentally start another while a job is mid-flight.
  */
 function promoteNext(projectId: string): void {
-  if (projectBusy(projectId)) return;
-  // The checkout is free right now — settle any feature merges that were blocked on it
-  // (and reclassify rows an earlier failure mis-recorded), before a promoted job takes it.
-  try {
-    sweepFeatureMerges(projectId, { mergeInMainCheckout: true });
-  } catch {
-    /* best-effort — a sweep failure must never stop the queue */
+  const live = liveSlots(projectId);
+  if (!live.length) {
+    // The checkout is free right now — settle any feature merges that were blocked on it
+    // (and reclassify rows an earlier failure mis-recorded), before a promoted job takes it.
+    try {
+      sweepFeatureMerges(projectId, { mergeInMainCheckout: true });
+    } catch {
+      /* best-effort — a sweep failure must never stop the queue */
+    }
   }
-  const next = db
-    .select()
+  const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+  const isWorkspace = Boolean(project?.isWorkspace);
+  const queued = db
+    .select({ id: tasks.id, member: tasks.member })
     .from(tasks)
     .where(and(eq(tasks.projectId, projectId), eq(tasks.status, "queued")))
     .orderBy(asc(tasks.createdAt))
-    .get();
-  if (!next) return;
-  const h = sessions.get(next.id);
-  if (h?.start && !h.started) h.start();
-  else if (!h) startTask(next.id); // no live handle (e.g. after restart) — dispatch fresh
+    .all()
+    .map((r) => {
+      // A live handle already knows its slot. A member that no longer resolves counts as
+      // the whole workspace — the most conservative slot — and fails cleanly at launch.
+      const h = sessions.get(r.id);
+      if (h) return { id: r.id, member: h.slot };
+      const slot = isWorkspace && r.member && project ? resolveMemberSlot(project, r.member) : null;
+      return { id: r.id, member: slot?.ok ? slot.dir : null };
+    });
+  // Every queued job whose slot is free now — one for a plain project (all slots are null),
+  // possibly several in a workspace when a whole-workspace run hands back every member.
+  for (const id of runnableQueued(queued, live, isWorkspace ? MAX_WORKSPACE_SESSIONS : Infinity)) {
+    const h = sessions.get(id);
+    if (h?.start && !h.started) h.start();
+    else if (!h) startTask(id); // no live handle (e.g. after restart) — dispatch fresh
+  }
+}
+
+/** Told to a run scoped to one workspace member, on every launch: its cwd is that repo, and
+ *  sibling repos may have their own runs live right now. Instruction-level, like
+ *  `featureBranchPreamble` — the hard part of the boundary is the cwd and the slot. */
+export function memberPreamble(project: Pick<Project, "name" | "path">, memberDir: string): string {
+  return (
+    `\n\n📁 This task is scoped to the \`${basename(memberDir)}\` repo (${memberDir}) of the ` +
+    `"${project.name}" workspace, and that repo is your working directory. Other member repos ` +
+    "may have their own tasks running in them right now: read them freely for context, but " +
+    "make every change, build, and git operation inside this repo only. The workspace's " +
+    `shared context (CLAUDE.md, .swe/workspace.json) is at ${project.path}.`
+  );
 }
 
 /**
@@ -809,8 +863,18 @@ function runTask(
     done: false,
     secrets: sensitiveEnvValues(taskEnv),
     featureId: task.featureId,
+    member: project.isWorkspace ? task.member : null,
+    slot: null,
   };
   sessions.set(taskId, handle);
+  // The member's directory, checked against the project's *current* member list — here, and
+  // again in `launch`, because a queued run can outlive the list it was dispatched against. A
+  // member that no longer resolves fails the run; it never falls back to the root (that
+  // would put a member-scoped run in a slot it doesn't hold).
+  const memberSlot = handle.member ? resolveMemberSlot(project, handle.member) : null;
+  let memberDir = memberSlot?.ok ? memberSlot.dir : null;
+  handle.slot = memberDir;
+  let memberDirs = project.members.map((m) => resolve(project.path, m.path));
 
   // The actual run: resolve the model, open the SDK session, consume the stream.
   // Wrapped in `launch` so the job can sit queued until its project frees up.
@@ -829,6 +893,31 @@ function runTask(
       return;
     }
     handle.secrets = sensitiveEnvValues(env);
+
+    // Re-validate the member against a fresh row: a queued run is launched by `promoteNext`
+    // through this closure, long after the check in `runTask` — and the project page
+    // re-syncs `members` from disk on every render. The slot must also be the one this run
+    // was queued under, or it was scheduled against a different checkout than it would use.
+    if (handle.member) {
+      const fresh = db.select().from(projects).where(eq(projects.id, project.id)).get();
+      const now = fresh ? resolveMemberSlot(fresh, handle.member) : null;
+      if (!now?.ok || now.dir !== handle.slot) {
+        finalize(
+          handle,
+          "failed",
+          `Couldn't start in the repo this task is scoped to: ${
+            !fresh
+              ? "the project is no longer registered."
+              : now && !now.ok
+                ? now.reason
+                : "it now resolves to a different folder than it was queued for."
+          }`,
+        );
+        return;
+      }
+      memberDir = now.dir;
+      memberDirs = fresh!.members.map((m) => resolve(fresh!.path, m.path));
+    }
 
     // Name the task for readable history (fire-and-forget; never blocks the run).
     if (!resume && !task.title) {
@@ -856,7 +945,7 @@ function runTask(
       // belong to another job by now. `projectBusy` counts only started, unfinished,
       // non-worktree sessions, which is exactly "someone else is in that directory".
       checkoutTaken:
-        !handle.worktree && projectBusy(handle.projectId, handle.taskId),
+        !handle.worktree && projectBusy(handle.projectId, handle.taskId, handle.slot),
     });
     if (action !== "deliver") {
       // The gate itself must not vanish: un-seal the transcript so the summary the agent
@@ -951,7 +1040,8 @@ function runTask(
         ? `/${agent.namespace}:${task.command} ${task.requestText}`
         : `/${agent.namespace}:${task.command}`) +
     attachNote +
-    featurePreamble;
+    featurePreamble +
+    (memberDir ? memberPreamble(project, memberDir) : "");
 
   if (resume) {
     db.update(tasks)
@@ -1059,6 +1149,8 @@ function runTask(
         message: `🧠 Model: ${chosen.label} — ${chosen.reason} · effort ${effort.level} (${effort.reason})`,
       });
 
+      // A const for the hook closure below (`memberDir` is reassigned at launch).
+      const guardDir = memberDir;
       const q = query({
         prompt: channel.gen(),
         options: {
@@ -1075,7 +1167,8 @@ function runTask(
           ...(budgetLeft !== null ? { maxBudgetUsd: budgetLeft } : {}),
           // An isolated run executes in its own worktree — but only one this process just
           // ensured exists (handle.worktree), never a stale `workdir` column alone.
-          cwd: handle.worktree?.dir ?? project.path,
+          // A member-scoped workspace run executes in that member's repo — its slot.
+          cwd: handle.worktree?.dir ?? memberDir ?? project.path,
           env, // owner's token; replaces process.env (see buildTaskEnv)
           plugins: [{ type: "local", path: agent.sourcePath }],
           settingSources: ["user", "project", "local"],
@@ -1086,6 +1179,41 @@ function runTask(
             ? { settings: { autoCompactWindow: AUTO_COMPACT_WINDOW } }
             : {}),
           permissionMode: "bypassPermissions",
+          // A member-scoped run must not write into a sibling member, where another session
+          // may be live. In-process, so it holds under bypassPermissions; file tools only
+          // (see runner/member-guard.ts for why Bash is out of its reach).
+          ...(guardDir
+            ? {
+                hooks: {
+                  PreToolUse: [
+                    {
+                      matcher: MEMBER_GUARD_MATCHER,
+                      hooks: [
+                        async (input) => {
+                          if (input.hook_event_name !== "PreToolUse") return {};
+                          const reason = memberWriteRefusal({
+                            ownDir: guardDir,
+                            memberDirs,
+                            cwd: input.cwd,
+                            toolName: input.tool_name,
+                            toolInput: input.tool_input,
+                          });
+                          return reason
+                            ? {
+                                hookSpecificOutput: {
+                                  hookEventName: "PreToolUse" as const,
+                                  permissionDecision: "deny" as const,
+                                  permissionDecisionReason: reason,
+                                },
+                              }
+                            : {};
+                        },
+                      ],
+                    },
+                  ],
+                },
+              }
+            : {}),
           systemPrompt: { type: "preset", preset: "claude_code", append: gatePromptFor(agent.namespace) },
           includePartialMessages: true,
           mcpServers: {
@@ -1299,8 +1427,27 @@ function runTask(
   // back), or because the user opted in ("run in parallel") and the project is busy right
   // now. A parallel-flagged task that finds the checkout free just runs there normally.
   // The decision itself is `launchMode` in ./worktree — pure, and tested there.
+  if (memberSlot && !memberSlot.ok) {
+    finalize(handle, "failed", `Couldn't start in the repo this task is scoped to: ${memberSlot.reason}`);
+    return handle;
+  }
+
+  // In a workspace a queued run holds its slot against newer ones (`runnableQueued`), so
+  // a member run can't overtake an older whole-workspace run that is still waiting. A plain
+  // project keeps the old question — is anything live in the checkout?
+  const queuedAhead = project.isWorkspace
+    ? [...sessions.values()]
+        .filter((h) => h.projectId === project.id && h !== handle && !h.started && !h.done)
+        .map((h) => ({ id: h.taskId, member: h.slot }))
+    : [];
+  const busy = !runnableQueued(
+    [...queuedAhead, { id: taskId, member: handle.slot }],
+    liveSlots(project.id, taskId),
+    project.isWorkspace ? MAX_WORKSPACE_SESSIONS : Infinity,
+  ).includes(taskId);
+
   const mode = launchMode({
-    busy: projectBusy(project.id, taskId),
+    busy,
     parallel: task.parallel,
     workdir: task.workdir,
     isGit: project.isGit,
