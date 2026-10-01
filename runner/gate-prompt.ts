@@ -87,7 +87,13 @@ tool call is missed.
 Everything else in your normal workflow and rules still applies.
 `.trim();
 
+/** Agents with nothing to approve: they may only ask questions, and a proposal/report call is
+ *  recorded as their final report rather than raised as a gate (runner/platform-mcp.ts). */
+export function questionOnlyGates(namespace: string): boolean {
+  return namespace === "qa";
+}
+
 /** Which gate prompt a session gets. Keyed on the agent's namespace, like the model tiers. */
 export function gatePromptFor(namespace: string): string {
-  return namespace === "qa" ? QA_GATE_PROMPT : GATE_PROMPT;
+  return questionOnlyGates(namespace) ? QA_GATE_PROMPT : GATE_PROMPT;
 }

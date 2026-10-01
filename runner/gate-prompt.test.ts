@@ -6,11 +6,14 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { GATE_PROMPT, QA_GATE_PROMPT, gatePromptFor } from "./gate-prompt";
+import { GATE_PROMPT, QA_GATE_PROMPT, gatePromptFor, questionOnlyGates } from "./gate-prompt";
 
 test("the qa agent gets the question-only prompt; everyone else the approval workflow", () => {
   assert.equal(gatePromptFor("qa"), QA_GATE_PROMPT);
   for (const ns of ["swe", "fe", "pm", "something-new"]) assert.equal(gatePromptFor(ns), GATE_PROMPT);
+  // The prompt and the enforcement must agree on who is question-only.
+  assert.equal(questionOnlyGates("qa"), true);
+  for (const ns of ["swe", "fe", "pm"]) assert.equal(questionOnlyGates(ns), false);
 });
 
 test("the qa prompt asks questions and never offers an approval gate", () => {

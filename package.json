@@ -1,6 +1,6 @@
 {
   "name": "platform",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "private": true,
   "scripts": {
     "app": "docker compose -f infra/docker/docker-compose.yml up -d --build && node infra/launch/open-app.mjs",
@@ -28,7 +28,7 @@
     "test": "tsx --test runner/*.test.ts lib/*.test.ts lib/discovery/*.test.ts infra/release/*.test.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.187",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.286",
     "@hono/node-server": "^2.0.6",
     "better-sqlite3": "^12.11.1",
     "drizzle-orm": "^0.45.2",

@@ -374,6 +374,39 @@ test("the gate tool takes a question, and answers it as an answer rather than an
   assert.equal(gateResultText("report", { allow: true }), "User APPROVED. Proceed.");
 });
 
+test("for a question-only agent, a report call is recorded as the report and never raises a gate", async () => {
+  // The first real qa run (2026-09-29) called gate: "report" despite its prompt — the project's
+  // CLAUDE.md described the swe/fe report gate — and the UI showed "approve to commit" on a
+  // login capture. So it is enforced here, not left to the prompt.
+  const { platformTools } = await import("./platform-mcp");
+  const gates: string[] = [];
+  const reports: string[] = [];
+  const [gateTool] = platformTools({
+    onGate: async (gate) => {
+      gates.push(gate);
+      return { allow: true };
+    },
+    onFinalReport: (summary) => reports.push(summary),
+    backlog: { projectId: "p1" },
+    testScenarios: { projectId: "p1", projectPath: "/tmp/p1", taskId: "t1" },
+  });
+  for (const gate of ["report", "proposal"]) {
+    const res = (await gateTool.handler({ gate, summary: `Auth capture: PASSED (${gate})` } as never, undefined)) as {
+      content: { text: string }[];
+      isError?: boolean;
+    };
+    assert.ok(!res.isError);
+    assert.match(res.content[0].text, /no approval step/);
+    assert.match(res.content[0].text, /\[\[DONE\]\]/);
+  }
+  assert.deepEqual(gates, [], "no approval gate may be raised");
+  assert.deepEqual(reports, ["Auth capture: PASSED (report)", "Auth capture: PASSED (proposal)"]);
+
+  // A question still pauses for the user as normal.
+  await gateTool.handler({ gate: "question", summary: "Ready to log in?" } as never, undefined);
+  assert.deepEqual(gates, ["question"]);
+});
+
 test("a transcript line that fails neither fails the add nor escapes the handler", async () => {
   // `onLog` is `record()`, which writes to the database, so it can fail on its own. Two things
   // must not happen: the caller being told the add failed when the row is committed, and the

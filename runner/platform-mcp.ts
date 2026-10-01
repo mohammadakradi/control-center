@@ -35,6 +35,14 @@ export type PlatformServerOptions = {
    *  raised at all — the run it belongs to has already ended and cannot be re-opened — and
    *  the rejection's message is what the agent is told. */
   onGate: (gate: GateKind, summary: string) => Promise<GateDecision>;
+  /**
+   * For an agent with nothing to approve (qa — see `questionOnlyGates` in ./gate-prompt): a
+   * `proposal`/`report` call is never raised as a gate. Its summary goes here to be recorded as
+   * the run's final report, and the agent is told to finish. The prompt already says this, but
+   * a project's own CLAUDE.md describing the swe/fe report gate outweighed it on the first real
+   * run (2026-09-29) — so it is enforced, not requested.
+   */
+  onFinalReport?: (summary: string) => void;
   /** Which project this session may file backlog items against, and where to log them. */
   backlog: BacklogToolContext;
   /** Which project's test scenarios this session may read and complete. Separate from
@@ -48,12 +56,26 @@ export type PlatformServerOptions = {
  * promise *is* the pause, and the decision comes back as the tool result so the agent reads the
  * user's answer where it would read any other tool's output.
  */
-function makeApprovalTool(onGate: PlatformServerOptions["onGate"]) {
+function makeApprovalTool(
+  onGate: PlatformServerOptions["onGate"],
+  onFinalReport?: PlatformServerOptions["onFinalReport"],
+) {
   return tool(
     "request_approval",
     "Pause for the user at a workflow gate and wait for their answer in the platform UI. gate=\"proposal\" or \"report\" asks them to approve a plan or a change report; gate=\"question\" asks them something only they can answer or do (put the question in summary). Returns their answer.",
     { gate: z.enum(GATE_KINDS), summary: z.string() },
     async (args) => {
+      if (onFinalReport && args.gate !== "question") {
+        onFinalReport(args.summary);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Recorded as this run's final report — there is no approval step for this agent, so nothing is waiting on the user. Do not repeat the report. End your turn now with just [[DONE]].",
+            },
+          ],
+        };
+      }
       let decision: GateDecision;
       try {
         decision = await onGate(args.gate, args.summary);
@@ -98,7 +120,7 @@ export function gateResultText(gate: GateKind, decision: GateDecision): string {
  */
 export function platformTools(opts: PlatformServerOptions) {
   return [
-    makeApprovalTool(opts.onGate),
+    makeApprovalTool(opts.onGate, opts.onFinalReport),
     makeBacklogTool(opts.backlog),
     ...testScenarioTools(opts.testScenarios),
   ];
